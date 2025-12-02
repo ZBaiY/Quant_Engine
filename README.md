@@ -1,5 +1,9 @@
 # Quant_Engine
-This is my personal Quant Engine
+
+**TradeBot v4 moves from a monolithic pipeline to a more modular, more scalable quant research + execution platform.
+This is the foundation required for professional-grade systematic trading.**
+------------------------
+
 ## Key transition from Event-Driven to Contract-Driven Architecture
 Early versions of the trading engine (v2–v3) followed a purely event-driven design, that is whenever a new market bar arrived, the system sequentially executed a fixed pipeline:
 ```
@@ -99,12 +103,9 @@ This architectural shift enables the Quant Engine to gracefully support:
 	•	Backtest-live reproducibility
 	•	Research and execution decoupled but interoperable
 	
-##########
 
-**TradeBot v4 moves from a monolithic pipeline to a more modular, more scalable quant research + execution platform.
-This is the foundation required for professional-grade systematic trading.**
 
-##########################
+------------------------
 
 ```mermaid
 flowchart TD
