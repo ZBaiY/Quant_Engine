@@ -1,4 +1,8 @@
-# Quant_Engine
+<h3 align="center">
+  <strong>
+    The Quant Engine (TradeBot v4)
+  </strong>
+</h3>
 
 <p align="center" style="font-size:28px; font-weight:600; line-height:1.3; padding:10px 0;">
   The Quant Engine (TradeBot v4) transforms a monolithic pipeline into a modular,<br>
