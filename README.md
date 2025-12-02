@@ -1,5 +1,47 @@
 # Quant_Engine
 This is my personal Quant Engine
+## Key transition from Event-Driven to Contract-Driven Architecture
+Early versions of the trading engine (v2–v3) followed a purely event-driven design, that is whenever a new market bar arrived, the system sequentially executed a fixed pipeline:
+```
+Data → Features → Model → Signal → Strategy → Risk → Order → Execution
+```
+
+This event-triggered pipeline worked for early prototypes, but it created tight coupling between components.
+As the system grew—adding sentiment signals, IV surface models, multiple strategies, execution policies,
+and realistic slippage modelling, the architecture became increasingly brittle:
+
+	•	Feature extraction depended on strategy-specific logic
+	•	Strategies directly touched risk and execution modules
+	•	Backtest and live execution diverged
+	•	New models could not be plugged in without modifying the pipeline
+	•	Execution rules (slippage, impact, routing) contaminated strategy logic
+	•	The system could no longer scale
+
+To address these limitations, Quant Engine project (TradeBot v4) transitions to a Contract-Driven Architecture.
+
+In v4, each layer exposes a formal protocol (contract) that defines what it must provide,
+while hiding how it is implemented.
+Modules communicate only through these contracts:
+
+	•	ModelProto — produces continuous scores from features
+	•	DecisionProto — converts scores into trading intents
+	•	RiskProto — determines position sizing, stops, and constraints
+	•	ExecutionPolicy — transforms target positions into child orders
+	•	Router / SlippageModel / MatchingEngine — provide execution realism
+	•	FeatureChannel — modular, independent feature streams (TA, microstructure, sentiment, IV)
+
+Event-driven orchestration still exists at runtime (new bars trigger the pipeline),
+but the logical boundaries are now contract-driven.
+This makes the system:
+	•	Modular — swap any component without touching others
+	•	Composable — strategies become combinations of contracts, not custom code
+	•	Extensible — new feature channels and models plug in instantly
+	•	Execution-realistic — backtest and live share the same execution engine
+	•	Scalable — supports multi-asset, regime-aware, and ML-based strategies
+    
+**This architectural shift is what allows Quant Engine to support sentiment-based regimes,
+advanced execution models, option-derived features, IV surfaces, and future strategies—
+without architectural rewrites.**
 
 
 ```mermaid
