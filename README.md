@@ -2,7 +2,7 @@
 This is my personal Quant Engine
 
 
-```
+```mermaid
 flowchart TD
 
 %% ==========================================================
