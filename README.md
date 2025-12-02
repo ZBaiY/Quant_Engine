@@ -33,6 +33,7 @@ Modules communicate only through these contracts:
 Event-driven orchestration still exists at runtime (new bars trigger the pipeline),
 but the logical boundaries are now contract-driven.
 This makes the system:
+
 	•	Modular — swap any component without touching others
 	•	Composable — strategies become combinations of contracts, not custom code
 	•	Extensible — new feature channels and models plug in instantly
