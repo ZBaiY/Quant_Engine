@@ -27,6 +27,15 @@ Its purpose is simple:
 This README documents **the major components, principles, pipeline flow, and usage examples**.
 
 ---
+## Getting Started
+
+### Prerequisites
+- Python 3.8+
+- Required packages can be installed via:
+  ```bash
+  pip install -r requirements.txt
+  ```
+---
 
 # Key Architectural Transition: Event-Driven → Contract-Driven
 Early versions (TradeBot v2–v3) followed a purely event-driven pipeline:
