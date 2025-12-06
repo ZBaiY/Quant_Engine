@@ -225,8 +225,8 @@ flowchart TD
 
 subgraph L0[Layer 0 — Data Sources]
     MKT[Market Data<br>Binance Klines<br>Orderbook L1 L2<br>Trades]
-    ALT[Alternative Data<br>News<br>Twitter X<br>Reddit]
     OPT[Derivatives Data<br>Option Chains<br>raw bid/ask/strike/expiry]
+    ALT[Alternative Data<br>News<br>Twitter X<br>Reddit] 
 end
 
 subgraph L1[Layer 1 — Data Ingestion]
@@ -276,7 +276,6 @@ subgraph L5[Layer 5 — Risk Layer RiskProto]
     RISK[Risk Engine<br>SL TP<br>ATR volatility<br>Sentiment scaled size<br>Portfolio exposure]
 end
 
-DECIDE --> RISK
 SENTPIPE --> RISK
 IVFEAT --> RISK
 
@@ -304,6 +303,7 @@ end
 
 PORT --> REPORT
 DECIDE --> REPORT
+DECIDE --> RISK
 RISK --> REPORT
 SENTPIPE --> REPORT
 IVFEAT --> REPORT
