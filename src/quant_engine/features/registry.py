@@ -24,8 +24,9 @@ def register_feature(name: str):
     return decorator
 
 
-def build_feature(name: str, **kwargs) -> FeatureChannel:
-    """Instantiate a feature class by name."""
+def build_feature(name: str, *, symbol=None, **params) -> FeatureChannel:
+    """Instantiate a feature class by name (multi‑symbol ready)."""
     if name not in FEATURE_REGISTRY:
         raise ValueError(f"Feature '{name}' not found in registry.")
-    return FEATURE_REGISTRY[name](**kwargs)
+    cls = FEATURE_REGISTRY[name]
+    return cls(symbol=symbol, **params)

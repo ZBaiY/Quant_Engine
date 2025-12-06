@@ -6,6 +6,13 @@ class DataCache:
     """
     Rolling window cache for OHLCV or other bar data.
     Keeps the last N bars, used by features and models.
+    timestamp | symbol | open | high | low | close | volume
+    -------------------------------------------------------
+    ...         BTCUSDT
+    ...         ETHUSDT
+    ...         SOLUSDT
+    ----> one single symbol is invested, others are for features, data for models
+    ----> this engine is for single symbol only.
     """
 
     def __init__(self, window: int = 1000):

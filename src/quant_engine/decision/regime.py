@@ -12,7 +12,8 @@ class RegimeDecision(DecisionProto):
         self._logger = get_logger(__name__)
         log_debug(self._logger, "RegimeDecision initialized", bull=bull, bear=bear)
 
-    def decide(self, regime_label: float) -> float:
+    def decide(self, context) -> float:
+        regime_label = context.get("regime_label", 0)
         log_debug(self._logger, "RegimeDecision received regime_label", regime_label=regime_label)
         if regime_label > 0:
             log_debug(self._logger, "RegimeDecision output", decision=self.bull)

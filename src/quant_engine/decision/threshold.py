@@ -11,7 +11,8 @@ class ThresholdDecision(DecisionProto):
         self._logger = get_logger(__name__)
         log_debug(self._logger, "ThresholdDecision initialized", threshold=threshold)
 
-    def decide(self, score: float) -> float:
+    def decide(self, context) -> float:
+        score = context.get("score", 0.0)
         log_debug(self._logger, "ThresholdDecision received score", score=score)
         decision = 1.0 if score > self.threshold else -1.0
         log_debug(self._logger, "ThresholdDecision output", decision=decision)

@@ -1,9 +1,9 @@
 from typing import Protocol, Dict
-from .order import Order
+from .order import Order, OrderSide, OrderType
 
 
 class MatchingEngine(Protocol):
-    def execute(
+    def match(
         self,
         order: Order,
         market_data: Dict
@@ -16,6 +16,9 @@ class MatchingEngine(Protocol):
             "filled_qty": float,
             "fee": float,
             "slippage": float,
+            "side": OrderSide,
+            "order_type": OrderType,
+            "timestamp": float,
         }
         """
 

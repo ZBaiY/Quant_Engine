@@ -1,5 +1,5 @@
 from typing import Protocol, Dict
-from .order import Order
+from .order import Order, OrderSide, OrderType
 
 
 class SlippageModel(Protocol):
@@ -10,6 +10,7 @@ class SlippageModel(Protocol):
     ) -> float:
         """
         Return final execution price including slippage impact.
+        OrderSide/OrderType enum ensures consistent behavior across execution layer.
         """
 
         """

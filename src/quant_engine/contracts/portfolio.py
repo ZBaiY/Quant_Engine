@@ -2,6 +2,24 @@
 from typing import Protocol, Dict
 from dataclasses import dataclass
 
+"""
+┌──────────────────────────┐
+│   MatchingEngine / Live  │
+└──────────────┬───────────┘
+               │  apply_fill()
+               ▼
+┌──────────────────────────┐
+│   PortfolioManagerProto  │  <─── Contract
+└──────────────┬───────────┘
+    updates    │ returns
+positions, PnL │ PortfolioState
+               ▼
+┌──────────────────────────┐
+│      PortfolioState      │  <─── Read-only snapshot
+└──────────────────────────┘
+                ▲
+    used by Strategy / Risk / Reporter
+"""
 
 @dataclass
 class PositionRecord:

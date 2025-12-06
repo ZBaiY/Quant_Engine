@@ -1,5 +1,9 @@
 from .registry import build_portfolio
 from quant_engine.utils.logger import get_logger, log_debug
+"""
+Stat Arb -- e.g. OU equation ... We adapt long A, short B correspondingly at here, it will not go through decisions/models.
+"""
+
 
 class PortfolioLoader:
     _logger = get_logger(__name__)

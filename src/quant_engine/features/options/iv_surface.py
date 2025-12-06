@@ -31,16 +31,22 @@ class IVSurfaceFeature(FeatureChannel):
     _logger = get_logger(__name__)
     def __init__(
         self,
-        chain_handler: OptionChainDataHandler,   # unified option-chain state handler
-        expiry: str,             # which expiry to use ('2025-06-27')
-        model: str = "SSVI",     # "SSVI" or "SABR"
-        model_kwargs: dict | None = None,
+        symbol=None,
+        **kwargs
     ):
-        self.chain_handler = chain_handler
-        self.expiry = expiry
-        self.model = model
-        self.model_kwargs = model_kwargs or {}
-        log_debug(self._logger, "IVSurfaceFeature initialized", expiry=expiry, model=model, model_kwargs=self.model_kwargs)
+        
+        self.symbol = symbol
+        self.expiry = kwargs.get("expiry", "next")
+        self.model = kwargs.get("model", "SSVI")
+        self.model_kwargs = kwargs.get("model_kwargs", {}) or {}
+        log_debug(
+            self._logger,
+            "IVSurfaceFeature initialized",
+            symbol=self.symbol,
+            expiry=self.expiry,
+            model=self.model,
+            model_kwargs=self.model_kwargs,
+        )
 
     def _fit_surface(self, chain: OptionChain):
         """
@@ -59,16 +65,25 @@ class IVSurfaceFeature(FeatureChannel):
             case _:
                 raise ValueError(f"Unsupported IV model: {self.model}")
 
-    def compute(self, df) -> dict:
-        # df comes from OHLCV realtime window; option features ignore df but must keep signature.
+    def compute(self, context) -> dict:
+        # context is a dictionary containing runtime information; OHLCV component is ignored.
         """
         Feature extraction pipeline:
-        1. Load option chain for given expiry
-        2. Fit the SABR/SSVI surface
-        3. Extract simple surface-based features
+        1. Retrieve option chain handler from context
+        2. Load option chain for given expiry
+        3. Fit the SABR/SSVI surface
+        4. Extract simple surface-based features
         """
         log_debug(self._logger, "IVSurfaceFeature compute() called")
-        chain = self.chain_handler.get_chain(self.expiry)
+        chain_handler = context.get("option_chain_handler")
+        if chain_handler is None:
+            log_debug(self._logger, "IVSurfaceFeature missing chain handler in context")
+            return {
+                "ivsurf_atm": None,
+                "ivsurf_skew": None,
+                "ivsurf_curvature": None,
+            }
+        chain = chain_handler.get_chain(self.expiry)
         if chain is None:
             log_debug(self._logger, "IVSurfaceFeature missing chain", expiry=self.expiry)
             return {

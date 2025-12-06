@@ -1,5 +1,5 @@
 from quant_engine.contracts.execution.router import Router
-from quant_engine.contracts.execution.order import Order
+from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_router
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -17,11 +17,11 @@ class L1AwareRouter(Router):
 
         routed = []
         for o in orders:
-            if o.order_type == "LIMIT" and o.price is None:
-                if o.side == "BUY":
+            if o.order_type == OrderType.LIMIT and o.price is None:
+                if o.side == OrderSide.BUY:
                     o.price = bid
                 else:
                     o.price = ask
-            log_debug(self._logger, "L1AwareRouter routed order", side=o.side, order_type=o.order_type, price=o.price)
+            log_debug(self._logger, "L1AwareRouter routed order", side=o.side.value, order_type=o.order_type.value, price=o.price)
             routed.append(o)
         return routed

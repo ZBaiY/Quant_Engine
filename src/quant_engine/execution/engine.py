@@ -65,7 +65,7 @@ class ExecutionEngine:
                     "Slippage applied",
                     stage="slippage",
                     adjusted_price=adjusted.price,
-                    slip=adjusted.price - routed.price
+                    slip=adjusted.extra.get("slippage", 0.0)
                 )
 
             # -----------------------
@@ -77,7 +77,7 @@ class ExecutionEngine:
                     self._logger,
                     "Order matched",
                     stage="matching",
-                    fill=fill.to_dict()
+                    fill=fill
                 )
 
             return fill

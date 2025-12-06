@@ -1,22 +1,42 @@
-from dataclasses import dataclass
-from typing import Optional
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Union
+
+
+class OrderSide(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+class OrderType(str, Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP = "STOP"
+    STOP_LIMIT = "STOP_LIMIT"
+    IOC = "IOC"
+    FOK = "FOK"
+    POST_ONLY = "POST_ONLY"
+    REDUCE_ONLY = "REDUCE_ONLY"
 
 
 @dataclass
 class Order:
-    side: str                 # "BUY" or "SELL"
+    side: OrderSide                 # BUY / SELL
     qty: float
-    order_type: str           # "MARKET" or "LIMIT"
-    price: Optional[float]    # None for MARKET orders
+    order_type: OrderType           # MARKET / LIMIT / STOP / ...
+    price: Optional[float]          # None for MARKET
     timestamp: Optional[float] = None
-    tag: str = ""             # strategy tag
+    tag: str = ""                   # strategy tag
+
+    # Future‑proof extension slot for STOP, FOK, IOC, trailing stop, iceberg, etc.
+    extra: Dict[str, Union[float, str, bool]] = field(default_factory=dict)
 
     def to_dict(self):
         return {
-            "side": self.side,
+            "side": self.side.value,
             "qty": self.qty,
-            "order_type": self.order_type,
+            "order_type": self.order_type.value,
             "price": self.price,
             "timestamp": self.timestamp,
             "tag": self.tag,
+            "extra": self.extra,
         }

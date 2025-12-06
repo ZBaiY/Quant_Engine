@@ -1,5 +1,5 @@
 from typing import Protocol, List, Dict
-from .order import Order
+from .order import Order, OrderSide, OrderType
 
 
 class Router(Protocol):
@@ -14,10 +14,9 @@ class Router(Protocol):
         - Multi-venue splitting
         - Cancel/replace
         - Timeout logic
-        """
-        """
+
         ✔ 输入：订单列表
-        ✔ 输出：无（由实现决定如何下单/发送/传递）
+        ✔ 输出：返回可能已修改的订单列表（由实现决定如何下单/发送/传递）
         用途：router_impl.py
         """
         ...

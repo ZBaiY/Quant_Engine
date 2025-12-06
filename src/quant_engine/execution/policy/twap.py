@@ -1,5 +1,9 @@
 from quant_engine.contracts.execution.policy import ExecutionPolicy
-from quant_engine.contracts.execution.order import Order
+from quant_engine.contracts.execution.order import (
+    Order,
+    OrderSide,
+    OrderType,
+)
 from .registry import register_policy
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -17,7 +21,7 @@ class TWAPPolicy(ExecutionPolicy):
         if diff == 0:
             return []
 
-        side = "BUY" if diff > 0 else "SELL"
+        side = OrderSide.BUY if diff > 0 else OrderSide.SELL
         qty_total = abs(diff)
         qty_each = qty_total / self.slices
         log_debug(self._logger, "TWAPPolicy computed slice parameters", side=side, qty_total=qty_total, qty_each=qty_each)
@@ -29,7 +33,7 @@ class TWAPPolicy(ExecutionPolicy):
                 Order(
                     side=side,
                     qty=qty_each,
-                    order_type="MARKET",
+                    order_type=OrderType.MARKET,
                     price=None,
                     tag=f"twap_{i}"
                 )

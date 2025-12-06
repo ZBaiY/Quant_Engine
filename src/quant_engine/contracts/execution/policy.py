@@ -1,5 +1,5 @@
 from typing import Protocol, List, Dict
-from .order import Order
+from .order import Order, OrderSide, OrderType
 
 
 class ExecutionPolicy(Protocol):
@@ -10,8 +10,8 @@ class ExecutionPolicy(Protocol):
         market_data: Dict
     ) -> List[Order]:
         """
-        ✔ target_pos：你希望达到的仓位
-        ✔ current_pos：当前仓位
+        ✔ target_position: desired target position
+        ✔ portfolio_state: portfolio snapshot
         ✔ 返回：Order 对象列表（买/卖多少）
         用途：policy 模块的 TWAP / MarketOrderPolicy / VWAP 都会实现。
         """

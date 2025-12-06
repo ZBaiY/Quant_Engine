@@ -1,5 +1,5 @@
 from quant_engine.contracts.execution.policy import ExecutionPolicy
-from quant_engine.contracts.execution.order import Order
+from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_policy
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -24,10 +24,14 @@ class ImmediatePolicy(ExecutionPolicy):
 
         return [
             Order(
-                side=side,
+                side=OrderSide.BUY if diff > 0 else OrderSide.SELL,
                 qty=qty,
-                order_type="MARKET",
+                order_type=OrderType.MARKET,
                 price=None,
-                tag="immediate"
+                timestamp=None,
+                tag="immediate",
+                extra={
+                    "time_in_force": OrderType.IOC.value
+                }
             )
         ]
