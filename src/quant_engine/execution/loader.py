@@ -1,5 +1,3 @@
-# execution/loader.py
-
 from quant_engine.execution.policy.registry import build_policy
 from quant_engine.execution.router.registry import build_router
 from quant_engine.execution.slippage.registry import build_slippage
@@ -25,11 +23,10 @@ class ExecutionLoader:
         router = build_router(cfg["router"]["type"], **cfg["router"].get("params", {}))
         slippage = build_slippage(cfg["slippage"]["type"], **cfg["slippage"].get("params", {}))
         matching = build_matching(cfg["matching"]["type"], **cfg["matching"].get("params", {}))
-
         # Combine into ExecutionEngine
         return ExecutionEngine(
             policy=policy,
             router=router,
-            slippage=slippage,
+            slippage_model=slippage,
             matcher=matching
         )

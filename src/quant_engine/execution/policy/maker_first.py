@@ -2,14 +2,17 @@
 from quant_engine.contracts.execution.policy import ExecutionPolicy
 from quant_engine.contracts.execution.order import Order
 from .registry import register_policy
+from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_policy("MAKER_FIRST")
 class MakerFirstPolicy(ExecutionPolicy):
     def __init__(self, spread_threshold=0.02):
         self.spread_threshold = spread_threshold
+        self._logger = get_logger(__name__)
 
     def generate(self, target_position, portfolio_state, market_data):
+        log_debug(self._logger, "MakerFirstPolicy received target_position", target_position=target_position)
         current_pos = portfolio_state.get("position", 0)
         diff = target_position - current_pos
 
@@ -18,6 +21,8 @@ class MakerFirstPolicy(ExecutionPolicy):
 
         side = "BUY" if diff > 0 else "SELL"
         qty = abs(diff)
+
+        log_debug(self._logger, "MakerFirstPolicy computed diff", side=side, qty=qty)
 
         best_bid = market_data["bid"]
         best_ask = market_data["ask"]
@@ -30,6 +35,8 @@ class MakerFirstPolicy(ExecutionPolicy):
         else:
             price = None
             order_type = "MARKET"
+
+        log_debug(self._logger, "MakerFirstPolicy generated order", side=side, qty=qty, order_type=order_type, price=price)
 
         return [
             Order(

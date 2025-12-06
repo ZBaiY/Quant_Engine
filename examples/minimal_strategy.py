@@ -1,44 +1,73 @@
-from quant_engine.features.ta import RSIChannel
-from quant_engine.models.rsi import RSIModel
-from quant_engine.decision.threshold import ThresholdDecision
-from quant_engine.risk.atr import ATRSizer
-from quant_engine.execution.policy.policy import ImmediatePolicy
-from quant_engine.execution.router.router_impl import SimpleRouter
-from quant_engine.execution.slippage.slippage_impl import LinearSlippage
-from quant_engine.execution.matching.matching_sim import SimulatedMatchingEngine
-from quant_engine.portfolio.state import PortfolioState
+from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.backtest.engine import BacktestEngine
+from quant_engine.data.historical import HistoricalDataHandler
 
-class Strategy:
-    def __init__(self):
-        self.feature = RSIChannel()
-        self.model = RSIModel()
-        self.decision = ThresholdDecision()
-        self.risk = ATRSizer()
-        self.policy = ImmediatePolicy()
-        self.router = SimpleRouter()
-        self.slip = LinearSlippage()
-        self.match = SimulatedMatchingEngine()
-        self.port = PortfolioState()
+import pandas as pd
 
-    def on_bar(self, bar):
-        features = self.feature.compute(bar)
-        score = self.model.predict(features)
-        intent = self.decision.decide(score)
-        size = self.risk.size(intent)
+# ------------------------------------------------------------------------------
+# 1. Example config for the whole strategy
+# ------------------------------------------------------------------------------
+config = {
+    "symbol": "BTCUSDT",
 
-        orders = self.policy.generate_orders(size, self.port.position)
-        routed = self.router.route(orders)
+    "features": {
+        "RSI": {"period": 14}
+    },
 
-        for o in routed:
-            price = self.slip.apply(bar["close"], o.qty)
-            fill = self.match.fill(price, o.qty)
-            self.port.position += o.qty if o.side == "BUY" else -o.qty
+    "models": {
+        "MAIN": {
+            "type": "RSI_MODEL",
+            "params": {}
+        }
+    },
+
+    "decision": {
+        "name": "THRESHOLD",
+        "params": {"threshold": 0.0}
+    },
+
+    "risk": {
+        "name": "ATR_SIZER",
+        "params": {"window": 14}
+    },
+
+    "execution": {
+        "policy": {"name": "IMMEDIATE", "params": {}},
+        "router": {"name": "SIMPLE", "params": {}},
+        "slippage": {"name": "LINEAR", "params": {"b": 0.001}},
+        "matching": {"name": "SIMULATED", "params": {}}
+    },
+
+    "portfolio": {
+        "initial_cash": 10000
+    }
+}
 
 
-if __name__ == "__main__":
-    import pandas as pd
-    data = pd.DataFrame({"close": [100, 101, 102, 103]})
-    strat = Strategy()
+# ------------------------------------------------------------------------------
+# 2. Load data
+# ------------------------------------------------------------------------------
+df = pd.DataFrame({
+    "open":  [100, 101, 102, 103],
+    "high":  [101, 102, 103, 104],
+    "low":   [ 99, 100, 101, 102],
+    "close": [100, 101, 102, 103],
+    "volume":[10, 20, 15, 18]
+})
 
-    for i in range(len(data)):
-        strat.on_bar(data.iloc[i:i+1])
+historical = HistoricalDataHandler(df=df)
+
+
+# ------------------------------------------------------------------------------
+# 3. Build strategy with registry + loader
+# ------------------------------------------------------------------------------
+strategy = StrategyLoader.from_config(config, data_handler=historical)
+
+
+# ------------------------------------------------------------------------------
+# 4. Run backtest with unified execution engine
+# ------------------------------------------------------------------------------
+engine = BacktestEngine(strategy=strategy, historical=historical)
+engine.run()
+
+print("Final portfolio:", engine.portfolio.summary())

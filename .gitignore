@@ -98,11 +98,20 @@ venv/
 .idea/
 
 # --------------------------------------
-# Data (DO NOT COMMIT RAW DATA)
+# Data folder (ignore raw datasets, keep code)
 # --------------------------------------
-data/
-!data/.gitkeep
+data/**/*.csv
+data/**/*.parquet
+data/**/*.json
+data/**/*.feather
+data/**/*.xlsx
+data/**/*.npz
+data/**/*.npy
 
+# allow Python modules inside data/
+!data/**/*.py
+!data/**/__init__.py
+!data/.gitkeep
 # --------------------------------------
 # Jupyter
 # --------------------------------------

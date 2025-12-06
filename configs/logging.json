@@ -1,0 +1,32 @@
+{
+    "level": "INFO",
+    "debug": {
+        "enabled": false,
+        "modules": []
+    },
+    "handlers": {
+        "console": {
+            "enabled": true
+        },
+        "file": {
+            "enabled": false,
+            "path": "logs/engine.log",
+            "max_bytes": 10485760,
+            "backup_count": 3
+        }
+    },
+    "format": {
+        "json": true,
+        "timestamp_utc": true
+    }
+    ,
+    "example_debug": {
+        "description": "Enable deep debug logs for execution and data layers",
+        "level": "DEBUG",
+        "debug": {
+            "enabled": true,
+            "modules": ["execution", "data"]
+        }
+    }
+}
+

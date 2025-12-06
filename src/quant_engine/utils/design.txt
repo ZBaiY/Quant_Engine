@@ -1,0 +1,23 @@
+This logging system must satisfy:
+
+1. Unified across backtest, mock, and live
+No “mode-specific” logs.
+Only the LoggingPolicy / logger factory chooses different verbosity or handlers.
+
+2. Deterministic
+Backtest logs must be deterministic (same seed, same output).
+
+3. Execution-Pipeline Visibility
+You need automatic log lines for each stage:
+ExecutionPolicy → Router → SlippageModel → MatchingEngine → Portfolio
+…without every class manually rewriting logging boilerplate.
+
+4. Structured
+Every log line must contain:
+```
+timestamp | level | module | message | context (json)
+```
+So you can later parse it with pandas or BigQuery if needed.
+
+5. Lightweight
+Logging must be fast enough not to break live trading latency.

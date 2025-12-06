@@ -2,10 +2,12 @@
 
 from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState, PositionRecord
 from .registry import register_portfolio
+from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
 @register_portfolio("STANDARD")
 class PortfolioManager(PortfolioManagerProto):
+    _logger = get_logger(__name__)
     def __init__(self, initial_capital: float = 10000.0):
         self.cash = initial_capital
         self.positions: dict[str, PositionRecord] = {}  # key: symbol
@@ -26,6 +28,7 @@ class PortfolioManager(PortfolioManagerProto):
             "fee": 0.08
         }
         """
+        log_debug(self._logger, "PortfolioManager received fill", fill=fill)
         symbol = fill.get("symbol", "DEFAULT")
         price = fill["fill_price"]
         qty = fill["filled_qty"]
@@ -41,6 +44,7 @@ class PortfolioManager(PortfolioManagerProto):
         # --- Update position ---
         prev_qty = pos.qty
         new_qty = prev_qty + qty
+        log_debug(self._logger, "PortfolioManager updated position quantities", prev_qty=prev_qty, new_qty=new_qty)
 
         # Realized PnL when reducing/inverting a position
         if prev_qty != 0 and (prev_qty * new_qty < 0 or abs(new_qty) < abs(prev_qty)):
@@ -54,6 +58,7 @@ class PortfolioManager(PortfolioManagerProto):
 
         # --- Cash update ---
         self.cash -= price * qty + fee
+        log_info(self._logger, "PortfolioManager applied fill", symbol=symbol, price=price, qty=qty, fee=fee, cash=self.cash)
 
     # -------------------------------------------------------
     # Portfolio state snapshot
@@ -62,6 +67,7 @@ class PortfolioManager(PortfolioManagerProto):
         """
         Returns a static dict snapshot that Risk / Strategy / Reporter use.
         """
+        log_debug(self._logger, "PortfolioManager computing state snapshot")
         total_value = self.cash + self._compute_unrealized_total()
 
         snapshot = {
@@ -76,6 +82,7 @@ class PortfolioManager(PortfolioManagerProto):
             "exposure": self._compute_exposure(),
             "leverage": self._compute_leverage(total_value),
         }
+        log_debug(self._logger, "PortfolioManager produced state", total_equity=total_value, realized_pnl=self.realized_pnl, unrealized_pnl=self.unrealized_pnl)
 
         return snapshot
 

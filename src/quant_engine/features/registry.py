@@ -1,10 +1,12 @@
 # features/registry.py
 from quant_engine.contracts.feature import FeatureChannel
+from .iv_surface import IVSurfaceFeature
 
 ### Feature registry and builder, this is because we have many features.
 
 # Global registry
 FEATURE_REGISTRY: dict[str, type[FeatureChannel]] = {}
+FEATURE_REGISTRY["IV_SURFACE"] = IVSurfaceFeature
 
 def register_feature(name: str):
     """
@@ -22,3 +24,5 @@ def build_feature(name: str, **kwargs) -> FeatureChannel:
     if name not in FEATURE_REGISTRY:
         raise ValueError(f"Feature '{name}' not found in registry.")
     return FEATURE_REGISTRY[name](**kwargs)
+
+

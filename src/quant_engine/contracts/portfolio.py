@@ -10,17 +10,12 @@ class PositionRecord:
     unrealized_pnl: float = 0.0
 
 
-class PortfolioState(Protocol):
-    """
-    Queried by StrategyEngine / Risk / Reporting.
-    Should contain:
-    - positions
-    - account equity
-    - exposure
-    - leverage
-    """
+@dataclass
+class PortfolioState:
+    snapshot_dict: Dict
+
     def snapshot(self) -> Dict:
-        ...
+        return self.snapshot_dict
 
 
 class PortfolioManagerProto(Protocol):
@@ -31,6 +26,8 @@ class PortfolioManagerProto(Protocol):
     """
     def apply_fill(self, fill: Dict):
         """Update portfolio based on fill dict."""
+        ...
 
     def state(self) -> PortfolioState:
         """Return current state."""
+        ...

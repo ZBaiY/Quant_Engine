@@ -3,6 +3,7 @@ from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.data.historical import HistoricalDataHandler
 from quant_engine.data.realtime import RealTimeDataHandler
 from .registry import build_feature
+from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 """
 extractor = FeatureExtractor(
@@ -18,6 +19,7 @@ features = extractor.compute()
 """
 
 class FeatureExtractor:
+    _logger = get_logger(__name__)
     def __init__(
         self,
         historical: HistoricalDataHandler,
@@ -35,6 +37,7 @@ class FeatureExtractor:
         """
         self.historical = historical
         self.realtime = realtime
+        log_debug(self._logger, "FeatureExtractor initialized", feature_config=feature_config)
 
         self.channels: list[FeatureChannel] = [
             build_feature(name, **params)
@@ -42,8 +45,11 @@ class FeatureExtractor:
         ]
 
     def compute(self) -> dict:
+        log_debug(self._logger, "FeatureExtractor compute() called")
         df = self.realtime.window_df()
+        log_debug(self._logger, "FeatureExtractor received dataframe", rows=len(df))
         result = {}
         for ch in self.channels:
             result.update(ch.compute(df))
+        log_debug(self._logger, "FeatureExtractor computed features", feature_keys=list(result.keys()))
         return result
