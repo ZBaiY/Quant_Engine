@@ -1,7 +1,7 @@
 # features/extractor.py
 from quant_engine.contracts.feature import FeatureChannel
-from quant_engine.data.historical import HistoricalDataHandler
-from quant_engine.data.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.historical import HistoricalDataHandler
+from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
@@ -40,10 +40,11 @@ class FeatureExtractor:
         log_debug(self._logger, "FeatureExtractor initialized", feature_config=feature_config)
 
         self.channels: list[FeatureChannel] = [
-            build_feature(name, **params)
+            build_feature(name, **(params or {}))
             for name, params in feature_config.items()
         ]
 
+    # Note: df is OHLCV window; option-based features may ignore it but must keep signature.
     def compute(self) -> dict:
         log_debug(self._logger, "FeatureExtractor compute() called")
         df = self.realtime.window_df()

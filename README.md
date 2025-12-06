@@ -230,7 +230,7 @@ flowchart TD
 subgraph L0[Layer 0 — Data Sources]
     MKT[Market Data<br>Binance Klines<br>Orderbook L1 L2<br>Trades]
     ALT[Alternative Data<br>News<br>Twitter X<br>Reddit]
-    OPT[Derivatives Data<br>Option Chains<br>IV Surface<br>OU Model]
+    OPT[Derivatives Data<br>Option Chains<br>(raw bid/ask/strike/expiry)]
 end
 
 
@@ -241,13 +241,14 @@ end
 subgraph L1[Layer 1 — Data Ingestion]
     HDH[HistoricalDataHandler<br>clean check rescale]
     RTDH[RealTimeDataHandler<br>stream bars<br>update windows]
+    OCDH[OptionChainDataHandler<br>group by expiry<br>cache chains]
     SLOAD[SentimentLoader<br>fetch news tweets<br>cache dedupe]
 end
 
 MKT --> HDH
 MKT --> RTDH
+OPT --> OCDH
 ALT --> SLOAD
-OPT --> HDH
 
 
 %% ==========================================================
@@ -256,14 +257,18 @@ OPT --> HDH
 
 subgraph L2[Layer 2 — Feature Layer]
     FE[FeatureExtractor<br>TA indicators<br>Microstructure<br>Vol indicators<br>IV factors]
+    IVFEAT[IVSurfaceFeature<br>ATM IV<br>Skew/Smile<br>Term Structure<br>Vol-of-vol<br>Roll-down]
     SENTPIPE[SentimentPipeline<br>text cleaning<br>FinBERT VADER fusion<br>sentiment score vol velocity]
-    MERGE[Merge Features<br>TA + microstructure + vol + sentiment]
+    MERGE[Merge Features<br>TA + microstructure + vol + IV + sentiment]
 end
 
 HDH --> FE
 RTDH --> FE
+RTDH --> IVFEAT
+OCDH --> IVFEAT
 SLOAD --> SENTPIPE
 FE --> MERGE
+IVFEAT --> MERGE
 SENTPIPE --> MERGE
 
 
@@ -288,6 +293,7 @@ end
 
 MODEL --> DECIDE
 SENTPIPE --> DECIDE
+IVFEAT --> DECIDE
 
 
 %% ==========================================================
@@ -300,6 +306,7 @@ end
 
 DECIDE --> RISK
 SENTPIPE --> RISK
+IVFEAT --> RISK
 
 
 %% ==========================================================
@@ -342,4 +349,4 @@ PORT --> REPORT
 DECIDE --> REPORT
 RISK --> REPORT
 SENTPIPE --> REPORT
-```
+IVFEAT --> REPORT

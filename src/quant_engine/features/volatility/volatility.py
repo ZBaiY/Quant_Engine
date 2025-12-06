@@ -1,7 +1,7 @@
 # src/quant_engine/features/volatility.py
 import pandas as pd
 from quant_engine.contracts.feature import FeatureChannel
-from .registry import register_feature
+from ..registry import register_feature
 from quant_engine.utils.logger import get_logger, log_debug
 
 

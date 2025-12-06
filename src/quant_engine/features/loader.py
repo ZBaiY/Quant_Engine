@@ -27,5 +27,5 @@ class FeatureLoader:
         return FeatureExtractor(
             historical=data_handler.historical,
             realtime=data_handler.realtime,
-            feature_config={cfg["type"]: cfg.get("params", {}) for cfg in cfg["features"]}
+            feature_config={f["type"]: f.get("params", {}) for f in cfg["features"]}
         )

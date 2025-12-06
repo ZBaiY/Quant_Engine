@@ -84,7 +84,7 @@ class PortfolioManager(PortfolioManagerProto):
         }
         log_debug(self._logger, "PortfolioManager produced state", total_equity=total_value, realized_pnl=self.realized_pnl, unrealized_pnl=self.unrealized_pnl)
 
-        return snapshot
+        return PortfolioState(snapshot)
 
     # -------------------------------------------------------
     # Internal helpers (simplified)

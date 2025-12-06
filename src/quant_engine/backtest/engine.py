@@ -3,8 +3,8 @@
 from typing import List, Dict, Any
 
 from quant_engine.strategy.engine import StrategyEngine
-from quant_engine.data.historical import HistoricalDataHandler
-from quant_engine.data.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.historical import HistoricalDataHandler
+from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
 
 
 class BacktestEngine:
@@ -34,6 +34,15 @@ class BacktestEngine:
         # Store results for analysis / reporting
         self.results: List[Dict[str, Any]] = []
 
+    @classmethod
+    def from_historical(cls, strategy_engine: StrategyEngine, historical: HistoricalDataHandler, window: int = 1000):
+        """
+        Convenience constructor:
+        Automatically create a RealTimeDataHandler for backtesting.
+        """
+        realtime = RealTimeDataHandler(window=window)
+        return cls(strategy_engine, historical, realtime)
+
     # -------------------------------------------------
     # Main loop
     # -------------------------------------------------
@@ -49,8 +58,9 @@ class BacktestEngine:
         for bar in self.historical.iter_bars():
 
             # ---- Feed new bar to the realtime handler ----
-            self.realtime.on_new_tick(bar)
-
+            window_df = self.realtime.on_new_tick(bar)
+            if window_df is None or len(window_df) == 0:
+                continue  # skip until we have enough data
             # ---- Execute one pipeline step ----
             snapshot = self.strategy.step()
 

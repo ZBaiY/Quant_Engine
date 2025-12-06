@@ -1,6 +1,6 @@
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.backtest.engine import BacktestEngine
-from quant_engine.data.historical import HistoricalDataHandler
+from quant_engine.data.ohlcv.historical import HistoricalDataHandler
 
 import pandas as pd
 
@@ -55,7 +55,7 @@ df = pd.DataFrame({
     "volume":[10, 20, 15, 18]
 })
 
-historical = HistoricalDataHandler(df=df)
+historical = HistoricalDataHandler.from_dataframe(df)
 
 
 # ------------------------------------------------------------------------------

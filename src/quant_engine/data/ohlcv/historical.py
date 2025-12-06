@@ -13,8 +13,24 @@ class HistoricalDataHandler:
         self.data = None
         self._logger = get_logger(__name__)
 
+    @classmethod
+    def from_dataframe(cls, df, window: int = 1000):
+        """
+        Construct HistoricalDataHandler directly from a DataFrame.
+        Useful for examples, unit tests, and synthetic data.
+
+        Path will be None, and `load()` will not be used.
+        """
+        obj = cls(path="", window=window)
+        obj.data = df.copy()
+        obj.cache = DataCache(window=window)
+        return obj
+
     def load(self):
         """Load CSV or Parquet historical data."""
+        if self.path == "":
+            # Data provided directly; do not load from disk.
+            return self.data
         log_debug(self._logger, "HistoricalDataHandler loading file", path=self.path)
         if self.path.endswith(".csv"):
             self.data = pd.read_csv(self.path)

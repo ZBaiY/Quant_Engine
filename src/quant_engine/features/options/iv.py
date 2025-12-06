@@ -1,7 +1,9 @@
-# src/quant_engine/features/iv.py
+# src/quant_engine/features/options/iv.py
+# NOTE: These IV features use OHLCV-derived IV columns.
+# Option-chain–based IV surface features live in iv_surface.py.
 import pandas as pd
 from quant_engine.contracts.feature import FeatureChannel
-from .registry import register_feature
+from ..registry import register_feature
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -10,6 +12,7 @@ class IV30Feature(FeatureChannel):
     _logger = get_logger(__name__)
     """Implied Volatility 30d."""
     def compute(self, df: pd.DataFrame):
+        # df is the OHLCV window; option-chain features ignore df, but these IV metrics use df columns.
         log_debug(self._logger, "IV30Feature compute() called")
         if "iv_30d" not in df:
             result = {"iv30": None}
@@ -25,6 +28,7 @@ class IVSkewFeature(FeatureChannel):
     _logger = get_logger(__name__)
     """25d call - 25d put skew."""
     def compute(self, df: pd.DataFrame):
+        # df is the OHLCV window; option-chain features ignore df, but these IV metrics use df columns.
         log_debug(self._logger, "IVSkewFeature compute() called")
         if "iv_25d_call" not in df or "iv_25d_put" not in df:
             result = {"iv_skew": None}
