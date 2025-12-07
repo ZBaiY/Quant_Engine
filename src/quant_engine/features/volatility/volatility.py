@@ -19,6 +19,9 @@ class ATRFeature(FeatureChannel):
     def symbol(self):
         return self._symbol
 
+    def required_window(self) -> int:
+        return self.period + 1
+
     def initialize(self, context):
         df = context["ohlcv"]
         high_low = df["high"] - df["low"]
@@ -65,6 +68,9 @@ class RealizedVolFeature(FeatureChannel):
     @property
     def symbol(self):
         return self._symbol
+
+    def required_window(self) -> int:
+        return self.window + 1
 
     def initialize(self, context):
         df = context["ohlcv"]

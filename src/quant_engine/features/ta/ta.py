@@ -18,6 +18,9 @@ class RSIFeature(FeatureChannel):
     def symbol(self):
         return self._symbol
 
+    def required_window(self) -> int:
+        return self.period + 1
+
     def initialize(self, context):
         data = context["ohlcv"]
         delta = data["close"].diff()
@@ -72,6 +75,9 @@ class MACDFeature(FeatureChannel):
     def symbol(self):
         return self._symbol
 
+    def required_window(self) -> int:
+        return self.slow + 1
+
     def initialize(self, context):
         data = context["ohlcv"]
         close = data["close"]
@@ -94,3 +100,102 @@ class MACDFeature(FeatureChannel):
     def output(self):
         assert self._macd is not None, "MACDFeature.output() called before initialize()"
         return {"macd": self._macd}
+
+@register_feature("ADX")
+class ADXFeature(FeatureChannel):
+    _logger = get_logger(__name__)
+
+    def __init__(self, symbol=None, **kwargs):
+        self._symbol = symbol
+        self.period = kwargs.get("period", 14)
+
+        self._tr = None
+        self._dm_pos = None
+        self._dm_neg = None
+
+        self._atr = None
+        self._di_pos = None
+        self._di_neg = None
+        self._adx = None
+
+    @property
+    def symbol(self):
+        return self._symbol
+
+    def required_window(self) -> int:
+        return self.period + 1
+
+    def initialize(self, context):
+        data = context["ohlcv"]
+        high = data["high"]
+        low = data["low"]
+        close = data["close"]
+
+        prev_close = close.shift(1)
+
+        tr = (
+            pd.concat(
+                [
+                    (high - low),
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs(),
+                ],
+                axis=1,
+            ).max(axis=1)
+        )
+
+        up_move = high.diff()
+        down_move = -low.diff()
+
+        dm_pos = ((up_move > down_move) & (up_move > 0)) * up_move
+        dm_neg = ((down_move > up_move) & (down_move > 0)) * down_move
+
+        self._tr = tr.rolling(self.period).sum().iloc[-1]
+        self._dm_pos = dm_pos.rolling(self.period).sum().iloc[-1]
+        self._dm_neg = dm_neg.rolling(self.period).sum().iloc[-1]
+
+        self._di_pos = 100 * (self._dm_pos / (self._tr + 1e-12))
+        self._di_neg = 100 * (self._dm_neg / (self._tr + 1e-12))
+
+        dx = 100 * (abs(self._di_pos - self._di_neg) /
+                    (self._di_pos + self._di_neg + 1e-12))
+
+        self._adx = float(dx)
+
+    def update(self, context):
+        bar = context["ohlcv"]
+        high = bar["high"].iloc[0]
+        low = bar["low"].iloc[0]
+        close = bar["close"].iloc[0]
+
+        prev_close = context["realtime"].prev_close(self._symbol)
+        prev_high = context["realtime"].window_df(2)["high"].iloc[-2]
+        prev_low = context["realtime"].window_df(2)["low"].iloc[-2]
+
+        tr_ = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close),
+        )
+
+        up_move = high - prev_high
+        down_move = prev_low - low
+
+        dm_pos_ = up_move if (up_move > down_move and up_move > 0) else 0
+        dm_neg_ = down_move if (down_move > up_move and down_move > 0) else 0
+
+        self._tr = self._tr - (self._tr / self.period) + tr_
+        self._dm_pos = self._dm_pos - (self._dm_pos / self.period) + dm_pos_
+        self._dm_neg = self._dm_neg - (self._dm_neg / self.period) + dm_neg_
+
+        self._di_pos = 100 * (self._dm_pos / (self._tr + 1e-12))
+        self._di_neg = 100 * (self._dm_neg / (self._tr + 1e-12))
+
+        dx = 100 * (abs(self._di_pos - self._di_neg) /
+                    (self._di_pos + self._di_neg + 1e-12))
+
+        self._adx = float(dx)
+
+    def output(self):
+        assert self._adx is not None, "ADXFeature.output() called before initialize()"
+        return {"adx": self._adx}
