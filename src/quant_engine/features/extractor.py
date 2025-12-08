@@ -6,6 +6,8 @@ from quant_engine.data.ohlcv.historical import HistoricalDataHandler
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.chain_handler import OptionChainDataHandler
 from quant_engine.sentiment.loader import SentimentLoader
+from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
+from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler
 from .registry import build_feature
 
 from quant_engine.utils.logger import get_logger, log_debug
@@ -31,16 +33,20 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        historical_ohlcv: HistoricalDataHandler,
+        # historical_ohlcv: HistoricalDataHandler,
         realtime_ohlcv: RealTimeDataHandler,
+        # historical_orderbook: Optional[HistoricalOrderbookHandler] = None,
+        realtime_orderbook: Optional[RealTimeOrderbookHandler] = None,
         option_chain_handler: Optional[OptionChainDataHandler] = None,
         sentiment_loader: Optional[SentimentLoader] = None,
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
 
-        self.historical_ohlcv = historical_ohlcv
+        # self.historical_ohlcv = historical_ohlcv
         self.realtime_ohlcv = realtime_ohlcv
+        # self.historical_orderbook = historical_orderbook
+        self.realtime_orderbook = realtime_orderbook
         self.option_chain_handler = option_chain_handler
         self.sentiment_loader = sentiment_loader
 
@@ -79,8 +85,10 @@ class FeatureExtractor:
 
         context = {
             "ohlcv": ohlcv_window,
-            "historical": self.historical_ohlcv,
+            # "historical": self.historical_ohlcv,
             "realtime": self.realtime_ohlcv,
+            # "orderbook_historical": self.historical_orderbook,
+            "orderbook_realtime": self.realtime_orderbook,
             "option_chain": self.option_chain_handler,
             "sentiment": self.sentiment_loader,
         }
@@ -116,8 +124,10 @@ class FeatureExtractor:
 
         context = {
             "ohlcv": new_bar,   # IMPORTANT — only the newest bar
-            "historical": self.historical_ohlcv,
+            # "historical": self.historical_ohlcv,
             "realtime": self.realtime_ohlcv,
+            # "orderbook_historical": self.historical_orderbook,
+            "orderbook_realtime": self.realtime_orderbook,
             "option_chain": self.option_chain_handler,
             "sentiment": self.sentiment_loader,
         }

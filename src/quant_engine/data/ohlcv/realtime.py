@@ -13,6 +13,20 @@ class RealTimeDataHandler:
         self._logger = get_logger(__name__)
         log_debug(self._logger, "RealTimeDataHandler initialized", window=window)
 
+    @classmethod
+    def from_historical(cls, historical_handler, window: int = 1000):
+        """
+        Build a RealTimeDataHandler seeded with historical data.
+        Use case: backtesting where historical bars are preloaded into realtime cache.
+        """
+        obj = cls(window=window)
+        # preload historical window into realtime cache
+        df = historical_handler.window_df(window)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                obj.cache.update(row.to_frame().T)
+        return obj
+
     def on_new_tick(self, bar: pd.DataFrame):
         """
         Called when a new bar arrives from exchange or websocket.

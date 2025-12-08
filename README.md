@@ -224,20 +224,21 @@ It enables the Quant Engine to gracefully support:
 flowchart TD
 
 subgraph L0[Layer 0 — Data Sources]
-    MKT[Market Data<br>Binance Klines<br>Orderbook L1 L2<br>Trades]
+    MKT[Market Data<br>Binance Klines<br>]
+    OBD[Orderbook L1 L2<br>Trades]
     OPT[Derivatives Data<br>Option Chains<br>raw bid/ask/strike/expiry]
     ALT[Alternative Data<br>News<br>Twitter X<br>Reddit] 
 end
 
 subgraph L1[Layer 1 — Data Ingestion]
-    HDH[HistoricalDataHandler<br>clean check rescale]
     RTDH[RealTimeDataHandler<br>stream bars<br>update windows]
+    ROBD[RealTimeOrderbookHandler<br>stream bars<br>update windows]
     OCDH[OptionChainDataHandler<br>group by expiry<br>cache chains]
     SLOAD[SentimentLoader<br>fetch news tweets<br>cache dedupe]
 end
 
-MKT --> HDH
 MKT --> RTDH
+OBD --> ROBD
 OPT --> OCDH
 ALT --> SLOAD
 
@@ -248,7 +249,7 @@ subgraph L2[Layer 2 — Feature Layer]
     MERGE[Merge Features<br>TA + microstructure + vol + IV + sentiment]
 end
 
-HDH --> FE
+ROBD --> FE
 RTDH --> FE
 RTDH --> IVFEAT
 OCDH --> IVFEAT

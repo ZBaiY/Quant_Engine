@@ -49,6 +49,44 @@ class OptionChainDataHandler:
     # ----------------------------------------------------------------------
     # 2. Full snapshot update (live API update)
     # ----------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+    # Classmethod: build a real-time handler from historical loader
+    # ----------------------------------------------------------------------
+    @classmethod
+    def from_historical(cls, historical_handler):
+        """
+        Construct a live-style OptionChainDataHandler using the initial
+        historical snapshot provided by HistoricalOptionChainHandler.
+
+        Expected:
+            historical_handler.load() has already been called, and
+            historical_handler.data is in the format:
+                {"chains": [OptionChain, OptionChain, ...], "timestamp": ...}
+            OR directly:
+                [OptionChain, OptionChain, ...]
+
+        Returns:
+            OptionChainDataHandler ready for real-time incremental updates.
+        """
+        obj = cls()
+        snapshot = historical_handler.data
+
+        if snapshot is None:
+            raise ValueError("HistoricalOptionChainHandler has no loaded data. "
+                             "Call historical_handler.load() first.")
+
+        # v4 format: {"chains": [...]}
+        if isinstance(snapshot, dict) and "chains" in snapshot:
+            chains = snapshot["chains"]
+        else:
+            # assume list of OptionChain
+            chains = snapshot
+
+        for chain in chains:
+            obj.chains[chain.expiry] = chain
+
+        return obj
+
     def on_new_snapshot(self, df: pd.DataFrame):
         """
         Receive a complete option-chain snapshot from exchange.

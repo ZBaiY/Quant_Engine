@@ -18,14 +18,14 @@ class SpreadFeature(FeatureChannel):
         return self._symbol
 
     def initialize(self, context):
-        data = context["ohlcv"]
-        spread = data["ask"] - data["bid"]
-        self._value = float(spread.iloc[-1])
+        ob = context["orderbook_realtime"]
+        snap = ob.latest_snapshot()
+        self._value = float(snap.best_ask - snap.best_bid)
 
     def update(self, context):
-        data = context["ohlcv"]
-        spread = data["ask"].iloc[0] - data["bid"].iloc[0]
-        self._value = float(spread)
+        ob = context["orderbook_realtime"]
+        snap = ob.latest_snapshot()
+        self._value = float(snap.best_ask - snap.best_bid)
 
     def output(self):
         assert self._value is not None, "SpreadFeature.output() called before initialize()"
@@ -45,18 +45,18 @@ class OrderImbalanceFeature(FeatureChannel):
         return self._symbol
 
     def initialize(self, context):
-        data = context["ohlcv"]
-        num = data["bid_size"] - data["ask_size"]
-        den = data["bid_size"] + data["ask_size"] + 1e-9
-        imbalance = num / den
-        self._value = float(imbalance.iloc[-1])
+        ob = context["orderbook_realtime"]
+        snap = ob.latest_snapshot()
+        num = snap.best_bid_size - snap.best_ask_size
+        den = snap.best_bid_size + snap.best_ask_size + 1e-9
+        self._value = float(num / den)
 
     def update(self, context):
-        data = context["ohlcv"]
-        bid_size = data["bid_size"].iloc[0]
-        ask_size = data["ask_size"].iloc[0]
-        imbalance = (bid_size - ask_size) / (bid_size + ask_size + 1e-9)
-        self._value = float(imbalance)
+        ob = context["orderbook_realtime"]
+        snap = ob.latest_snapshot()
+        num = snap.best_bid_size - snap.best_ask_size
+        den = snap.best_bid_size + snap.best_ask_size + 1e-9
+        self._value = float(num / den)
 
     def output(self):
         assert self._value is not None, "OrderImbalanceFeature.output() called before initialize()"
