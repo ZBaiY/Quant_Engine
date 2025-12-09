@@ -278,7 +278,6 @@ subgraph L5[Layer 5 — Risk Layer RiskProto]
     RISK[Risk Engine<br>SL TP<br>ATR volatility<br>Sentiment scaled size<br>Portfolio exposure]
 end
 
-FE --> RISK
 SENTPIPE --> RISK
 IVFEAT --> RISK
 
