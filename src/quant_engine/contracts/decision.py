@@ -1,19 +1,35 @@
-from typing import Protocol
+from typing import Protocol, Dict, Any
+
 
 class DecisionProto(Protocol):
-    def decide(self, context: dict) -> float:
-        """
-        ✔ 输入：context（包含各种市场数据和状态）,包括model的score, sentiment等
-        context = {
-            "model_score": model_score,
-            "sentiment_score": sent_score,
-            "regime_label": regime_label,
-            "features": features,
-            "raw_data": df,              # 用于 FusionDecision with FeatureExtractor
-        }
-        intent = decision.decide(context)
-        
-        ✔ 输出：调整后的信号（例如 -1 ~ 1）
-        用途：你的 decision module（threshold/regime）会实现它。
-        """
+    """
+    V4 unified decision protocol:
+        • decide(context) -> float
+        • context contains model_score, features, sentiment, regime, portfolio_state
+        • decision module should NOT know symbol
+        • decision should not filter features; model/risk handle that
+    """
+
+    def decide(self, context: Dict[str, Any]) -> float:
         ...
+
+
+# ----------------------------------------------------------------------
+# V4 Decision Base Class
+# ----------------------------------------------------------------------
+class DecisionBase:
+    """
+    Unified base class for decision modules.
+
+    Key properties in v4:
+        • symbol-agnostic (symbol filtering belongs to ModelBase / RiskBase)
+        • no required_features (decision only transforms scores)
+        • must implement decide(context)
+    """
+
+    def __init__(self, **kwargs):
+        # decisions do not need symbol or secondary
+        pass
+
+    def decide(self, context: Dict[str, Any]) -> float:
+        raise NotImplementedError("Decision module must implement decide()")

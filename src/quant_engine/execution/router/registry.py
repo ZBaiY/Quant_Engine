@@ -6,5 +6,5 @@ def register_router(name: str):
         return cls
     return decorator
 
-def build_router(name: str, **kwargs):
-    return ROUTER_REGISTRY[name](**kwargs)
+def build_router(name: str, symbol: str, **kwargs):
+    return ROUTER_REGISTRY[name](symbol=symbol, **kwargs)

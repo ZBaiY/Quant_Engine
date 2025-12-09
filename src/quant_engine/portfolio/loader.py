@@ -8,9 +8,9 @@ Stat Arb -- e.g. OU equation ... We adapt long A, short B correspondingly at her
 class PortfolioLoader:
     _logger = get_logger(__name__)
     @staticmethod
-    def from_config(cfg: dict):
+    def from_config(cfg: dict, symbol: str):
         log_debug(PortfolioLoader._logger, "PortfolioLoader received config", config=cfg)
         name = cfg["type"]
         params = cfg.get("params", {})
         log_debug(PortfolioLoader._logger, "PortfolioLoader built portfolio", name=name, params=params)
-        return build_portfolio(name, **params)
+        return build_portfolio(name, symbol=symbol, **params)

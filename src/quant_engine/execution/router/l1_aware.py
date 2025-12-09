@@ -6,7 +6,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_router("L1_AWARE")
 class L1AwareRouter(Router):
-    def __init__(self):
+    def __init__(self, symbol: str):
+        self.symbol = symbol
         self._logger = get_logger(__name__)
 
     def route(self, orders, market_data):

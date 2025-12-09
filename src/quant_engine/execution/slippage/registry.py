@@ -6,5 +6,5 @@ def register_slippage(name: str):
         return cls
     return decorator
 
-def build_slippage(name: str, **kwargs):
-    return SLIPPAGE_REGISTRY[name](**kwargs)
+def build_slippage(name: str, symbol: str, **kwargs):
+    return SLIPPAGE_REGISTRY[name](symbol=symbol, **kwargs)

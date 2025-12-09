@@ -5,7 +5,8 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 @register_matching("SIMULATED")
 class SimulatedMatchingEngine(MatchingEngine):
-    def __init__(self):
+    def __init__(self, symbol: str):
+        self.symbol = symbol
         self._logger = get_logger(__name__)
 
     def match(self, orders, market_data):

@@ -10,7 +10,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_policy("TWAP")
 class TWAPPolicy(ExecutionPolicy):
-    def __init__(self, slices=5):
+    def __init__(self, symbol: str,slices=5):
+        self.symbol = symbol
         self.slices = slices
         self._logger = get_logger(__name__)
 
@@ -31,6 +32,7 @@ class TWAPPolicy(ExecutionPolicy):
             log_debug(self._logger, "TWAPPolicy generated slice order", index=i, side=side, qty=qty_each)
             orders.append(
                 Order(
+                    symbol=self.symbol,
                     side=side,
                     qty=qty_each,
                     order_type=OrderType.MARKET,

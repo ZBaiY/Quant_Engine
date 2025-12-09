@@ -12,6 +12,7 @@ from .registry import build_feature
 
 from quant_engine.utils.logger import get_logger, log_debug
 
+min_warmup = 300
 
 class FeatureExtractor:
     """
@@ -33,18 +34,18 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        realtime_ohlcv: RealTimeDataHandler,
-        realtime_orderbook: Optional[RealTimeOrderbookHandler] = None,
-        option_chain_handler: Optional[OptionChainDataHandler] = None,
-        sentiment_loader: Optional[SentimentLoader] = None,
+        ohlcv_handlers: List[RealTimeDataHandler],
+        orderbook_handlers: List[RealTimeOrderbookHandler],
+        option_chain_handlers: List[OptionChainDataHandler],
+        sentiment_handlers: List[SentimentLoader],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
 
-        self.realtime_ohlcv = realtime_ohlcv
-        self.realtime_orderbook = realtime_orderbook
-        self.option_chain_handler = option_chain_handler
-        self.sentiment_loader = sentiment_loader
+        self.ohlcv_handlers = ohlcv_handlers
+        self.orderbook_handlers = orderbook_handlers
+        self.option_chain_handlers = option_chain_handlers
+        self.sentiment_handlers = sentiment_handlers
 
         feature_config = feature_config or []
 
@@ -77,24 +78,30 @@ class FeatureExtractor:
         """
         # Determine required full-window size across all features
         max_window = max((ch.required_window() for ch in self.channels), default=1)
-        ohlcv_window = self.realtime_ohlcv.window_df(max_window)
+
+        # Industry-standard minimum warmup (stability for RSI, ATR, MACD, ZScore, etc.)
+        
+        warmup_window = max(max_window, min_warmup)
+
+        primary_handler = self.ohlcv_handlers[0]
+        ohlcv_window = primary_handler.window_df(warmup_window)
 
         context = {
-            "realtime_ohlcv": ohlcv_window,
-            "realtime": self.realtime_ohlcv,
-            "orderbook_realtime": self.realtime_orderbook,
-            "option_chain": self.option_chain_handler,
-            "sentiment": self.sentiment_loader,
+            "ohlcv_handlers": self.ohlcv_handlers,
+            "orderbook_handlers": self.orderbook_handlers,
+            "option_chain_handlers": self.option_chain_handlers,
+            "sentiment_handlers": self.sentiment_handlers,
+            "ohlcv_window": ohlcv_window,
         }
 
         # initialize all channels
         for ch in self.channels:
-            ch.initialize(context)
+            ch.initialize(context, warmup_window)
 
         # store initial output
         self._last_output = self.compute_output()
         self._initialized = True
-        self._last_ts = self.realtime_ohlcv.last_timestamp()
+        self._last_ts = primary_handler.last_timestamp()
 
         return self._last_output
 
@@ -110,18 +117,25 @@ class FeatureExtractor:
         if not self._initialized:
             return self.initialize()
 
-        ts = self.realtime_ohlcv.last_timestamp()
+        primary_handler = self.ohlcv_handlers[0]
+        ts = primary_handler.last_timestamp()
         if ts == self._last_ts:
             return self._last_output   # no new bar
 
-        new_bar = self.realtime_ohlcv.latest_bar()
+        # Collect latest bars for ALL symbols.
+        latest_bars = {}
+        for h in self.ohlcv_handlers:
+            sym = getattr(h, "symbol", None)
+            if sym is not None:
+                latest_bars[sym] = h.latest_bar()
 
         context = {
-            "ohlcv": new_bar,   # IMPORTANT — only the newest bar
-            "realtime": self.realtime_ohlcv,
-            "orderbook_realtime": self.realtime_orderbook,
-            "option_chain": self.option_chain_handler,
-            "sentiment": self.sentiment_loader,
+            # Dict[str, DataFrame] — each feature will extract the correct symbol
+            "ohlcv": latest_bars,
+            "ohlcv_handlers": self.ohlcv_handlers,
+            "orderbook_handlers": self.orderbook_handlers,
+            "option_chain_handlers": self.option_chain_handlers,
+            "sentiment_handlers": self.sentiment_handlers,
         }
 
         # incremental update
@@ -129,7 +143,7 @@ class FeatureExtractor:
             ch.update(context)
 
         self._last_output = self.compute_output()
-        self._last_ts = ts
+        self._last_ts = primary_handler.last_timestamp()
         return self._last_output
 
     # ----------------------------------------------------------------------
@@ -137,11 +151,43 @@ class FeatureExtractor:
     # ----------------------------------------------------------------------
     def compute_output(self) -> Dict[str, Any]:
         """
-        Collect feature outputs from all channels.
+        Collect feature outputs from all channels and standardize keys as:
+
+            TYPE_SYMBOL
+            TYPE_REF^SYMBOL
+
+        Example:
+            {"RSI_BTCUSDT": 56.2}
+            {"SPREAD_BTCUSDT^ETHUSDT": 0.014}
+
+        Assumes each FeatureChannel exposes:
+            - ch.symbol: primary symbol
+            - ch.params: dictionary which may include "ref"
+            - ch.output(): returns dict of {raw_key: value}
         """
         result: Dict[str, Any] = {}
+
         for ch in self.channels:
-            result.update(ch.output())
+            raw = ch.output()
+            symbol = getattr(ch, "symbol", None)
+            params = getattr(ch, "params", {}) or {}
+            ref = params.get("ref")
+
+            for k, v in raw.items():
+                # Base name: TYPE
+                base = k.upper()
+
+                # Attach primary symbol
+                if ref and symbol:
+                    base = f"{base}_{ref}^{symbol}"
+                elif symbol:
+                    base = f"{base}_{symbol}"
+
+                # Attach reference symbol if exists
+                
+
+                result[base] = v
+
         return result
 
     # ----------------------------------------------------------------------

@@ -6,7 +6,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_slippage("DEPTH")
 class DepthSlippage(SlippageModel):
-    def __init__(self, depth_key="depth"):
+    def __init__(self, symbol: str, depth_key="depth"):
+        self.symbol = symbol
         self.depth_key = depth_key
         self._logger = get_logger(__name__)
 
@@ -30,6 +31,7 @@ class DepthSlippage(SlippageModel):
             )
             # clone order with adjusted price
             new_o = Order(
+                symbol=self.symbol,
                 side=o.side,
                 qty=o.qty,
                 order_type=o.order_type,

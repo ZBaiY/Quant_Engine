@@ -43,6 +43,8 @@ class PortfolioManagerProto(Protocol):
     Receives fills from MatchingEngine.
     Updates positions, PnL, metrics.
     """
+    symbol: str
+
     def apply_fill(self, fill: Dict):
         """Update portfolio based on fill dict."""
         ...
@@ -50,3 +52,21 @@ class PortfolioManagerProto(Protocol):
     def state(self) -> PortfolioState:
         """Return current state."""
         ...
+
+
+class PortfolioBase:
+    """
+    V4 unified portfolio base:
+        • symbol-aware (primary trading symbol)
+        • child classes store positions, cash, pnl
+        • must implement apply_fill() and state()
+    """
+
+    def __init__(self, symbol: str, **kwargs):
+        self.symbol = symbol
+
+    def apply_fill(self, fill: Dict):
+        raise NotImplementedError("Portfolio must implement apply_fill()")
+
+    def state(self) -> PortfolioState:
+        raise NotImplementedError("Portfolio must implement state()")

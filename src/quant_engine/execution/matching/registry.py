@@ -6,5 +6,5 @@ def register_matching(name: str):
         return cls
     return decorator
 
-def build_matching(name: str, **kwargs):
-    return MATCHING_REGISTRY[name](**kwargs)
+def build_matching(name: str, symbol: str, **kwargs):
+    return MATCHING_REGISTRY[name](symbol=symbol, **kwargs)

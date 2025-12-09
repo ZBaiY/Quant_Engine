@@ -21,8 +21,9 @@ class OptionChainDataHandler:
         • remove expired contracts
     """
 
-    def __init__(self):
+    def __init__(self, symbol: str):
         self._logger = get_logger(self.__class__.__name__)
+        self.symbol = symbol
         self.chains: Dict[str, OptionChain] = {}   # expiry -> OptionChain
 
     # ----------------------------------------------------------------------
@@ -42,7 +43,9 @@ class OptionChainDataHandler:
             # assume old list format
             chains = data
 
-        for chain in chains:
+        for i, chain in enumerate(chains):
+            if i == 0:
+                self.symbol = chain.symbol
             log_info(self._logger, "Loaded initial option chain", expiry=chain.expiry)
             self.chains[chain.expiry] = chain
 
@@ -68,12 +71,19 @@ class OptionChainDataHandler:
         Returns:
             OptionChainDataHandler ready for real-time incremental updates.
         """
-        obj = cls()
         snapshot = historical_handler.data
 
         if snapshot is None:
             raise ValueError("HistoricalOptionChainHandler has no loaded data. "
                              "Call historical_handler.load() first.")
+
+        # Determine symbol from first chain
+        first_chain = None
+        if isinstance(snapshot, dict) and "chains" in snapshot:
+            first_chain = snapshot["chains"][0]
+        else:
+            first_chain = snapshot[0]
+        obj = cls(symbol=first_chain.symbol)
 
         # v4 format: {"chains": [...]}
         if isinstance(snapshot, dict) and "chains" in snapshot:
@@ -118,7 +128,7 @@ class OptionChainDataHandler:
         chain = self.chains.get(expiry)
         if chain is None:
             # Auto-create new expiry if needed
-            chain = OptionChain(symbol="UNKNOWN", expiry=expiry)
+            chain = OptionChain(symbol=self.symbol, expiry=expiry)
             self.chains[expiry] = chain
 
         contract = chain.get_contract(strike, option_type)
@@ -137,8 +147,8 @@ class OptionChainDataHandler:
                 ask=fields.get("ask"),
                 last=fields.get("last"),
                 volume=fields.get("volume"),
-                open_interest=fields.get("open_interest"),
-                implied_vol=fields.get("implied_vol"),
+                open_interest=fields.get("open_interest") or fields.get("oi"),
+                implied_vol=fields.get("iv") or fields.get("implied_vol"),
                 delta=fields.get("delta"),
                 gamma=fields.get("gamma"),
                 vega=fields.get("vega"),
@@ -149,6 +159,12 @@ class OptionChainDataHandler:
     # ----------------------------------------------------------------------
     # 4. Retrieval API
     # ----------------------------------------------------------------------
+    def latest_chain(self) -> pd.DataFrame:
+        """
+        Return the combined latest chain snapshot across all expiries.
+        """
+        return self.get_latest_snapshot()
+
     def get_chain(self, expiry: str) -> Optional[OptionChain]:
         """
         Return OptionChain for a specific expiry.
@@ -319,7 +335,7 @@ class OptionChainDataHandler:
                     ask=row.get('ask'),
                     last=row.get('last'),
                     volume=row.get('volume'),
-                    open_interest=row.get('oi'),
+                    open_interest=row.get("oi") or row.get("open_interest"),
                     implied_vol=row.get('iv'),
                     delta=row.get('delta'),
                     gamma=row.get('gamma'),

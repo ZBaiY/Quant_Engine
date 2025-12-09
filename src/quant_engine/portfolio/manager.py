@@ -1,14 +1,15 @@
 # portfolio/manager.py
 
-from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState, PositionRecord
+from quant_engine.contracts.portfolio import PortfolioBase, PortfolioState, PositionRecord
 from .registry import register_portfolio
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
 @register_portfolio("STANDARD")
-class PortfolioManager(PortfolioManagerProto):
+class PortfolioManager(PortfolioBase):
     _logger = get_logger(__name__)
-    def __init__(self,initial_capital: float = 10000.0):
+    def __init__(self, symbol: str, initial_capital: float = 10000.0):
+        super().__init__(symbol=symbol)
         self.cash = initial_capital
         self.positions: dict[str, PositionRecord] = {}  # key: symbol
         self.fees = 0.0
@@ -29,17 +30,17 @@ class PortfolioManager(PortfolioManagerProto):
         }
         """
         log_debug(self._logger, "PortfolioManager received fill", fill=fill)
-        symbol = fill.get("symbol", "DEFAULT")
+        
         price = fill["fill_price"]
         qty = fill["filled_qty"]
         fee = fill["fee"]
 
         self.fees += fee
 
-        if symbol not in self.positions:
-            self.positions[symbol] = PositionRecord(symbol=symbol, qty=0.0, entry_price=price)
+        if self.symbol not in self.positions:
+            self.positions[self.symbol] = PositionRecord(symbol=self.symbol, qty=0.0, entry_price=price)
 
-        pos = self.positions[symbol]
+        pos = self.positions[self.symbol]
 
         # --- Update position ---
         prev_qty = pos.qty
@@ -58,7 +59,7 @@ class PortfolioManager(PortfolioManagerProto):
 
         # --- Cash update ---
         self.cash -= price * qty + fee
-        log_info(self._logger, "PortfolioManager applied fill", symbol=symbol, price=price, qty=qty, fee=fee, cash=self.cash)
+        log_info(self._logger, "PortfolioManager applied fill", symbol=self.symbol, price=price, qty=qty, fee=fee, cash=self.cash)
 
     # -------------------------------------------------------
     # Portfolio state snapshot

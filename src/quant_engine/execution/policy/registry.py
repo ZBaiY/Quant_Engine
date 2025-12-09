@@ -6,5 +6,5 @@ def register_policy(name: str):
         return cls
     return decorator
 
-def build_policy(name: str, **kwargs):
-    return POLICY_REGISTRY[name](**kwargs)
+def build_policy(name: str, symbol: str, **kwargs):
+    return POLICY_REGISTRY[name](symbol=symbol, **kwargs)

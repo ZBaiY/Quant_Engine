@@ -6,7 +6,8 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 @register_matching("LIVE_BINANCE")
 class LiveBinanceMatchingEngine(MatchingEngine):
-    def __init__(self, client):
+    def __init__(self, symbol: str, client):
+        self.symbol = symbol
         self.client = client
         self._logger = get_logger(__name__)
 

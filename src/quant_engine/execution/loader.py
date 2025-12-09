@@ -7,7 +7,7 @@ from quant_engine.execution.engine import ExecutionEngine
 
 class ExecutionLoader:
     @staticmethod
-    def from_config(cfg: dict):
+    def from_config(cfg: dict, symbol: str):
         """
         cfg example:
         {
@@ -19,10 +19,10 @@ class ExecutionLoader:
         """
 
         # Build four components from registry
-        policy = build_policy(cfg["policy"]["type"], **cfg["policy"].get("params", {}))
-        router = build_router(cfg["router"]["type"], **cfg["router"].get("params", {}))
-        slippage = build_slippage(cfg["slippage"]["type"], **cfg["slippage"].get("params", {}))
-        matching = build_matching(cfg["matching"]["type"], **cfg["matching"].get("params", {}))
+        policy = build_policy(cfg["policy"]["type"], symbol=symbol, **cfg["policy"].get("params", {}))
+        router = build_router(cfg["router"]["type"], symbol=symbol, **cfg["router"].get("params", {}))
+        slippage = build_slippage(cfg["slippage"]["type"], symbol=symbol, **cfg["slippage"].get("params", {}))
+        matching = build_matching(cfg["matching"]["type"], symbol=symbol, **cfg["matching"].get("params", {}))
         # Combine into ExecutionEngine
         return ExecutionEngine(
             policy=policy,

@@ -6,7 +6,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_slippage("LINEAR")
 class LinearSlippage(SlippageModel):
-    def __init__(self, impact=0.0005):
+    def __init__(self, symbol: str, impact=0.0005):
+        self.symbol = symbol
         self.impact = impact
         self._logger = get_logger(__name__)
 
@@ -32,6 +33,7 @@ class LinearSlippage(SlippageModel):
             )
 
             new_o = Order(
+                symbol=self.symbol,
                 side=o.side,
                 qty=o.qty,
                 order_type=o.order_type,

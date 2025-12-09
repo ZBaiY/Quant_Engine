@@ -6,7 +6,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_policy("IMMEDIATE")
 class ImmediatePolicy(ExecutionPolicy):
-    def __init__(self):
+    def __init__(self, symbol: str):
+        self.symbol = symbol
         self._logger = get_logger(__name__)
 
     def generate(self, target_position, portfolio_state, market_data):
@@ -24,6 +25,7 @@ class ImmediatePolicy(ExecutionPolicy):
 
         return [
             Order(
+                symbol=self.symbol,
                 side=OrderSide.BUY if diff > 0 else OrderSide.SELL,
                 qty=qty,
                 order_type=OrderType.MARKET,

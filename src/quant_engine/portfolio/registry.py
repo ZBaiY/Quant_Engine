@@ -1,6 +1,6 @@
-from quant_engine.contracts.portfolio import PortfolioManagerProto
+from quant_engine.contracts.portfolio import PortfolioBase
 
-PORTFOLIO_REGISTRY: dict[str, type[PortfolioManagerProto]] = {}
+PORTFOLIO_REGISTRY: dict[str, type[PortfolioBase]] = {}
 
 def register_portfolio(name: str):
     def decorator(cls):
@@ -9,7 +9,7 @@ def register_portfolio(name: str):
     return decorator
 
 
-def build_portfolio(name: str, **kwargs) -> PortfolioManagerProto:
+def build_portfolio(name: str, symbol: str, **kwargs) -> PortfolioBase:
     if name not in PORTFOLIO_REGISTRY:
         raise ValueError(f"Portfolio '{name}' not found.")
-    return PORTFOLIO_REGISTRY[name](**kwargs)
+    return PORTFOLIO_REGISTRY[name](symbol=symbol, **kwargs)

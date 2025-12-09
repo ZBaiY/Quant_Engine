@@ -1,6 +1,6 @@
 # quant_engine/features/iv_surface.py
 
-from quant_engine.contracts.feature import FeatureChannel
+from quant_engine.contracts.feature import FeatureChannelBase
 from quant_engine.data.derivatives.option_chain import OptionChain
 from quant_engine.iv.surface import IVSurfaceModel  # future SABR/SSVI model
 from quant_engine.iv.ssvi import SSVIModel          # optional
@@ -27,7 +27,7 @@ It only delegates to iv/surface.py which does the heavy math.
 """
 
 @register_feature("IV_SURFACE")
-class IVSurfaceFeature(FeatureChannel):
+class IVSurfaceFeature(FeatureChannelBase):
     _logger = get_logger(__name__)
     def __init__(
         self,
@@ -72,11 +72,17 @@ class IVSurfaceFeature(FeatureChannel):
             case _:
                 raise ValueError(f"Unsupported IV model: {self.model}")
 
-    def initialize(self, context):
+    def initialize(self, context, warmup_window=None):
         """
         Full-window initialization: fit surface once using the latest option chain.
         """
-        chain_handler = context.get("option_chain")
+        # Multi-symbol option chain routing
+        chain_handlers = context.get("option_chain_handlers", [])
+        chain_handler = None
+        for h in chain_handlers:
+            if getattr(h, "symbol", None) == self.symbol:
+                chain_handler = h
+                break
         if chain_handler is None:
             self._atm_iv = None
             self._skew = None
@@ -95,11 +101,17 @@ class IVSurfaceFeature(FeatureChannel):
         self._skew = float(surface.smile_slope())
         self._curvature = float(surface.smile_curvature())
 
-    def update(self, context):
+    def update(self, context, warmup_window=None):
         """
         Incremental update: refit surface only using the most recent option chain snapshot.
+        warmup_window is ignored here.
         """
-        chain_handler = context.get("option_chain")
+        chain_handlers = context.get("option_chain_handlers", [])
+        chain_handler = None
+        for h in chain_handlers:
+            if getattr(h, "symbol", None) == self.symbol:
+                chain_handler = h
+                break
         if chain_handler is None:
             return
 
@@ -115,7 +127,7 @@ class IVSurfaceFeature(FeatureChannel):
     def output(self):
         """Return the latest surface-based features."""
         return {
-            "ivsurf_atm": self._atm_iv,
-            "ivsurf_skew": self._skew,
-            "ivsurf_curvature": self._curvature,
+            "IVSURF_ATM": self._atm_iv,
+            "IVSURF_SKEW": self._skew,
+            "IVSURF_CURVATURE": self._curvature,
         }

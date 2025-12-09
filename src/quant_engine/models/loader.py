@@ -4,7 +4,7 @@ from .registry import build_model
 
 class ModelLoader:
     @staticmethod
-    def from_config(model_cfg: dict):
+    def from_config(model_cfg: dict, symbol: str):
         """
         model_cfg example:
         {
@@ -14,4 +14,4 @@ class ModelLoader:
         """
         name = model_cfg["type"]
         params = model_cfg.get("params", {})
-        return build_model(name, **params)
+        return build_model(name, symbol=symbol, **params)

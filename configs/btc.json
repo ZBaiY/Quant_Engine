@@ -1,65 +1,44 @@
 {
-  "features": {
-    "RSI": {
-      "period": 14
-    },
-    "MACD": {
-      "fast": 12,
-      "slow": 26
-    },
-    "SPREAD": {},
-    "IMBALANCE": {},
-    "REALIZED_VOL": {
-      "window": 30
-    },
-    "IV_SKEW": {}
-  },
+  "symbol": "BTCUSDT",
+
+  "features_user": [
+    { "type": "SPREAD", "symbol": "BTCUSDT", "params": {"ref": "ETHUSDT"} },
+    { "type": "RSI",    "symbol": "BTCUSDT" },
+    { "type": "RSI",    "symbol": "ETHUSDT" }
+  ],
+
   "model": {
-    "type": "OU_MODEL",
+    "type": "PAIR_ZSCORE",
     "params": {
-      "theta": 1.0,
-      "mu": 50000,
-      "sigma": 0.05
+      "secondary": "ETHUSDT",
+      "lookback": 120
     }
   },
+
   "decision": {
-    "class": "ThresholdDecision",
+    "type": "ZSCORE_THRESHOLD",
     "params": {
-      "threshold": 0.0
+      "enter": 2.0,
+      "exit": 0.5
     }
   },
+
   "risk": {
     "rules": {
-      "ATR_SIZE": {
-        "base_size": 1.0
-      },
-      "SENTIMENT_SCALE": {
-        "strength": 0.5
-      },
-      "STOP_LOSS": {
-        "max_loss": -0.05
-      },
-      "EXPOSURE_LIMIT": {
-        "limit": 3.0
-      }
+      "ATR_SIZER": {},
+      "EXPOSURE_LIMIT": { "params": { "limit": 2.0 } }
     }
   },
+
   "execution": {
-    "policy": {
-      "class": "ImmediatePolicy",
-      "params": {}
-    },
-    "router": {
-      "class": "SimpleRouter",
-      "params": {}
-    },
-    "slippage": {
-      "class": "LinearSlippage",
-      "params": {}
-    },
-    "matching": {
-      "class": "SimulatedMatchingEngine",
-      "params": {}
-    }
+    "policy":   { "type": "IMMEDIATE" },
+    "router":   { "type": "SIMPLE" },
+    "slippage": { "type": "LINEAR" },
+    "matching": { "type": "SIMULATED" }
+  },
+
+  "portfolio": {
+    "type": "SIMPLE_PORTFOLIO",
+    "params": { "initial_capital": 10000 }
   }
 }

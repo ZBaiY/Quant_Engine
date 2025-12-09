@@ -11,21 +11,29 @@ class StrategyEngine:
 
     def __init__(
         self,
-        data_handler,         # RealTimeDataHandler or HistoricalDataHandler
-        feature_extractor,    # FeatureExtractor
-        models,               # dict[str, ModelProto]
-        decision,             # DecisionProto
-        risk_manager,         # RiskProto
-        execution_engine,     # ExecutionEngine
-        portfolio_manager     # PortfolioManagerProto
+        symbol,
+        ohlcv_handlers,          # list[RealTimeDataHandler or HistoricalDataHandler]
+        orderbook_handlers,      # list[RealTimeOrderbookHandler or HistoricalOrderbookHandler]
+        option_chain_handlers,   # list[OptionChainDataHandler]
+        sentiment_handlers,      # list[SentimentLoader]
+        feature_extractor,
+        models,
+        decision,
+        risk_manager,
+        execution_engine,
+        portfolio_manager
     ):
-        self.data_handler = data_handler
+        self.ohlcv_handlers = ohlcv_handlers
+        self.orderbook_handlers = orderbook_handlers
+        self.option_chain_handlers = option_chain_handlers
+        self.sentiment_handlers = sentiment_handlers
         self.feature_extractor = feature_extractor
         self.models = models
         self.decision = decision
         self.risk_manager = risk_manager
         self.execution_engine = execution_engine
         self.portfolio = portfolio_manager
+        self.symbol = symbol
         log_debug(self._logger, "StrategyEngine initialized",
                   model_count=len(models))
 
@@ -45,36 +53,35 @@ class StrategyEngine:
         - portfolio snapshot
         """
 
-        # -------------------------------------------------
-        # 1. Get latest market window
-        # -------------------------------------------------
-        df = self.data_handler.window_df()
-        log_debug(self._logger, "StrategyEngine window_df received", rows=(0 if df is None else len(df)))
+        raw_data = {
+            "ohlcv": [h.window_df() for h in self.ohlcv_handlers],
+            "orderbook": [h.window_df() for h in self.orderbook_handlers],
+            "option_chain": [h.window_df() for h in self.option_chain_handlers],
+            "sentiment": [h.window_df() for h in self.sentiment_handlers],
+        }
+        log_debug(self._logger, "StrategyEngine collected multi-handler raw_data",
+                  keys=list(raw_data.keys()))
 
-        # If no enough data, skip
-        if df is None or len(df) == 0:
-            log_debug(self._logger, "StrategyEngine insufficient data")
-            return {"msg": "not enough data"}
+        features = self.feature_extractor.compute(raw_data)
+        log_debug(self._logger, "StrategyEngine computed features",
+                  feature_keys=list(features.keys()))
 
-        # -------------------------------------------------
-        # 2. Compute features
-        # -------------------------------------------------
-        features = self.feature_extractor.compute(df)
-        log_debug(self._logger, "StrategyEngine computed features", feature_keys=list(features.keys()))
+        # Use ALL features — model decides what to use (v4 contract)
+        filtered_features = features
 
         # -------------------------------------------------
         # 3. Model predictions
         # -------------------------------------------------
         model_outputs = {}
         for name, model in self.models.items():
-            model_outputs[name] = model.predict(features)
+            model_outputs[name] = model.predict(filtered_features)
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
 
         # -------------------------------------------------
         # 4. Construct decision context
         # -------------------------------------------------
         context = {
-            "features": features,
+            "features": filtered_features,
             **model_outputs
         }
 
@@ -87,14 +94,20 @@ class StrategyEngine:
         # -------------------------------------------------
         # risk.adjust(size, features)
         size_intent = decision_score
-        target_position = self.risk_manager.adjust(size_intent, features)
+        target_position = self.risk_manager.adjust(size_intent, filtered_features)
         log_debug(self._logger, "StrategyEngine risk target", target_position=target_position)
 
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
         portfolio_state = self.portfolio.state()
-        market_data = self.data_handler.latest_tick()
+
+        # Use primary symbol OHLCV handler's latest tick
+        market_data = None
+        for h in self.ohlcv_handlers:
+            if getattr(h, "symbol", None) == self.symbol:
+                market_data = h.latest_tick()
+                break
 
         fills = self.execution_engine.execute(
             target_position=target_position,

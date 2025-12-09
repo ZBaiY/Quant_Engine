@@ -11,7 +11,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 @register_policy("MAKER_FIRST")
 class MakerFirstPolicy(ExecutionPolicy):
-    def __init__(self, spread_threshold=0.02):
+    def __init__(self, symbol: str, spread_threshold=0.02):
+        self.symbol = symbol
         self.spread_threshold = spread_threshold
         self._logger = get_logger(__name__)
 
@@ -44,6 +45,7 @@ class MakerFirstPolicy(ExecutionPolicy):
 
         return [
             Order(
+                symbol=self.symbol,
                 side=side,
                 qty=qty,
                 order_type=order_type,
