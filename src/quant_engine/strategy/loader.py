@@ -85,6 +85,7 @@ class StrategyLoader:
             data_handlers["ohlcv"],
             data_handlers.get("orderbook", {}),
             data_handlers.get("option_chain", {}),
+            data_handlers.get("iv_surface", {}),
             data_handlers.get("sentiment", {}),
         )
 
@@ -108,6 +109,7 @@ class StrategyLoader:
             ohlcv_handlers=data_handlers["ohlcv"],
             orderbook_handlers=data_handlers.get("orderbook", {}),
             option_chain_handlers=data_handlers.get("option_chain", {}),
+            iv_surface_handlers=data_handlers.get("iv_surface", {}),
             sentiment_handlers=data_handlers.get("sentiment", {}),
             feature_extractor=feature_extractor,
             models=models,

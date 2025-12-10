@@ -127,19 +127,37 @@ class FeatureExtractor:
     # ----------------------------------------------------------------------
     # Incremental update
     # ----------------------------------------------------------------------
-    def update(self) -> Dict[str, Any]:
+    def update(self, ts: float | None = None) -> Dict[str, Any]:
+        
         """
         Incremental update for new bar arrival.
         Uses only the latest bar and latest option/sentiment data.
+        Parameters
+        ----------
+        ts : float | None
+            Logical engine timestamp. If None, the extractor will infer
+            the timestamp from the primary OHLCV handler.
         """
         # If not initialized → perform warmup
         if not self._initialized:
             return self.initialize()
 
-        primary_handler = next(iter(self.ohlcv_handlers.values()))
-        ts = primary_handler.last_timestamp()
-        if ts == self._last_ts:
-            return self._last_output   # no new bar
+        # Resolve primary OHLCV handler (used for fallback ts and alignment)
+        primary_handler: Optional[RealTimeDataHandler] = None
+        if self.ohlcv_handlers:
+            primary_handler = next(iter(self.ohlcv_handlers.values()))
+                # If ts is not provided, infer it from the primary handler
+        if ts is None:
+            if primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
+                ts = primary_handler.last_timestamp()
+            else:
+                # Fallback to last known ts or 0.0
+                ts = self._last_ts if self._last_ts is not None else 0.0
+
+        # If timestamp has not advanced, return cached output
+        if self._last_ts is not None and ts <= self._last_ts:
+            return self._last_output
+
 
         context = {
             "ts": ts,
@@ -157,7 +175,7 @@ class FeatureExtractor:
             ch.update(context)
 
         self._last_output = self.compute_output()
-        self._last_ts = primary_handler.last_timestamp()
+        self._last_ts = ts
         return self._last_output
 
     # ----------------------------------------------------------------------

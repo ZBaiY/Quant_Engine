@@ -15,6 +15,7 @@ class StrategyEngine:
         ohlcv_handlers,          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
         orderbook_handlers,      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
         option_chain_handlers,   # dict[str, OptionChainDataHandler]
+        iv_surface_handlers,     # dict[str, IVSurfaceDataHandler]
         sentiment_handlers,      # dict[str, SentimentLoader]
         feature_extractor,
         models,
@@ -26,6 +27,7 @@ class StrategyEngine:
         self.ohlcv_handlers = ohlcv_handlers
         self.orderbook_handlers = orderbook_handlers
         self.option_chain_handlers = option_chain_handlers
+        self.iv_surface_handlers = iv_surface_handlers
         self.sentiment_handlers = sentiment_handlers
         self.feature_extractor = feature_extractor
         self.models = models
@@ -53,16 +55,43 @@ class StrategyEngine:
         - portfolio snapshot
         """
 
-        raw_data = {
-            "ohlcv": {k: h.window_df() for k, h in self.ohlcv_handlers.items()},
-            "orderbook": {k: h.window_df() for k, h in self.orderbook_handlers.items()},
-            "option_chain": {k: h.window_df() for k, h in self.option_chain_handlers.items()},
-            "sentiment": {k: h.window_df() for k, h in self.sentiment_handlers.items()},
-        }
-        log_debug(self._logger, "StrategyEngine collected multi-handler raw_data",
-                  keys=list(raw_data.keys()))
+        # -------------------------------------------------
+        # 1. Determine current logical timestamp (ts)
+        # -------------------------------------------------
+        ts = None
+        primary_handler = None
 
-        features = self.feature_extractor.compute(raw_data)
+        # Prefer the OHLCV handler for the strategy's primary symbol
+        for h in self.ohlcv_handlers.values():
+            if getattr(h, "symbol", None) == self.symbol:
+                primary_handler = h
+                break
+
+        # Fallback: any OHLCV handler
+        if primary_handler is None and self.ohlcv_handlers:
+            primary_handler = next(iter(self.ohlcv_handlers.values()))
+
+        if primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
+            ts = primary_handler.last_timestamp()
+
+        if ts is None:
+            # Fallback to latest_tick timestamp if available
+            if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
+                tick = primary_handler.latest_tick()
+                if isinstance(tick, dict):
+                    ts = float(tick.get("timestamp", 0.0))
+                else:
+                    ts = float(getattr(tick, "timestamp", 0.0))
+
+        if ts is None:
+            ts = 0.0
+
+        log_debug(self._logger, "StrategyEngine resolved timestamp", ts=ts)
+
+        # -------------------------------------------------
+        # 2. Feature computation (v4 snapshot-based)
+        # -------------------------------------------------
+        features = self.feature_extractor.update(ts)
         log_debug(self._logger, "StrategyEngine computed features",
                   feature_keys=list(features.keys()))
 
@@ -104,10 +133,8 @@ class StrategyEngine:
 
         # Use primary symbol OHLCV handler's latest tick
         market_data = None
-        for k, h in self.ohlcv_handlers.items():
-            if getattr(h, "symbol", None) == self.symbol:
-                market_data = h.latest_tick()
-                break
+        if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
+            market_data = primary_handler.latest_tick()
 
         fills = self.execution_engine.execute(
             target_position=target_position,

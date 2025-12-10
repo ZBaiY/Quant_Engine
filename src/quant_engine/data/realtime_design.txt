@@ -119,7 +119,7 @@ data source.
 Handler contract:
 
     • get_snapshot(ts) → OHLCVSnapshot | None
-    • window(ts, n) → pd.DataFrame or list[OHLCVSnapshot]
+    • window(ts, n) → pd.DataFrame or list[OHLCVSnapshot] (first one is implemented)
 
 Notes:
 
