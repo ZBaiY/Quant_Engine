@@ -28,18 +28,32 @@ class IVSurfaceHandler(Protocol):
     # ---------------------------
     def latest_surface(self) -> Optional[IVSurface]:
         """
-        Return the most recently built IV surface.
-        Returns None if no surface is available yet.
+        [DEPRECATED — v4]
+
+        Legacy pull-based API returning the last computed IV surface.
+        Do NOT use in feature/model layers.
+
+        Correct v4 access pattern:
+            handler.get_snapshot(ts)
+
+        Returns:
+            The most recently built IV surface, or None.
         """
         ...
 
     def build_surface(self) -> Optional[IVSurface]:
         """
-        Recompute (or lazily update) the IV surface using the latest option chain.
-        Should internally:
-            - fetch latest option chain
-            - calibrate via SSVI/SABR/etc
-            - cache the constructed IVSurface object
+        [DEPRECATED — v4]
+
+        Old push-based surface construction entrypoint.
+        Engines should no longer call build_surface() directly.
+
+        Correct v4 pattern:
+            • on_tick(ts) updates internal state
+            • get_snapshot(ts) returns aligned IVSurfaceSnapshot
+
+        Returns:
+            IVSurface or None.
         """
         ...
 

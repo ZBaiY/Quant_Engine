@@ -37,7 +37,7 @@ class OHLCVHandler(Protocol):
     # ---------------------------
     def latest_bar(self) -> pd.DataFrame | dict:
         """
-        Return the latest OHLCV bar.
+        DEPRECATED (v4): Use get_snapshot(ts) instead. Only kept for backward compatibility.
 
         Expected format:
             - Single‑row DataFrame, OR
@@ -58,7 +58,8 @@ class OHLCVHandler(Protocol):
 
     def window_df(self, n: int) -> pd.DataFrame:
         """
-        Return the last *n* bars as a DataFrame with shape (n, 5 or more).
+        DEPRECATED (v4): Use window(ts, n) instead. Provided for legacy feature code only.
+
         Columns typically include: ["open","high","low","close","volume"].
         """
         ...

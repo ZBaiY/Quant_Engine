@@ -3,7 +3,7 @@ from quant_engine.data.orderbook.cache import OrderbookCache
 from quant_engine.data.orderbook.snapshot import OrderbookSnapshot
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler
-
+import warnings
 
 class RealTimeOrderbookHandler:
     """
@@ -49,8 +49,15 @@ class RealTimeOrderbookHandler:
 
     # ------------------------------------------------------------------
     def latest_snapshot(self):
-        """Return most recent snapshot object."""
-        log_debug(self._logger, "RealTimeOrderbookHandler latest_snapshot() called")
+        """
+        [DEPRECATED — v4]
+        Use get_snapshot(ts) instead.
+        """
+        warnings.warn(
+            "RealTimeOrderbookHandler.latest_snapshot() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.cache.latest()
 
     # ------------------------------------------------------------------
@@ -86,8 +93,15 @@ class RealTimeOrderbookHandler:
         If ts is None (legacy mode):
             Behave like old handler.window(n).
         """
-        # Legacy mode (no timestamp alignment)
+        
         if ts is None:
+            warnings.warn(
+                "RealTimeOrderbookHandler.window(ts=None) legacy mode is deprecated in v4. "
+                "Use window(ts, n) with timestamp alignment.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Legacy mode (no timestamp alignment)
             window = self.cache.get_window()
             if n is not None:
                 return window[-n:]

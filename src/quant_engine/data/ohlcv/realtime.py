@@ -2,6 +2,8 @@ import pandas as pd
 from .cache import DataCache
 import time
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+import warnings
+from .snapshot import OHLCVSnapshot
 
 class RealTimeDataHandler:
     """
@@ -39,10 +41,15 @@ class RealTimeDataHandler:
 
     def window_df(self, window: int | None = None):
         """
-        Return the latest rolling OHLCV window.
-        If `window` is provided, return only the last N rows.
-        Otherwise return full window.
+        [DEPRECATED — v4]
+        Use window(ts, n) with timestamp alignment instead.
         """
+        import warnings
+        warnings.warn(
+            "RealTimeDataHandler.window_df() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         df = self.cache.get_window()
         if window is not None:
             return df.tail(window)
@@ -50,8 +57,15 @@ class RealTimeDataHandler:
 
     def latest_bar(self):
         """
-        Return the most recent bar as a DataFrame of shape (1, *)
+        [DEPRECATED — v4]
+        Use get_snapshot(ts) instead.
         """
+
+        warnings.warn(
+            "RealTimeDataHandler.latest_bar() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         log_debug(self._logger, "RealTimeDataHandler retrieving latest bar")
         df = self.cache.get_window()
         if df is None or df.empty:
@@ -59,6 +73,16 @@ class RealTimeDataHandler:
         return df.tail(1)
 
     def latest_tick(self):
+        """
+        [DEPRECATED — v4]
+        Alias of latest_bar(). Use get_snapshot(ts) instead.
+        """
+
+        warnings.warn(
+            "RealTimeDataHandler.latest_tick() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         # Backward compatibility
         return self.latest_bar()
 
@@ -73,8 +97,15 @@ class RealTimeDataHandler:
 
     def prev_close(self):
         """
-        Return closing price of the previous bar.
+        [DEPRECATED — v4]
+        Use window(ts, n) and compute previous close manually.
         """
+
+        warnings.warn(
+            "RealTimeDataHandler.prev_close() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         df = self.cache.get_window()
         if df is None or len(df) < 2:
             return None
@@ -92,7 +123,7 @@ class RealTimeDataHandler:
         if bar is None:
             return None
 
-        from .snapshot import OHLCVSnapshot
+
         # bar is a 1‑row DataFrame
         row = bar.iloc[-1].to_dict()
         return OHLCVSnapshot.from_bar(ts, row)

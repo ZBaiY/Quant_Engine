@@ -46,6 +46,9 @@ class OptionChainHandler(Protocol):
     # ---------------------------
     def latest_chain(self) -> OptionChain | None:
         """
+        DEPRECATED (v4):
+            Use get_snapshot(ts) instead for all timestamp-aligned option data.
+
         Return the most recent option chain snapshot for the symbol.
         Must return:
             - OptionChain object, or
@@ -55,6 +58,9 @@ class OptionChainHandler(Protocol):
 
     def get_chain(self, expiry: str | None) -> OptionChain | None:
         """
+        DEPRECATED (v4):
+            Use get_snapshot(ts) and filter by expiry inside the OptionChain.
+
         Return the option chain for the requested expiry.
         expiry may be:
             - "next" / "front" → nearest expiry

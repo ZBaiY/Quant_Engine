@@ -9,7 +9,7 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info
 from quant_engine.data.derivatives.iv.surface import IVSurface
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
-
+import warnings
 
 class OptionChainDataHandler:
     """
@@ -164,14 +164,27 @@ class OptionChainDataHandler:
     # ----------------------------------------------------------------------
     def latest_chain(self) -> pd.DataFrame:
         """
-        Return the combined latest chain snapshot across all expiries.
+        [DEPRECATED — v4]
+        Use get_snapshot(ts) or window(ts, n) instead.
         """
+
+        warnings.warn(
+            "OptionChainDataHandler.latest_chain() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.get_latest_snapshot()
 
     def get_chain(self, expiry: str) -> Optional[OptionChain]:
         """
-        Return OptionChain for a specific expiry.
+        [DEPRECATED — v4]
+        Use get_snapshot(ts) and filter by expiry instead.
         """
+        warnings.warn(
+            "OptionChainDataHandler.get_chain() is deprecated in v4.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self.chains.get(expiry)
 
     def get_all_expiries(self) -> List[str]:

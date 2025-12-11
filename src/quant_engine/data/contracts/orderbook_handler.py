@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Protocol, Any, Dict, Optional
 import pandas as pd
+from quant_engine.data.orderbook.snapshot import OrderbookSnapshot
 
 
 class OrderbookHandler(Protocol):
@@ -34,33 +35,23 @@ class OrderbookHandler(Protocol):
     # ---------------------------
     # Required core API
     # ---------------------------
-    def latest_snapshot(self) -> Dict[str, Any]:
+    def latest_snapshot(self) -> "OrderbookSnapshot | None":
         """
-        Return the most recent orderbook snapshot.
-
-        Expected structure (example):
-            {
-                "bid_price": float,
-                "ask_price": float,
-                "bid_size": float,
-                "ask_size": float,
-                "bids": [(price, size), ...],   # optional
-                "asks": [(price, size), ...]
-            }
+        DEPRECATED (v4): Use get_snapshot(ts) for timestamp-aligned access.
         """
         ...
 
     # ---------------------------
     # v4 timestamp-aligned API
     # ---------------------------
-    def get_snapshot(self, ts: float) -> Dict[str, Any] | None:
+    def get_snapshot(self, ts: float) -> "OrderbookSnapshot | None":
         """
         Return the latest orderbook snapshot whose timestamp ≤ ts.
         MUST enforce anti-lookahead.
         """
         ...
 
-    def window(self, ts: float, n: int) -> list[Dict[str, Any]]:
+    def window(self, ts: float, n: int) -> list["OrderbookSnapshot"]:
         """
         Return the most recent n snapshots with timestamp ≤ ts.
         Used for rolling microstructure features (spread, imbalance, depth).

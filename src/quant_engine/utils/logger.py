@@ -2,7 +2,7 @@ import logging
 import json
 from logging import Logger
 from functools import lru_cache
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import pathlib
 
@@ -38,7 +38,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "ts": datetime.utcfromtimestamp(record.created).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "module": record.name,
             "msg": record.getMessage(),
