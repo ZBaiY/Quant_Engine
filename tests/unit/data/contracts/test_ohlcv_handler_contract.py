@@ -9,14 +9,14 @@ from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
-def make_bar(ts, o=1, h=2, l=0.5, c=1.5, v=100):
+def make_bar(ts, open=1, high=2, low=0.5, close=1.5, volume=100):
     return pd.DataFrame([{
         "timestamp": float(ts),
-        "open": float(o),
-        "high": float(h),
-        "low": float(l),
-        "close": float(c),
-        "volume": float(v),
+        "open": float(open),
+        "high": float(high),
+        "low": float(low),
+        "close": float(close),
+        "volume": float(volume),
     }])
 
 
