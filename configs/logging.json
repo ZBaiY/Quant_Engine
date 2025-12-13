@@ -1,8 +1,12 @@
 {
     "level": "INFO",
     "debug": {
-        "enabled": false,
-        "modules": []
+        "enabled": true,
+        "modules": [
+            "data",
+            "features",
+            "strategy"
+        ]
     },
     "handlers": {
         "console": {
@@ -18,15 +22,16 @@
     "format": {
         "json": true,
         "timestamp_utc": true
-    }
-    ,
+    },
     "example_debug": {
         "description": "Enable deep debug logs for execution and data layers",
         "level": "DEBUG",
         "debug": {
             "enabled": true,
-            "modules": ["execution", "data"]
+            "modules": [
+                "execution",
+                "data"
+            ]
         }
     }
 }
-

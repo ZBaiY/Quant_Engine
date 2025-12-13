@@ -13,6 +13,7 @@ The goal is a single, consistent contract across:
 All higher layers (features, models, strategies, risk) must depend ONLY on the
 snapshot / window contracts described here, never on handler internals.
 
+timestamp: int  # unix seconds (UTC)
 
 1. Global Principles
 --------------------
