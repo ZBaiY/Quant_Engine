@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Dict, List, Sequence, Union, Mapping, Hashable
 
 import pandas as pd
 
@@ -14,6 +14,86 @@ class OptionChainSnapshot:
     skew: float
     smile: Dict[str, float]
     latency: float
+
+    @staticmethod
+    def _extract_iv(opt: Mapping[Hashable, Any]) -> float:
+        """
+        Extract implied volatility in a tolerant way.
+
+        Supports both legacy "iv" field and the newer "implied_vol" field
+        that comes from OptionContract.to_dict().
+        """
+        iv = opt.get("iv")
+        if iv is None:
+            iv = opt.get("implied_vol")
+        if iv is None:
+            return 0.0
+        try:
+            return float(iv)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _extract_type(opt: Mapping[Hashable, Any]) -> str | None:
+        """
+        Normalize option type to "call" / "put".
+
+        Supports both legacy "type" field ("call"/"put") and the
+        newer "option_type" field ("C"/"P" or "CALL"/"PUT").
+        """
+        t = opt.get("type")
+        if isinstance(t, str):
+            t_lower = t.lower()
+            if t_lower in ("call", "put"):
+                return t_lower
+
+        opt_type = opt.get("option_type")
+        if isinstance(opt_type, str):
+            ot = opt_type.upper()
+            if ot in ("C", "CALL"):
+                return "call"
+            if ot in ("P", "PUT"):
+                return "put"
+
+        return None
+
+    @classmethod
+    def _compute_metrics(cls, records: Sequence[Mapping[Hashable, Any]]) -> tuple[float, float, Dict[str, float]]:
+        """
+        Compute ATM IV, skew and smile from a list of option records.
+
+        This function is tolerant to mixed schemas and will work with both
+        legacy dict-style chains and OptionContract.to_dict() output.
+        """
+        # ATM estimate (closest-to-money by |moneyness| if available)
+        try:
+            sorted_chain = sorted(records, key=lambda x: abs(x.get("moneyness", 0.0)))
+            atm = sorted_chain[0]
+            atm_iv = cls._extract_iv(atm)
+        except Exception:
+            atm_iv = 0.0
+
+        # Skew: call_iv - put_iv
+        try:
+            calls = [o for o in records if cls._extract_type(o) == "call"]
+            puts = [o for o in records if cls._extract_type(o) == "put"]
+
+            call_iv = cls._extract_iv(calls[0]) if calls else 0.0
+            put_iv = cls._extract_iv(puts[0]) if puts else 0.0
+            skew = float(call_iv) - float(put_iv)
+        except Exception:
+            skew = 0.0
+
+        # Smile: strike → iv
+        smile: Dict[str, float] = {}
+        for opt in records:
+            strike = opt.get("strike")
+            if strike is None:
+                continue
+            iv = cls._extract_iv(opt)
+            smile[str(strike)] = float(iv)
+
+        return float(atm_iv), float(skew), smile
 
     @staticmethod
     def _to_dataframe(chain: ChainInput) -> pd.DataFrame:
@@ -40,33 +120,8 @@ class OptionChainSnapshot:
             return cls(timestamp, df, 0.0, 0.0, {}, 0.0)
 
         records = df.to_dict(orient="records")
-
-        # Basic ATM IV extraction: closest-to-money option by |moneyness|
-        try:
-            sorted_chain = sorted(records, key=lambda x: abs(x.get("moneyness", 0.0)))
-            atm = sorted_chain[0]
-            atm_iv = float(atm.get("iv", 0.0))
-        except Exception:
-            atm_iv = 0.0
-
-        # Simple skew: iv(call) - iv(put) approx if present
-        try:
-            calls = [o for o in records if o.get("type") == "call"]
-            puts = [o for o in records if o.get("type") == "put"]
-            call_iv = calls[0].get("iv") if calls else 0.0
-            put_iv = puts[0].get("iv") if puts else 0.0
-            assert call_iv is not None and put_iv is not None
-            skew = float(call_iv) - float(put_iv)
-        except Exception:
-            skew = 0.0
-
-        # Smile dictionary: strike → iv
-        smile: Dict[str, float] = {}
-        for opt in records:
-            strike = opt.get("strike")
-            iv = opt.get("iv")
-            if strike is not None and iv is not None:
-                smile[str(strike)] = float(iv)
+        
+        atm_iv, skew, smile = cls._compute_metrics(records)
 
         return cls(
             timestamp=timestamp,
@@ -109,33 +164,7 @@ class OptionChainSnapshot:
             )
 
         records = df.to_dict(orient="records")
-
-        # ATM estimate (closest-to-money by |moneyness| if available)
-        try:
-            sorted_chain = sorted(records, key=lambda x: abs(x.get("moneyness", 0.0)))
-            atm = sorted_chain[0]
-            atm_iv = float(atm.get("iv", 0.0))
-        except Exception:
-            atm_iv = 0.0
-
-        # Skew
-        try:
-            calls = [o for o in records if o.get("type") == "call"]
-            puts = [o for o in records if o.get("type") == "put"]
-            call_iv = calls[0].get("iv") if calls else 0.0
-            put_iv = puts[0].get("iv") if puts else 0.0
-            assert call_iv is not None and put_iv is not None
-            skew = float(call_iv) - float(put_iv)
-        except Exception:
-            skew = 0.0
-
-        # Smile
-        smile: Dict[str, float] = {}
-        for opt in records:
-            strike = opt.get("strike")
-            iv = opt.get("iv")
-            if strike is not None and iv is not None:
-                smile[str(strike)] = float(iv)
+        atm_iv, skew, smile = cls._compute_metrics(records)
 
         return cls(
             timestamp=chain_timestamp,

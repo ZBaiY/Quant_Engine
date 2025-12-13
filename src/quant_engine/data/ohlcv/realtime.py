@@ -41,15 +41,10 @@ class RealTimeDataHandler:
 
     def window_df(self, window: int | None = None):
         """
-        [DEPRECATED — v4]
         Use window(ts, n) with timestamp alignment instead.
+        only access for initialization when timestamp is unknown
         """
-        import warnings
-        warnings.warn(
-            "RealTimeDataHandler.window_df() is deprecated in v4.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+
         df = self.cache.get_window()
         if window is not None:
             return df.tail(window)

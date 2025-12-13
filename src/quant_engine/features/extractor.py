@@ -90,18 +90,42 @@ class FeatureExtractor:
         Perform full-window initialization (historical warmup).
         Called on backtest startup or live cold-start.
         """
-        # Determine required full-window size across all features
+        # 1) Determine required warmup window across all channels
         max_window = max((ch.required_window() for ch in self.channels), default=1)
-
-        # Industry-standard minimum warmup (stability for RSI, ATR, MACD, ZScore, etc.)
-        
         warmup_window = max(max_window, min_warmup)
 
-        primary_handler = next(iter(self.ohlcv_handlers.values()))
-        ohlcv_window = primary_handler.window_df(warmup_window)
+        # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
+        primary_handler: Optional[RealTimeDataHandler] = None
+        ohlcv_window = None
+        ts_candidates: list[float] = []
+
+        if self.ohlcv_handlers:
+            primary_handler = next(iter(self.ohlcv_handlers.values()))
+            # warmup OHLCV window (legacy interface, still valid in v4)
+            ohlcv_window = primary_handler.window_df(warmup_window)
+            if hasattr(primary_handler, "last_timestamp"):
+                v = primary_handler.last_timestamp()
+                if v is not None:
+                    ts_candidates.append(float(v))
+
+        # 3) Harvest timestamps from all other handler families
+        def collect_ts(handlers: Dict[str, Any]) -> None:
+            for h in handlers.values():
+                if hasattr(h, "last_timestamp"):
+                    v = h.last_timestamp()
+                    if v is not None:
+                        ts_candidates.append(float(v))
+
+        collect_ts(self.orderbook_handlers)
+        collect_ts(self.option_chain_handlers)
+        collect_ts(self.iv_surface_handlers)
+        collect_ts(self.sentiment_handlers)
+
+        # 4) Initial logical time = max available timestamp, else 0.0
+        ts0 = max(ts_candidates) if ts_candidates else 0.0
 
         context = {
-            "ts": primary_handler.last_timestamp(),
+            "ts": ts0,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -113,14 +137,14 @@ class FeatureExtractor:
             "ohlcv_window": ohlcv_window,
         }
 
-        # initialize all channels
+        # 5) Initialize all channels with the same context + warmup_window
         for ch in self.channels:
             ch.initialize(context, warmup_window)
 
-        # store initial output
+        # 6) Store initial output and internal state
         self._last_output = self.compute_output()
         self._initialized = True
-        self._last_ts = primary_handler.last_timestamp()
+        self._last_ts = ts0
 
         return self._last_output
 
@@ -128,38 +152,66 @@ class FeatureExtractor:
     # Incremental update
     # ----------------------------------------------------------------------
     def update(self, ts: float | None = None) -> Dict[str, Any]:
-        
         """
         Incremental update for new bar arrival.
-        Uses only the latest bar and latest option/sentiment data.
+
         Parameters
         ----------
         ts : float | None
             Logical engine timestamp. If None, the extractor will infer
-            the timestamp from the primary OHLCV handler.
+            the timestamp from available handlers (prefer OHLCV when present,
+            otherwise fall back to the max last_timestamp across all families).
         """
         # If not initialized → perform warmup
         if not self._initialized:
             return self.initialize()
 
-        # Resolve primary OHLCV handler (used for fallback ts and alignment)
-        primary_handler: Optional[RealTimeDataHandler] = None
-        if self.ohlcv_handlers:
-            primary_handler = next(iter(self.ohlcv_handlers.values()))
-                # If ts is not provided, infer it from the primary handler
+        # ----------------------------------------------------------
+        # 1) Infer ts if not provided
+        # ----------------------------------------------------------
         if ts is None:
-            if primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
-                ts = primary_handler.last_timestamp()
+            candidates: list[float] = []
+
+            # Prefer OHLCV as primary clock if present
+            if self.ohlcv_handlers:
+                primary = next(iter(self.ohlcv_handlers.values()))
+                if hasattr(primary, "last_timestamp"):
+                    v = primary.last_timestamp()
+                    if v is not None:
+                        candidates.append(float(v))
+
+            # Helper to harvest last_timestamp() from other handler families
+            def collect_ts(handlers: Dict[str, Any]) -> None:
+                for h in handlers.values():
+                    if hasattr(h, "last_timestamp"):
+                        v = h.last_timestamp()
+                        if v is not None:
+                            candidates.append(float(v))
+
+            # Other clocks
+            collect_ts(self.orderbook_handlers)
+            collect_ts(self.option_chain_handlers)
+            collect_ts(self.iv_surface_handlers)
+            collect_ts(self.sentiment_handlers)
+
+            if candidates:
+                # Use the most advanced available timestamp
+                ts = max(candidates)
             else:
-                # Fallback to last known ts or 0.0
+                # Pure fallback: reuse previous logical time, or 0.0 if none
                 ts = self._last_ts if self._last_ts is not None else 0.0
 
-        # If timestamp has not advanced, return cached output
         assert ts is not None
+
+        # ----------------------------------------------------------
+        # 2) Anti-lookahead: if time hasn’t advanced, return cached
+        # ----------------------------------------------------------
         if self._last_ts is not None and ts <= self._last_ts:
             return self._last_output
 
-
+        # ----------------------------------------------------------
+        # 3) Build context & update channels
+        # ----------------------------------------------------------
         context = {
             "ts": ts,
             "data": {
@@ -168,10 +220,9 @@ class FeatureExtractor:
                 "options": self.option_chain_handlers,
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
-            }
+            },
         }
 
-        # incremental update
         for ch in self.channels:
             ch.update(context)
 

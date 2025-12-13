@@ -1,10 +1,9 @@
-
 import pytest
-from dataclasses import dataclass
 from typing import Optional
 
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
+from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 
 
@@ -26,9 +25,26 @@ class DummyOptionChainHandler(OptionChainDataHandler):
 
     # ---- injection for test only ----
     def inject(self, ts: float, chain_data):
+        """
+        Test-only injection helper.
+
+        Accepts either:
+          - a list of raw dicts (legacy option chain format), or
+          - a list of OptionContract objects (preferred contract).
+
+        It always normalizes to a list of plain dicts before calling
+        OptionChainSnapshot.from_chain so the downstream contract stays stable.
+        """
+        normalized = []
+        for leg in chain_data:
+            if isinstance(leg, OptionContract):
+                normalized.append(leg.to_dict())
+            else:
+                normalized.append(leg)
+
         snap = OptionChainSnapshot.from_chain(
             timestamp=ts,
-            chain=chain_data,
+            chain=normalized,
         )
         self._snaps[ts] = snap
         self._last_ts = ts
@@ -81,12 +97,69 @@ def test_ready_flag():
     assert h.ready() is True
 
 
+def test_option_contract_mid_and_to_dict():
+    opt = OptionContract(
+        symbol="BTCUSDT",
+        expiry="2025-06-27",
+        strike=30000.0,
+        option_type=OptionType.CALL,
+        bid=10.0,
+        ask=12.0,
+        last=None,
+        volume=100.0,
+        open_interest=50.0,
+        implied_vol=0.2,
+        delta=0.5,
+        gamma=0.01,
+        vega=0.2,
+        theta=-0.01,
+    )
+
+    assert opt.mid() == pytest.approx(11.0)
+
+    d = opt.to_dict()
+    assert d["symbol"] == "BTCUSDT"
+    assert d["option_type"] == "C"
+    assert d["strike"] == pytest.approx(30000.0)
+    assert d["mid"] == pytest.approx(11.0)
+
+
 def test_latest_snapshot():
     h = DummyOptionChainHandler()
     h.inject(100.0, [{"strike": 30000, "iv": 0.2, "type": "call"}])
 
     snap = h.get_snapshot(999.0)
     assert isinstance(snap, OptionChainSnapshot)
+    assert snap.atm_iv == pytest.approx(0.2)
+
+
+def test_option_handler_accepts_option_contract_objects():
+    h = DummyOptionChainHandler()
+
+    chain = [
+        OptionContract(
+            symbol="BTCUSDT",
+            expiry="2025-06-27",
+            strike=30000.0,
+            option_type=OptionType.CALL,
+            bid=None,
+            ask=None,
+            last=None,
+            volume=None,
+            open_interest=None,
+            implied_vol=0.2,
+            delta=None,
+            gamma=None,
+            vega=None,
+            theta=None,
+        )
+    ]
+
+    h.inject(100.0, chain)
+    snap = h.get_snapshot(150.0)
+
+    assert snap is not None
+    # atm_iv should reflect the implied_vol from the OptionContract
     assert snap.atm_iv == pytest.approx(0.2)
 
 
