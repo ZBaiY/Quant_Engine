@@ -4,8 +4,6 @@ from quant_engine.utils.logger import (
 )
 from quant_engine.utils.timer import timed_block
 from typing import Any
-from quant_engine.utils.logger import get_logger, log_debug, log_info
-
 class ExecutionEngine:
     """Execution layer: policy → router → slippage → matching.
     Does NOT touch portfolio — higher layer must handle fills."""

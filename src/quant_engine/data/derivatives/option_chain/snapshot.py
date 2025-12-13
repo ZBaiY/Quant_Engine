@@ -178,6 +178,7 @@ class OptionChainSnapshot:
         """Convert snapshot to plain dict for logging or JSON serialization."""
         return {
             "timestamp": self.timestamp,
+            "chain": self.chain,
             "atm_iv": self.atm_iv,
             "skew": self.skew,
             "smile": self.smile,

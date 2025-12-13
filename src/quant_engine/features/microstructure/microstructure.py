@@ -20,13 +20,13 @@ class SpreadFeature(FeatureChannelBase):
         if snap is None:
             self._value = None
             return
-        self._value = float(snap.best_ask - snap.best_bid)
+        self._value = float(snap['best_ask'] - snap['best_bid'])
 
     def update(self, context):
         snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             return
-        self._value = float(snap.best_ask - snap.best_bid)
+        self._value = float(snap['best_ask'] - snap['best_bid'])
 
     def output(self):
         assert self._value is not None, "SpreadFeature.output() called before initialize()"
@@ -48,8 +48,8 @@ class OrderImbalanceFeature(FeatureChannelBase):
             self._value = None
             return
 
-        num = snap.best_bid_size - snap.best_ask_size
-        den = snap.best_bid_size + snap.best_ask_size + 1e-9
+        num = snap['best_bid_size'] - snap['best_ask_size']
+        den = snap['best_bid_size'] + snap['best_ask_size'] + 1e-9
         self._value = float(num / den)
 
     def update(self, context):
@@ -57,8 +57,8 @@ class OrderImbalanceFeature(FeatureChannelBase):
         if snap is None:
             return
 
-        num = snap.best_bid_size - snap.best_ask_size
-        den = snap.best_bid_size + snap.best_ask_size + 1e-9
+        num = snap['best_bid_size'] - snap['best_ask_size']
+        den = snap['best_bid_size'] + snap['best_ask_size'] + 1e-9
         self._value = float(num / den)
 
     def output(self):

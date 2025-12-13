@@ -21,11 +21,11 @@ class IV30Feature(FeatureChannelBase):
     """Implied Volatility 30d."""
     def initialize(self, context, warmup_window=None):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot.chain is None:
+        if snapshot is None or snapshot['chain'] is None:
             self._iv30 = None
             return
 
-        df = snapshot.chain
+        df = snapshot['chain']
         if "iv_30d" not in df:
             self._iv30 = None
         else:
@@ -33,10 +33,10 @@ class IV30Feature(FeatureChannelBase):
 
     def update(self, context):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot.chain is None:
+        if snapshot is None or snapshot['chain'] is None:
             return
 
-        df = snapshot.chain
+        df = snapshot['chain']
         if "iv_30d" not in df:
             return
 
@@ -60,11 +60,11 @@ class IVSkewFeature(FeatureChannelBase):
     """25d call - 25d put skew."""
     def initialize(self, context, warmup_window=None):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot.chain is None:
+        if snapshot is None or snapshot['chain'] is None:
             self._skew = None
             return
 
-        df = snapshot.chain
+        df = snapshot['chain']
         if "iv_25d_call" not in df or "iv_25d_put" not in df:
             self._skew = None
         else:
@@ -74,10 +74,10 @@ class IVSkewFeature(FeatureChannelBase):
 
     def update(self, context):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot.chain is None:
+        if snapshot is None or snapshot['chain'] is None:
             return
 
-        df = snapshot.chain
+        df = snapshot['chain']
         if "iv_25d_call" not in df or "iv_25d_put" not in df:
             return
 
