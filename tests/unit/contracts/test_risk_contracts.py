@@ -11,7 +11,7 @@ from quant_engine.risk.registry import register_risk
 # ---------------------------------------------------------------------
 # Dummy Risk Rules (contract / pipeline testing)
 # ---------------------------------------------------------------------
-@register_risk("CLIP")
+@register_risk("CLIP_TEST")
 class ClipRisk(RiskBase):
     """Clip target position to [-max_abs, +max_abs]."""
 
@@ -31,7 +31,7 @@ class ClipRisk(RiskBase):
         return max(-self.max_abs, min(self.max_abs, float(size)))
 
 
-@register_risk("ATR_SCALE")
+@register_risk("ATR_SCALE_TEST")
 class AtrScaleRisk(RiskBase):
     """
     Scale size by ATR: size / (1 + k*ATR).
@@ -63,7 +63,7 @@ class AtrScaleRisk(RiskBase):
         return float(size) / denom
 
 
-@register_risk("SENTIMENT_GATE")
+@register_risk("SENTIMENT_GATE_TEST")
 class SentimentGateRisk(RiskBase):
     """
     Gate size to 0 when sentiment is below threshold.
@@ -170,9 +170,9 @@ def test_risk_engine_preserves_feature_dict_purity():
 def test_risk_loader_builds_engine_with_multiple_rules():
     cfg = {
         "rules": {
-            "CLIP": {"max_abs": 0.2},
-            "ATR_SCALE": {"k": 1.5},
-            "SENTIMENT_GATE": {"threshold": -0.2},
+            "CLIP_TEST": {"max_abs": 0.2},
+            "ATR_SCALE_TEST": {"k": 1.5},
+            "SENTIMENT_GATE_TEST": {"threshold": -0.2},
         }
     }
 

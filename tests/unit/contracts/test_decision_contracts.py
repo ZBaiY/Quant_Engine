@@ -9,7 +9,7 @@ from quant_engine.decision.loader import DecisionLoader
 # ---------------------------------------------------------------------
 # Dummy Decisions
 # ---------------------------------------------------------------------
-@register_decision("THRESHOLD")
+@register_decision("THRESHOLD_TEST")
 class ThresholdDecision(DecisionBase):
     """
     Decision based on a single model score:
@@ -33,7 +33,7 @@ class ThresholdDecision(DecisionBase):
         return 0.0
 
 
-@register_decision("FUSE_MEAN")
+@register_decision("FUSE_MEAN_TEST")
 class MeanFusionDecision(DecisionBase):
     """
     Fuse multiple model outputs by mean.
@@ -52,7 +52,7 @@ class MeanFusionDecision(DecisionBase):
         return float(sum(model_scores) / len(model_scores))
 
 
-@register_decision("REGIME_SWITCH")
+@register_decision("REGIME_SWITCH_TEST")
 class RegimeSwitchDecision(DecisionBase):
     """
     Feature-aware decision:
@@ -86,7 +86,7 @@ class RegimeSwitchDecision(DecisionBase):
 # ---------------------------------------------------------------------
 def test_decision_loader_threshold():
     cfg = {
-        "type": "THRESHOLD",
+        "type": "THRESHOLD_TEST",
         "params": {"threshold": 0.5},
     }
 

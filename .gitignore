@@ -148,3 +148,20 @@ temp/
 *.env
 *.pem
 *.key
+
+# core assets
+/artifacts/reports/
+/artifacts/runs/
+
+/configs/*.json
+/configs/*.yml
+/configs/*.yaml
+/configs/*.toml
+!/configs/example_config.*
+
+/dev_timeline.txt
+/src/explanation.txt
+/src/quant_engine/utils/design.txt
+/src/quant_engine/data/reatime_design.txt
+/src/quant_engine/data/structure_design.txt
+
