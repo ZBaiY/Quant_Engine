@@ -18,7 +18,6 @@ from quant_engine.strategy.symbol_discovery import discover_symbols
 from quant_engine.strategy.feature_resolver import resolve_feature_config
 from quant_engine.data.builder import build_multi_symbol_handlers
 from .engine import StrategyEngine
-from collections.abc import Mapping
 
 
 class StrategyLoader:
