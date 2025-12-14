@@ -35,7 +35,18 @@ class RiskBase(RiskProto):
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
-        self.required_features = [r + f"_{symbol}" for r in self.required_features]
+
+        # ------------------------------------------------------------------
+        # IMPORTANT:
+        #   - required_features is DECLARED at class level
+        #   - copy before expanding to avoid cross-rule contamination
+        # ------------------------------------------------------------------
+        base_required = list(type(self).required_features)
+
+        # expand primary-symbol features
+        self.required_features = [
+            f"{r}_{self.symbol}" for r in base_required
+        ]
 
     # ------------------------------------------------------------------
     # Feature filtering — same logic as ModelBase.filter_symbol

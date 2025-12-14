@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from quant_engine.contracts.model import ModelProto, ModelBase
+from quant_engine.contracts.model import ModelBase
 from .registry import register_model
 
 @register_model("PAIR_ZSCORE")

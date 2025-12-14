@@ -11,7 +11,7 @@ _logger = get_logger(__name__)
 # Core features always injected for the primary symbol
 # ----------------------------------------------------------------------
 CORE_FEATURES = [
-    {"type": "ATR"}
+    # {"type": "ATR"}
 ]
 
 
@@ -19,7 +19,7 @@ def _inject_core_features(primary_symbol: str) -> List[Dict[str, Any]]:
     """
     Core features required for every strategy:
         - ATR
-        - VOLATILITY
+        - VOLATILITY <--- REMOVED
     These always belong to the primary symbol.
     """
     return [

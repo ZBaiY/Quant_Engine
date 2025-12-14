@@ -1,5 +1,5 @@
 {
-    "active_profile": "debug_data",
+    "active_profile": "debug_strat",
     "profiles": {
         "default": {
             "level": "INFO",
@@ -15,6 +15,15 @@
             "format": {
                 "json": true,
                 "timestamp_utc": true
+            }
+        },
+        "debug_manual": {
+            "level": "DEBUG",
+            "debug": {
+                "enabled": true,
+                "modules": [
+                    "models"
+                ]
             }
         },
         "debug_data": {

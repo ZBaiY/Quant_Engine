@@ -40,11 +40,31 @@ class ModelBase(ModelProto):
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
-        # optional stat-arb / pair-trading symbol
         self.secondary = kwargs.get("secondary", None)
-        required_features = [r + f"_{symbol}" for r in self.required_features]
+
+        # ------------------------------------------------------------------
+        # IMPORTANT:
+        #   - required_features / features_secondary are DECLARED at class level
+        #   - we must copy them to the instance before expanding
+        #   - otherwise models contaminate each other via shared mutable lists
+        # ------------------------------------------------------------------
+
+        base_required = list(type(self).required_features)
+        base_secondary = list(type(self).features_secondary)
+        # expand primary-symbol features
+        self.required_features = [
+            f"{r}_{self.symbol}" for r in base_required
+        ]
+
+        # expand secondary / pair features
         if self.secondary:
-            features_secondary = [r + f"_{self.secondary}^{self.symbol}" for r in self.features_secondary]
+            self.features_secondary = [
+                f"{r}_{self.secondary}^{self.symbol}" for r in base_secondary
+            ]
+        else:
+            self.features_secondary = []
+        
+        
         
 
     # ------------------------------------------------------------------

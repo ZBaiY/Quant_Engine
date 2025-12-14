@@ -9,7 +9,7 @@ from quant_engine.models.registry import register_model
 # ---------------------------------------------------------------------
 # Dummy Pair Z-Score Model for Contract / Pipeline Testing
 # ---------------------------------------------------------------------
-@register_model("PAIR_ZSCORE")
+@register_model("PAIR_ZSCORE_TEST")
 class DummyPairZScoreModel(ModelBase):
     """
     Minimal stat-arb style model:
@@ -49,7 +49,7 @@ class DummyPairZScoreModel(ModelBase):
 # ---------------------------------------------------------------------
 def test_model_loader_pair_model_from_config():
     cfg = {
-        "type": "PAIR_ZSCORE",
+        "type": "PAIR_ZSCORE_TEST",
         "params": {
             "secondary": "ETHUSDT",
             "lookback": 120,

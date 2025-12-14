@@ -48,6 +48,7 @@ class StrategyLoader:
             features_user=features_user,
             model_cfg=model_cfg
         )
+        
         log_debug(StrategyLoader._logger, "Symbols discovered", symbols=list(symbols))
 
         # ----- LAYER 3: Multi-Symbol DataHandler Initialization -----
@@ -74,8 +75,10 @@ class StrategyLoader:
         model_main = models["main"]
         model_required = getattr(model_main, "required_features", [])
         model_secondary = getattr(model_main, "features_secondary", [])
-
-        risk_required = getattr(risk_manager, "required_features", [])
+        print(model_required, model_secondary)
+        risk_required = []
+        for rule in getattr(risk_manager, "rules", []):
+            risk_required.extend(getattr(rule, "required_features", []))
 
         final_features = resolve_feature_config(
             primary_symbol=symbol,
