@@ -1,17 +1,30 @@
 # models/loader.py
-import json
-from .registry import build_model
+from typing import Dict, Any
+from quant_engine.models.registry import build_model
+from quant_engine.utils.logger import get_logger, log_debug
+
 
 class ModelLoader:
+    _logger = get_logger(__name__)
+
     @staticmethod
-    def from_config(model_cfg: dict, symbol: str):
+    def from_config(model_cfg: Dict[str, Any], symbol: str):
         """
         model_cfg example:
         {
-            "type": "OU_MODEL",
-            "params": {"theta": 1, "mu": 50000, "sigma": 0.05}
+            "type": "PAIR_ZSCORE",
+            "params": {"secondary": "ETHUSDT", "lookback": 120}
         }
         """
         name = model_cfg["type"]
         params = model_cfg.get("params", {})
+
+        log_debug(
+            ModelLoader._logger,
+            "ModelLoader building model",
+            name=name,
+            symbol=symbol,
+            params=params,
+        )
+
         return build_model(name, symbol=symbol, **params)

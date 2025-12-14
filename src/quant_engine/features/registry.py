@@ -6,12 +6,6 @@ from quant_engine.contracts.feature import FeatureChannel
 # Global registry
 FEATURE_REGISTRY: dict[str, type] = {}
 
-# ----------------------------------------------------------------------
-# IMPORTANT:
-# We do NOT import concrete feature classes here.
-# Every feature module must self-register using @register_feature.
-# This keeps registry lightweight and avoids circular imports.
-# ----------------------------------------------------------------------
 
 def register_feature(name: str):
     """
@@ -32,3 +26,10 @@ def build_feature(name: str, symbol=None, **params) -> FeatureChannel:
     cls = FEATURE_REGISTRY[name]
 
     return cls(symbol=symbol, **params)
+
+
+from quant_engine.features.ta.ta import *                 # noqa: F401,F403
+from quant_engine.features.volatility.volatility import * # noqa: F401,F403
+from quant_engine.features.microstructure.microstructure import *  # noqa: F401,F403
+from quant_engine.features.options.iv import *            # noqa: F401,F403
+from quant_engine.features.options.iv_surface import *    # noqa: F401,F403

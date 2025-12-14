@@ -8,3 +8,6 @@ def register_router(name: str):
 
 def build_router(name: str, symbol: str, **kwargs):
     return ROUTER_REGISTRY[name](symbol=symbol, **kwargs)
+
+from .l1_aware import *
+from .simple import *

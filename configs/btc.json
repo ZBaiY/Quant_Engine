@@ -38,7 +38,7 @@
   },
 
   "portfolio": {
-    "type": "SIMPLE_PORTFOLIO",
+    "type": "STANDARD",
     "params": { "initial_capital": 10000 }
   }
 }

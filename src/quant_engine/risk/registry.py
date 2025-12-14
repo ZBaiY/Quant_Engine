@@ -1,8 +1,7 @@
 # risk/registry.py
-from quant_engine.contracts.risk import RiskProto
+from quant_engine.contracts.risk import RiskBase
 
-
-RISK_REGISTRY: dict[str, type[RiskProto]] = {}
+RISK_REGISTRY: dict[str, type[RiskBase]] = {}
 
 def register_risk(name: str):
     def decorator(cls):
@@ -11,7 +10,13 @@ def register_risk(name: str):
     return decorator
 
 
-def build_risk(name: str, **kwargs) -> RiskProto:
+def build_risk(name: str, **kwargs) -> RiskBase:
     if name not in RISK_REGISTRY:
         raise ValueError(f"Risk rule '{name}' not found.")
     return RISK_REGISTRY[name](**kwargs)
+
+from .rules_atr import *
+from .rules_exposure import *
+from .rules_sentiment import *
+from .rules_sl import *
+from .rules_tp import *

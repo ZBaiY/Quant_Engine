@@ -1,6 +1,6 @@
 # strategy/loader.py
-
-from pyparsing import Dict, cast
+from typing import cast
+from collections.abc import Mapping
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler

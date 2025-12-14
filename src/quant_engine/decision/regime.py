@@ -1,11 +1,11 @@
 # decision/regime.py
-from quant_engine.contracts.decision import DecisionProto
+from quant_engine.contracts.decision import DecisionBase
 from .registry import register_decision
 from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_decision("REGIME")
-class RegimeDecision(DecisionProto):
+class RegimeDecision(DecisionBase):
     def __init__(self, bull: float = 1.0, bear: float = -1.0):
         self.bull = bull
         self.bear = bear

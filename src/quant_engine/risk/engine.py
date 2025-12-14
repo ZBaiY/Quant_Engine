@@ -1,11 +1,11 @@
 # risk/engine.py
-from quant_engine.contracts.risk import RiskProto
+from quant_engine.contracts.risk import RiskBase
 from quant_engine.utils.logger import get_logger, log_debug
 
 class RiskEngine:
     _logger = get_logger(__name__)
 
-    def __init__(self, rules: list[RiskProto]):
+    def __init__(self, rules: list[RiskBase]):
         self.rules = rules
         log_debug(self._logger, "RiskEngine initialized", rule_count=len(rules))
 

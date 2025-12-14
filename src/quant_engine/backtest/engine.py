@@ -5,6 +5,8 @@ from typing import List, Dict, Any
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.data.ohlcv.historical import HistoricalDataHandler
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.utils.logger import get_logger
+from quant_engine.runtime.log_router import attach_artifact_handlers
 
 
 class BacktestEngine:
@@ -54,7 +56,17 @@ class BacktestEngine:
             (2) call strategy.step()
             (3) collect snapshot
         """
+        run_id = "2025-12-14_backtest_001"
 
+        logger = get_logger()   # root logger
+
+        attach_artifact_handlers(
+            logger,
+            run_id=run_id,
+            decisions=True,
+            execution=True,
+            data_repairs=True,
+        )
         for bar in self.historical.iter_bars():
 
             # ---- Feed new bar to the realtime handler ----

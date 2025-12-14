@@ -11,8 +11,7 @@ _logger = get_logger(__name__)
 # Core features always injected for the primary symbol
 # ----------------------------------------------------------------------
 CORE_FEATURES = [
-    {"type": "ATR"},
-    {"type": "VOLATILITY"},
+    {"type": "ATR"}
 ]
 
 

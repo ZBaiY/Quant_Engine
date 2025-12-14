@@ -1,11 +1,11 @@
 # decision/fusion.py
-from quant_engine.contracts.decision import DecisionProto
+from quant_engine.contracts.decision import DecisionBase
 from .registry import register_decision
 from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_decision("FUSION")
-class FusionDecision(DecisionProto):
+class FusionDecision(DecisionBase):
     """
     Combine multiple model scores:
         score_final = w1 * model1 + w2 * model2 + ...

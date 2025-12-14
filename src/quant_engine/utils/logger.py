@@ -71,7 +71,7 @@ def get_logger(name: str = "quant_engine", level: int = logging.INFO) -> Logger:
     logger = logging.getLogger(name)
     logger.setLevel(_DEFAULT_LEVEL)
 
-    if logger.handlers:
+    if logger.handlers: 
         return logger
 
     handler = logging.StreamHandler()

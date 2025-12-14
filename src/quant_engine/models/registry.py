@@ -1,7 +1,9 @@
 # models/registry.py
-from quant_engine.contracts.model import ModelProto
+from quant_engine.contracts.model import ModelBase
+# src/quant_engine/models/__init__.py
 
-MODEL_REGISTRY: dict[str, type[ModelProto]] = {}
+
+MODEL_REGISTRY: dict[str, type[ModelBase]] = {}
 
 def register_model(name: str):
     """Decorator: @register_model("OU_MODEL")"""
@@ -11,7 +13,14 @@ def register_model(name: str):
     return decorator
 
 
-def build_model(name: str, **kwargs) -> ModelProto:
+def build_model(name: str, **kwargs) -> ModelBase:
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Model '{name}' not found in registry.")
     return MODEL_REGISTRY[name](**kwargs)
+
+
+from .momentum import *
+from .statistical import *
+from .regime import *
+from .ml_model import *
+from .physics import *

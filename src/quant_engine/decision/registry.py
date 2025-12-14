@@ -14,3 +14,7 @@ def build_decision(name: str, **kwargs) -> DecisionProto:
     if name not in DECISION_REGISTRY:
         raise ValueError(f"Decision '{name}' not found in registry.")
     return DECISION_REGISTRY[name](**kwargs)
+
+from .threshold import *
+from .regime import *
+from .fusion import *

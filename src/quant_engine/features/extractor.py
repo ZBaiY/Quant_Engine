@@ -60,7 +60,7 @@ class FeatureExtractor:
         self.iv_surface_handlers = iv_surface_handlers
         self.sentiment_handlers = sentiment_handlers
 
-        feature_config = feature_config or []
+        self.feature_config = feature_config or []
 
         self.channels = [
             build_feature(
@@ -68,7 +68,7 @@ class FeatureExtractor:
                 symbol=item.get("symbol"),
                 **item.get("params", {})
             )
-            for item in feature_config
+            for item in self.feature_config
         ]
 
         log_debug(

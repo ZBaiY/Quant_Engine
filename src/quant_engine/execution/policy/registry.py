@@ -8,3 +8,7 @@ def register_policy(name: str):
 
 def build_policy(name: str, symbol: str, **kwargs):
     return POLICY_REGISTRY[name](symbol=symbol, **kwargs)
+
+from .immediate import *
+from .maker_first import *
+from .twap import *

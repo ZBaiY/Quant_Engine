@@ -1,37 +1,56 @@
 {
-    "level": "INFO",
-    "debug": {
-        "enabled": true,
-        "modules": [
-            "data",
-            "features",
-            "strategy"
-        ]
-    },
-    "handlers": {
-        "console": {
-            "enabled": true
+    "active_profile": "debug_data",
+    "profiles": {
+        "default": {
+            "level": "INFO",
+            "debug": {
+                "enabled": false,
+                "modules": []
+            },
+            "handlers": {
+                "console": {
+                    "enabled": true
+                }
+            },
+            "format": {
+                "json": true,
+                "timestamp_utc": true
+            }
         },
-        "file": {
-            "enabled": false,
-            "path": "logs/engine.log",
-            "max_bytes": 10485760,
-            "backup_count": 3
-        }
-    },
-    "format": {
-        "json": true,
-        "timestamp_utc": true
-    },
-    "example_debug": {
-        "description": "Enable deep debug logs for execution and data layers",
-        "level": "DEBUG",
-        "debug": {
-            "enabled": true,
-            "modules": [
-                "execution",
-                "data"
-            ]
+        "debug_data": {
+            "level": "DEBUG",
+            "debug": {
+                "enabled": true,
+                "modules": [
+                    "data",
+                    "features"
+                ]
+            }
+        },
+        "debug_strat": {
+            "level": "DEBUG",
+            "debug": {
+                "enabled": true,
+                "modules": [
+                    "strategy"
+                ]
+            }
+        },
+        "live": {
+            "level": "INFO",
+            "handlers": {
+                "console": {
+                    "enabled": true
+                }
+            }
+        },
+        "silent": {
+            "level": "ERROR",
+            "handlers": {
+                "console": {
+                    "enabled": false
+                }
+            }
         }
     }
 }

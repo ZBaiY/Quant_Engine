@@ -8,3 +8,6 @@ def register_matching(name: str):
 
 def build_matching(name: str, symbol: str, **kwargs):
     return MATCHING_REGISTRY[name](symbol=symbol, **kwargs)
+
+from .live import *
+from .simulated import *

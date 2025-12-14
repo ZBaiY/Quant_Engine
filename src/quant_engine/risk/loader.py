@@ -14,8 +14,12 @@ class RiskLoader:
         log_debug(RiskLoader._logger, "RiskLoader received config", config=cfg)
         rules_cfg = cfg.get("rules", {})
         rules = [
-            build_risk(name, symbol=symbol, **params)
-            for name, params in rules_cfg.items()
+            build_risk(
+                name,
+                symbol=symbol,
+                **rule_cfg.get("params", {}),
+            )
+            for name, rule_cfg in rules_cfg.items()
         ]
         log_debug(RiskLoader._logger, "RiskLoader built RiskEngine", rule_count=len(rules))
         return RiskEngine(rules)
