@@ -1,19 +1,13 @@
 # risk/engine.py
 from quant_engine.contracts.risk import RiskBase
-from quant_engine.utils.logger import get_logger, log_debug
 
 class RiskEngine:
-    _logger = get_logger(__name__)
 
-    def __init__(self, rules: list[RiskBase]):
+    def __init__(self, rules: list[RiskBase] ,symbol: str = ""):
         self.rules = rules
-        log_debug(self._logger, "RiskEngine initialized", rule_count=len(rules))
+        self.symbol = symbol
 
-    def apply(self, size: float, features: dict) -> float:
-        log_debug(self._logger, "RiskEngine apply() called", initial_size=size)
+    def apply(self, size: float, context: dict) -> float:
         for rule in self.rules:
-            log_debug(self._logger, "RiskEngine applying rule", rule=rule.__class__.__name__, size_before=size)
-            size = rule.adjust(size, features)
-            log_debug(self._logger, "RiskEngine rule output", rule=rule.__class__.__name__, size_after=size)
-        log_debug(self._logger, "RiskEngine final size", size=size)
+            size = rule.adjust(size, context)
         return size

@@ -6,19 +6,18 @@ from .registry import register_model
 class PairZScoreModel(ModelBase):
     """
     Minimal pair-trading z-score model.
-
-    Contracts:
-    - primary symbol: self.symbol
-    - secondary symbol: self.secondary
-    - declares secondary feature dependency for resolver
     """
 
-    # required pair feature (resolver-level, symbolic)
-    features_secondary = ["SPREAD"]
+    # design-time feature capability requirement
+    required_feature_types = {"SPREAD"}
 
-    def __init__(self, symbol: str, lookback: int = 120, **kwargs):
+    def __init__(self, symbol: str, **kwargs):
+        secondary = kwargs.get("secondary")
+        if not secondary:
+            raise ValueError("PairZScoreModel requires secondary=... in kwargs")
+
         super().__init__(symbol=symbol, **kwargs)
-        self.lookback = lookback
+        self.lookback = int(kwargs.get("lookback", 120))
 
     def predict(self, features: Dict[str, Any]) -> float:
         """
@@ -26,15 +25,21 @@ class PairZScoreModel(ModelBase):
         - expects a SPREAD feature keyed by BTCUSDT^ETHUSDT or reverse
         - returns sign(z) placeholder
         """
-        filtered = self.filter_pair(features)
+        if not self.secondary:
+            raise ValueError("PairZScoreModel requires secondary symbol (secondary=...)")
 
-        # tolerate either ordering
-        key1 = f"SPREAD_{self.symbol}^{self.secondary}"
-        key2 = f"SPREAD_{self.secondary}^{self.symbol}"
-
-        spread = filtered.get(key1) or filtered.get(key2)
-        if spread is None:
-            return 0.0
+        # Preferred: semantic lookup via the bound feature index
+        try:
+            spread_name = self.fname(ftype="SPREAD", purpose="MODEL", ref=self.secondary)
+            spread = features[spread_name]
+        except KeyError:
+            # Fallback: if index is not bound yet, use the (validated) required feature list
+            if not self.required_features:
+                return 0.0
+            spread_name = next(iter(self.required_features))
+            spread = features.get(spread_name)
+            if spread is None:
+                return 0.0
 
         # placeholder "z-score"
         if spread > 0:

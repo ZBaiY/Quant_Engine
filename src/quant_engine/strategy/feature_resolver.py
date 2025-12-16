@@ -1,39 +1,13 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Set
-from quant_engine.utils.logger import get_logger, log_debug
-from quant_engine.models.registry import MODEL_REGISTRY
-from quant_engine.risk.registry import RISK_REGISTRY
-
-_logger = get_logger(__name__)
+from typing import List, Dict, Any
 
 
 # ----------------------------------------------------------------------
-# Core features always injected for the primary symbol
-# ----------------------------------------------------------------------
-CORE_FEATURES = [
-    # {"type": "ATR"}
-]
-
-
-def _inject_core_features(primary_symbol: str) -> List[Dict[str, Any]]:
-    """
-    Core features required for every strategy:
-        - ATR
-        - VOLATILITY <--- REMOVED
-    These always belong to the primary symbol.
-    """
-    return [
-        {**f, "symbol": primary_symbol}
-        for f in CORE_FEATURES
-    ]
-
-
-# ----------------------------------------------------------------------
-# Merge + dedupe logic
+# Deduplication
 # ----------------------------------------------------------------------
 def _dedupe(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Deduplicate by (type, symbol, sorted_params).
+    Deduplicate feature specs by (type, symbol, params).
     """
     seen = set()
     out = []
@@ -41,7 +15,7 @@ def _dedupe(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         key = (
             f["type"],
             f.get("symbol"),
-            tuple(sorted(f.get("params", {}).items()))
+            tuple(sorted(f.get("params", {}).items())) if "params" in f else None,
         )
         if key not in seen:
             seen.add(key)
@@ -50,59 +24,98 @@ def _dedupe(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ----------------------------------------------------------------------
-# MAIN ENTRY: resolve_feature_config
+# MAIN ENTRY
 # ----------------------------------------------------------------------
 def resolve_feature_config(
+    *,
     primary_symbol: str,
     user_features: List[Dict[str, Any]],
-    model_required: List[str],
-    model_secondary: List[str],
-    risk_required: List[str],
+    required_feature_types: set[str],
 ) -> List[Dict[str, Any]]:
     """
-    Version 4 resolver:
-        1. Inject core features for primary symbol
-        2. Merge user_features
-        3. Inject model-required features (primary and secondary)
-        4. Inject risk-required features
-        5. Deduplicate
+    Strategy-driven feature resolver (v4).
+    - return final feature configs (with NAMES preserved)
     """
-    log_debug(_logger, "Resolving final feature config",
-              primary=primary_symbol)
 
-    # ---- 1. core features ----
-    core_f = _inject_core_features(primary_symbol)
-    log_debug(_logger, "Core features injected", count=len(core_f))
+    normalized: List[Dict[str, Any]] = []
 
-    # ---- 2. user features ----
-    user_f = user_features or []
-    log_debug(_logger, "User features loaded", count=len(user_f))
+    for f in user_features:
+        if "type" not in f:
+            raise ValueError(f"Invalid feature spec (missing type): {f}")
 
-    # ---- 3. model-required (primary) ----
-    model_f = [
-        {"type": t.split("_")[0], "symbol": primary_symbol}
-        for t in model_required
-    ]
+        spec = dict(f)
 
-    # ---- 4. model-required (secondary / pair) ----
-    secondary_f = []
-    for t in model_secondary:
-        base = t.split("_")[0]
-        secondary_f.append({
-            "type": base,
-            "symbol": primary_symbol,
-            "params": {"ref": None}  # resolver fills actual ref later
-        })
+        # Attach symbol if omitted
+        spec.setdefault("symbol", primary_symbol)
 
-    # ---- 5. risk-required features ----
-    risk_f = [
-        {"type": t.split("_")[0], "symbol": primary_symbol}
-        for t in risk_required
-    ]
+        # Ensure params is a dict if present
+        if "params" in spec and spec["params"] is not None:
+            if not isinstance(spec["params"], dict):
+                raise TypeError(f"Feature params must be dict: {spec}")
+        else:
+            spec["params"] = {}
 
-    # ---- 6. merge & dedupe ----
-    merged = core_f + user_f + model_f + secondary_f + risk_f
-    final = _dedupe(merged)
+        normalized.append(spec)
 
-    log_debug(_logger, "Final feature config resolved", count=len(final))
+    final = _dedupe(normalized)
+
+    feature_names = {f["name"] for f in final if "name" in f}
+    feature_types = {f["type"] for f in final}
+
+
     return final
+
+def check_missing_features(
+    *,
+    feature_configs: List[Dict[str, Any]],
+    model,
+    risk_manager=None,
+    decision=None,
+) -> None:
+    """
+    Post-resolution feature validation (v4).
+
+    This function is called AFTER:
+        - model / risk / decision objects are constructed
+        - feature configs are resolved (names + types fixed)
+
+    Responsibilities:
+        - validate feature TYPE coverage (design-time)
+        - inject resolved feature NAMES into consumers
+        - validate final NAME-level dependencies
+
+    It does NOT:
+        - infer new features
+        - mutate feature configs
+    """
+
+    feature_types = {f["type"] for f in feature_configs}
+    feature_names = [f["name"] for f in feature_configs]
+
+    # --- Model ---
+    if model is not None:
+        if hasattr(model, "validate_feature_types"):
+            model.validate_feature_types(feature_types)
+        if hasattr(model, "set_required_features"):
+            model.set_required_features(feature_names)
+        if hasattr(model, "validate_features"):
+            model.validate_features(feature_names)
+
+    # --- Risk rules ---
+    if risk_manager is not None:
+        for rule in getattr(risk_manager, "rules", []):
+            if hasattr(rule, "validate_feature_types"):
+                rule.validate_feature_types(feature_types)
+            if hasattr(rule, "set_required_features"):
+                rule.set_required_features(feature_names)
+            if hasattr(rule, "validate_features"):
+                rule.validate_features(feature_names)
+
+    # --- Decision ---
+    if decision is not None:
+        if hasattr(decision, "validate_feature_types"):
+            decision.validate_feature_types(feature_types)
+        if hasattr(decision, "set_required_features"):
+            decision.set_required_features(feature_names)
+        if hasattr(decision, "validate_features"):
+            decision.validate_features(feature_names)

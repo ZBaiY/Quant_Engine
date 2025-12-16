@@ -16,6 +16,14 @@ class FeatureChannel(Protocol):
     """
 
     @property
+    def name(self) -> str:
+        """
+        Stable feature identity used by downstream consumers (model / risk / decision).
+        Must be unique within a strategy.
+        """
+        ...
+
+    @property
     def symbol(self) -> str | None:
         ...
 
@@ -65,8 +73,8 @@ class FeatureChannel(Protocol):
         """
         ...
 
-    def output(self) -> Dict[str, float]:
-        """Return the current feature values."""
+    def output(self) -> float | int | None:
+        """Return the current feature value."""
         ...
 
     def required_window(self) -> int:
@@ -93,8 +101,13 @@ class FeatureChannelBase(FeatureChannel):
         - update(context)
         - output()
     """
-    
-    def __init__(self, symbol: str | None = None, **kwargs):
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def __init__(self, *, name: str, symbol: str | None = None, **kwargs):
+        self._name = name
         self._symbol = symbol
 
     @property

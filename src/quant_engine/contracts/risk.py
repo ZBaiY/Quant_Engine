@@ -1,4 +1,39 @@
-from typing import Protocol, Dict, Any, List
+from typing import Protocol, Dict, Any, Iterable, Tuple
+
+
+# --- Feature name parsing and semantic lookup helpers ---
+FeatureKey = Tuple[str, str, str, str | None]
+
+
+def parse_feature_name(name: str) -> FeatureKey:
+    """Parse v4 feature naming convention.
+
+    Expected:
+        <TYPE>_<PURPOSE>_<SYMBOL>
+        <TYPE>_<PURPOSE>_<SYMBOL>^<REF>
+
+    Example:
+        ATR_RISK_BTCUSDT
+        SPREAD_RISK_BTCUSDT^ETHUSDT
+
+    Returns:
+        (ftype, purpose, symbol, ref)
+    """
+    parts = name.split("_", 2)
+    if len(parts) != 3:
+        raise ValueError(
+            f"Invalid feature name '{name}': expected '<TYPE>_<PURPOSE>_<SYMBOL>' or '<TYPE>_<PURPOSE>_<SYMBOL>^<REF>'"
+        )
+    ftype, purpose, sym_part = parts
+    ref: str | None = None
+    symbol = sym_part
+    if "^" in sym_part:
+        symbol, ref = sym_part.split("^", 1)
+        if not symbol or not ref:
+            raise ValueError(f"Invalid feature name '{name}': malformed '^' section")
+    if not ftype or not purpose or not symbol:
+        raise ValueError(f"Invalid feature name '{name}': empty TYPE/PURPOSE/SYMBOL")
+    return (ftype, purpose, symbol, ref)
 
 
 class RiskProto(Protocol):
@@ -10,9 +45,10 @@ class RiskProto(Protocol):
     """
 
     symbol: str
-    required_features: List[str]
+    required_features: set[str]
+    required_feature_types: set[str]
 
-    def adjust(self, size: float, features: Dict[str, Any]) -> float:
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
         ...
 
 
@@ -30,34 +66,100 @@ class RiskBase(RiskProto):
         • child class must implement adjust()
     """
 
-    required_features: List[str] = []   # e.g. ["ATR"], ["VOL"], ["ATR", "VOL"]
-    symbol: str | None = None
+    # Validation contracts (loader injects required feature NAMES for completeness checks)
+    required_features: set[str] = set()         # validation-only required feature NAMES
+    required_feature_types: set[str] = set()    # design-time feature TYPES
+
+    # Runtime identity
+    symbol: str
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
 
-        # ------------------------------------------------------------------
-        # IMPORTANT:
-        #   - required_features is DECLARED at class level
-        #   - copy before expanding to avoid cross-rule contamination
-        # ------------------------------------------------------------------
-        base_required = list(type(self).required_features)
+        # Copy class-level declarations to instance (avoid shared-state surprises)
+        self.required_features = set(type(self).required_features)
+        self.required_feature_types = set(type(self).required_feature_types)
 
-        # expand primary-symbol features
-        self.required_features = [
-            f"{r}_{self.symbol}" for r in base_required
+        # Semantic lookup index: (TYPE, PURPOSE, SYMBOL, REF) -> feature_name
+        self._feature_index: dict[FeatureKey, str] = {}
+
+    def validate_feature_types(self, available_feature_types: set[str]) -> None:
+        """
+        Validate that all required feature TYPES declared by the risk rule
+        are provided by the strategy configuration.
+        """
+        missing = self.required_feature_types - available_feature_types
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__} missing required feature types: {sorted(missing)}. "
+                f"Available feature types: {sorted(available_feature_types)}"
+            )
+
+    def set_required_features(self, feature_names: Iterable[str]) -> None:
+        # Validation-only: used by engine/loader to verify runtime completeness.
+        self.required_features = set(feature_names)
+
+
+    def bind_feature_index(self, available_feature_names: Iterable[str]) -> None:
+        """Bind a semantic name index for risk-side convenience."""
+        index: dict[FeatureKey, str] = {}
+        for name in available_feature_names:
+            key = parse_feature_name(name)
+            if key in index and index[key] != name:
+                raise ValueError(f"Feature key collision for {key}: '{index[key]}' vs '{name}'")
+            index[key] = name
+        self._feature_index = index
+
+
+    def fname(
+        self,
+        ftype: str,
+        purpose: str = "RISK",
+        symbol: str | None = None,
+        ref: str | None = None,
+    ) -> str:
+        """Resolve a feature name by semantic key."""
+        sym = symbol or self.symbol
+        key: FeatureKey = (ftype, purpose, sym, ref)
+        if key in self._feature_index:
+            return self._feature_index[key]
+
+        candidates = [
+            n
+            for (t, p, s, r), n in self._feature_index.items()
+            if t == ftype and p == purpose and s == sym
         ]
+        if candidates:
+            raise KeyError(
+                f"No feature for key={key}. Candidates for (TYPE={ftype}, PURPOSE={purpose}, SYMBOL={sym}): {sorted(candidates)}"
+            )
+        raise KeyError(f"No feature for key={key}. Risk has {len(self._feature_index)} indexed features.")
 
-    # ------------------------------------------------------------------
-    # Feature filtering — same logic as ModelBase.filter_symbol
-    # ------------------------------------------------------------------
-    def filter_symbol(self, features: Dict[str, Any]) -> Dict[str, Any]:
-        """Keep features for primary symbol only."""
-        suffix = f"_{self.symbol}"
-        return {k: v for k, v in features.items() if k.endswith(suffix)}
+
+    def fget(
+        self,
+        features: Dict[str, Any],
+        ftype: str,
+        purpose: str = "RISK",
+        symbol: str | None = None,
+        ref: str | None = None,
+    ) -> Any:
+        """Convenience getter: features[fname(...)]"""
+        return features[self.fname(ftype=ftype, purpose=purpose, symbol=symbol, ref=ref)]
+
+    def validate_features(self, available_features: set[str]) -> None:
+        """
+        Validate that all required feature NAMES are present at runtime.
+        """
+        missing = [f for f in self.required_features if f not in available_features]
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__} missing required features: {missing}. "
+                f"Available features: {sorted(available_features)}"
+            )
 
     # ------------------------------------------------------------------
     # Child classes must implement adjust()
     # ------------------------------------------------------------------
-    def adjust(self, size: float, features: Dict[str, Any]) -> float:
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
         raise NotImplementedError("Risk module must implement adjust()")

@@ -1,7 +1,6 @@
 from typing import Any, Dict
-from quant_engine.contracts.risk import RiskBase
+from quant_engine.contracts.risk import RiskBase, parse_feature_name
 from .registry import register_risk
-from quant_engine.utils.logger import get_logger, log_debug
 
 @register_risk("ATR_SIZER")
 class ATRSizer(RiskBase):
@@ -14,40 +13,35 @@ class ATRSizer(RiskBase):
     - adjust(size, features) -> float
     """
 
-    required_features = ["ATR"]
+    # design-time capability requirement
+    required_feature_types = {"ATR"}
 
-    _logger = get_logger(__name__)
+    def __init__(self, symbol: str, **kwargs):
+        risk_fraction = kwargs.get("risk_fraction", 0.02)
+        super().__init__(symbol=symbol, **kwargs)
+        self.risk_fraction = float(risk_fraction)
 
-    def __init__(self, symbol: str, risk_fraction: float = 0.02, **kwargs):
-        super().__init__(symbol=symbol)
-        self.risk_fraction = risk_fraction
-        log_debug(
-            self._logger,
-            "ATRSizer initialized",
-            symbol=symbol,
-            risk_fraction=risk_fraction,
-        )
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
+        """Scale position size inversely with ATR."""
+        features = context.get("features", context)
 
-    def adjust(self, size: float, features: Dict[str, Any]) -> float:
-        """
-        Scale position size inversely with ATR.
-        """
-        filtered = self.filter_symbol(features)
-        atr_key = f"ATR_{self.symbol}"
-        atr = filtered.get(atr_key, 1.0)
+        # Prefer semantic lookup via bound feature index
+        try:
+            atr = float(self.fget(features, ftype="ATR", purpose="RISK"))
+        except Exception:
+            # Fallback: locate ATR feature in validation names
+            atr_name = None
+            for n in getattr(self, "required_features", set()):
+                try:
+                    t, p, s, r = parse_feature_name(n)
+                except Exception:
+                    continue
+                if t == "ATR" and p == "RISK" and s == self.symbol:
+                    atr_name = n
+                    break
+            if atr_name is None:
+                atr = 1.0
+            else:
+                atr = float(features.get(atr_name, 1.0))
 
-        log_debug(
-            self._logger,
-            "ATRSizer adjust() called",
-            size=size,
-            atr=atr,
-        )
-
-        adjusted = size * self.risk_fraction / max(atr, 1e-8)
-
-        log_debug(
-            self._logger,
-            "ATRSizer output",
-            adjusted_size=adjusted,
-        )
-        return adjusted
+        return size * self.risk_fraction / max(float(atr), 1e-8)

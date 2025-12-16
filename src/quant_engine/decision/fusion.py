@@ -1,25 +1,39 @@
 # decision/fusion.py
 from quant_engine.contracts.decision import DecisionBase
 from .registry import register_decision
-from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_decision("FUSION")
 class FusionDecision(DecisionBase):
+    """Weighted fusion of multiple model outputs.
+
+    Expected context shape (from StrategyEngine.step):
+        {
+            "features": {...},
+            "models": {"main": <float>, ...},
+            "portfolio": {...},
+        }
+
+    Params:
+        weights: mapping from model-output key -> weight.
+            Example: {"main": 1.0}
     """
-    Combine multiple model scores:
-        score_final = w1 * model1 + w2 * model2 + ...
-    """
-    def __init__(self, weights: dict[str, float]):
-        self.weights = weights
-        self._logger = get_logger(__name__)
-        log_debug(self._logger, "FusionDecision initialized", weights=weights)
+
+    def __init__(self, symbol: str | None = None, weights: dict[str, float] | None = None, **kwargs):
+        super().__init__(symbol=symbol, **kwargs)
+        if weights is None:
+            weights = kwargs.get("weights")
+        if not isinstance(weights, dict) or not weights:
+            raise ValueError("FusionDecision requires non-empty weights={model_key: weight}")
+        self.weights: dict[str, float] = {str(k): float(v) for k, v in weights.items()}
 
     def decide(self, context: dict) -> float:
-        log_debug(self._logger, "FusionDecision received context", context=context)
-        # context: {"model_score": ..., "sent_score": ..., ...}
+        # Prefer model outputs; fallback to flat context for backward compatibility.
+        models = context.get("models")
+        if not isinstance(models, dict):
+            models = context
+
         total = 0.0
         for key, w in self.weights.items():
-            total += w * context.get(key, 0.0)
-        log_debug(self._logger, "FusionDecision computed fused score", score=total)
-        return total
+            total += float(w) * float(models.get(key, 0.0))
+        return float(total)

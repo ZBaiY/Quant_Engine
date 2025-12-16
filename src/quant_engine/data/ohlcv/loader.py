@@ -9,21 +9,28 @@ _logger = get_logger(__name__)
 
 class OHLCVLoader:
     """
-    v4 OHLCV Loader
-    ----------------
-    This loader is a *pure data constructor*:
-        - loads OHLCV data from CSV / DataFrame / API-compatible dicts
-        - standardizes the schema
-        - returns a list of OHLCV bars (each as a dict)
-    
-    It performs **no caching**, **no alignment**, and **no snapshot logic**.
-    Those responsibilities belong to:
-        - RealTimeDataHandler
-        - HistoricalDataHandler
-        - OHLCVCache
+    v4 OHLCV Loader (Canonical Normalizer)
+    -------------------------------------
+
+    This loader is a *pure schema normalizer*.
+
+    Responsibilities:
+    - accept OHLCV data from CSV / DataFrame / API dicts
+    - resolve timestamp into UTC unix seconds
+    - enforce column schema and ordering
+    - return List[Dict[str, Any]] suitable for:
+        - HistoricalOHLCVHandler
+        - RealTimeDataHandler.on_new_tick
+
+    Non-responsibilities:
+    - no caching
+    - no alignment
+    - no windowing
+    - no snapshot logic
     """
 
     REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+    LEGACY_TIME_COLUMNS = ["open_time", "time", "ts"]
 
     # ------------------------------------------------------------------
     # Load from CSV
@@ -35,9 +42,7 @@ class OHLCVLoader:
         df = pd.read_csv(path)
 
         if timezone:
-            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(timezone).astype("int64") / 1e9
-        else:
-            df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") / 1e9
+            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(timezone)
 
         return cls._standardize(df)
 
@@ -64,34 +69,61 @@ class OHLCVLoader:
     @classmethod
     def _standardize(cls, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
-        Ensure the OHLCV data matches the required column & type schema.
-        Produce list[dict] that can be fed into HistoricalDataHandler.
+        Canonicalize OHLCV schema.
+
+        Output invariants:
+        - timestamp: float (UTC unix seconds)
+        - strictly increasing order
+        - numeric OHLCV fields as float
         """
 
+        df = df.copy()
+
+        # ------------------------------------------------------------------
+        # Resolve timestamp column
+        # ------------------------------------------------------------------
+        if "timestamp" not in df.columns:
+            for col in cls.LEGACY_TIME_COLUMNS:
+                if col in df.columns:
+                    df["timestamp"] = df[col]
+                    break
+            else:
+                raise ValueError(
+                    "OHLCV loader requires a timestamp column "
+                    "(timestamp | open_time | time | ts)"
+                )
+
+        # Normalize timestamp → UTC unix seconds (float)
+        ts = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        if ts.isna().any():
+            raise ValueError("Invalid timestamps detected during OHLCV loading")
+
+        df["timestamp"] = ts.view("int64") / 1e9
+
+        # ------------------------------------------------------------------
+        # Validate required columns
+        # ------------------------------------------------------------------
         missing = [c for c in cls.REQUIRED_COLUMNS if c not in df.columns]
         if missing:
             raise ValueError(f"Missing OHLCV columns: {missing}")
 
-        df = df.copy()
-
-        # Convert to float for numerical stability
+        # ------------------------------------------------------------------
+        # Normalize numeric fields
+        # ------------------------------------------------------------------
         numeric_cols = ["open", "high", "low", "close", "volume"]
         df[numeric_cols] = df[numeric_cols].astype(float)
 
-        # Convert timestamp → float (UNIX seconds)
-        df["timestamp"] = df["timestamp"].astype(float)
+        # ------------------------------------------------------------------
+        # Enforce deterministic ordering
+        # ------------------------------------------------------------------
+        df = df.sort_values("timestamp").reset_index(drop=True)
 
-        # Sort by timestamp to guarantee determinism
-        df = df.sort_values("timestamp")
+        # Optional strict monotonicity check
+        if not df["timestamp"].is_monotonic_increasing:
+            raise ValueError("OHLCV timestamps are not monotonic")
 
         log_debug(_logger, "Standardized OHLCV", rows=len(df))
 
-        raw = df.to_dict(orient="records")
+        raw = df[cls.REQUIRED_COLUMNS].to_dict(orient="records")
 
-        # Enforce Dict[str, Any] for type checkers (Pylance, MyPy)
-        cleaned: List[Dict[str, Any]] = [
-            {str(k): v for k, v in row.items()}
-            for row in raw
-        ]
-
-        return cleaned
+        return [{str(k): v for k, v in row.items()} for row in raw]

@@ -1,7 +1,6 @@
 from typing import Dict, Any
-from quant_engine.contracts.risk import RiskBase
+from quant_engine.contracts.risk import RiskBase, parse_feature_name
 from quant_engine.risk.registry import register_risk
-from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_risk("SENTIMENT_SCALE")
@@ -12,46 +11,37 @@ class SentimentScaleRule(RiskBase):
     Contracts:
     - symbol-aware via RiskBase
     - optional sentiment feature dependency
-    - adjust(size, features) -> float
+    - adjust(size, context) -> float
     """
 
-    required_features: list[str] = []
+    # design-time capability requirement
+    required_feature_types = {"SENTIMENT"}
 
-    _logger = get_logger(__name__)
+    def __init__(self, symbol: str, **kwargs):
+        strength = kwargs.get("strength", 1.0)
+        super().__init__(symbol=symbol, **kwargs)
+        self.strength = float(strength)
 
-    def __init__(
-        self,
-        symbol: str,
-        key: str = "sentiment_score",
-        strength: float = 1.0,
-        **kwargs,
-    ):
-        super().__init__(symbol=symbol)
-        self.key = key
-        self.strength = strength
-        log_debug(
-            self._logger,
-            "SentimentScaleRule initialized",
-            symbol=symbol,
-            key=key,
-            strength=strength,
-        )
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
+        features = context.get("features", context)
 
-    def adjust(self, size: float, features: Dict[str, Any]) -> float:
-        sentiment = features.get(self.key, 0.0)
+        # Prefer semantic lookup via bound feature index
+        try:
+            sentiment = float(self.fget(features, ftype="SENTIMENT", purpose="RISK"))
+        except Exception:
+            # Fallback: locate SENTIMENT feature in validation names
+            sentiment_name = None
+            for n in getattr(self, "required_features", set()):
+                try:
+                    t, p, s, r = parse_feature_name(n)
+                except Exception:
+                    continue
+                if t == "SENTIMENT" and p == "RISK" and s == self.symbol:
+                    sentiment_name = n
+                    break
+            if sentiment_name is None:
+                sentiment = 0.0
+            else:
+                sentiment = float(features.get(sentiment_name, 0.0))
 
-        log_debug(
-            self._logger,
-            "SentimentScaleRule adjust() called",
-            size=size,
-            sentiment=sentiment,
-        )
-
-        adjusted = size * (1.0 + self.strength * sentiment)
-
-        log_debug(
-            self._logger,
-            "SentimentScaleRule output",
-            adjusted_size=adjusted,
-        )
-        return adjusted
+        return size * (1.0 + self.strength * float(sentiment))

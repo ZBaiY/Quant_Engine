@@ -1,7 +1,6 @@
 from typing import Dict, Any
 from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.registry import register_risk
-from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_risk("STOP_LOSS")
@@ -10,54 +9,28 @@ class StopLossRule(RiskBase):
     V4 stop-loss risk rule.
 
     Contracts:
-    - symbol-aware via RiskBase
-    - no hard feature dependency (uses runtime PnL key)
-    - adjust(size, features) -> float
+    - no feature dependency - portfolio dependency only
+    - depends on Portfolio context (PnL)
+    - adjust(size, context) -> float
     """
 
-    required_features: list[str] = []
+    def __init__(self, symbol: str, **kwargs):
+        max_loss = kwargs.get("max_loss", -0.05)
+        super().__init__(symbol=symbol, **kwargs)
+        self.max_loss = float(max_loss)
 
-    _logger = get_logger(__name__)
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
+        portfolio = context.get("portfolio", {})
+        if isinstance(portfolio, dict) and "portfolio" in portfolio:
+            # tolerate nested context forms ("context": {"portfolio": {...}})
+            portfolio = portfolio.get("portfolio", {})
 
-    def __init__(
-        self,
-        symbol: str,
-        key: str = "pnl",
-        max_loss: float = -0.05,
-        **kwargs,
-    ):
-        super().__init__(symbol=symbol)
-        self.key = key
-        self.max_loss = max_loss
-        log_debug(
-            self._logger,
-            "StopLossRule initialized",
-            symbol=symbol,
-            key=key,
-            max_loss=max_loss,
-        )
+        pnl = portfolio.get("pnl")
+        if pnl is None:
+            realized = float(portfolio.get("realized_pnl", 0.0))
+            unrealized = float(portfolio.get("unrealized_pnl", 0.0))
+            pnl = realized + unrealized
 
-    def adjust(self, size: float, features: Dict[str, Any]) -> float:
-        pnl = features.get(self.key, 0.0)
-
-        log_debug(
-            self._logger,
-            "StopLossRule adjust() called",
-            size=size,
-            pnl=pnl,
-        )
-
-        if pnl < self.max_loss:
-            log_debug(
-                self._logger,
-                "StopLossRule triggered",
-                output=0.0,
-            )
+        if float(pnl) < self.max_loss:
             return 0.0
-
-        log_debug(
-            self._logger,
-            "StopLossRule passed",
-            output=size,
-        )
         return size

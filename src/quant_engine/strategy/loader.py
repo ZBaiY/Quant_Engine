@@ -1,6 +1,7 @@
 # strategy/loader.py
 from typing import cast
 from collections.abc import Mapping
+from quant_engine.strategy.base import StrategyBase
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
@@ -13,84 +14,185 @@ from quant_engine.decision.loader import DecisionLoader
 from quant_engine.risk.loader import RiskLoader
 from quant_engine.execution.loader import ExecutionLoader
 from quant_engine.portfolio.loader import PortfolioLoader
-from quant_engine.utils.logger import get_logger, log_debug
-from quant_engine.strategy.symbol_discovery import discover_symbols
-from quant_engine.strategy.feature_resolver import resolve_feature_config
+from quant_engine.strategy.feature_resolver import resolve_feature_config, check_missing_features
 from quant_engine.data.builder import build_multi_symbol_handlers
+from quant_engine.strategy.registry import build_strategy
 from .engine import StrategyEngine
 
 
 class StrategyLoader:
-    _logger = get_logger(__name__)
 
     @staticmethod
-    def from_config(cfg):
+    def from_config(strategy: StrategyBase, mode, overrides: dict | None = None):
         """
-        cfg format:
-        {
-            "features": {...},
-            "models": {...},
-            "decision": {...},
-            "risk": {...},
-            "execution": {...},
-            "portfolio": {...}
-        }
+        Build a StrategyEngine from a StrategyBase specification and mode.
+
+        StrategyBase provides defaults for:
+            - symbol
+            - data
+            - features
+            - model / decision / risk
+            - execution / portfolio
+
+        Optional overrides may be provided to adjust parameters
+        without modifying the Strategy class.
         """
 
-        # Primary trading symbol (root of routing)
-        symbol = cfg.get("symbol")
+        if overrides is None:
+            overrides = {}
 
-        # ----- LAYER 2: Symbol Discovery -----
+        # StrategyBase is the source of truth
+        cfg = strategy.apply_defaults(overrides)
+
+        symbol = cfg.get("symbol") or getattr(strategy, "SYMBOL", None)
+        if symbol is None:
+            raise ValueError("Primary symbol must be defined in Strategy or overrides")
+
+        # ----- LAYER 2: Symbol set is declared only in Strategy.DATA (no discovery) -----
         features_user = cfg.get("features_user", [])
+
+        # Validate feature name uniqueness (no silent dedup)
+        declared_names_list = [f.get("name") for f in features_user if isinstance(f, dict) and f.get("name")]
+        declared_names_set = set(declared_names_list)
+        if len(declared_names_list) != len(declared_names_set):
+            dupes: list[str] = []
+            seen: set[str] = set()
+            for n in declared_names_list:
+                if n in seen and n not in dupes:
+                    dupes.append(n)
+                assert isinstance(n, str)
+                seen.add(n)
+            raise ValueError(f"Duplicate feature names in features_user: {dupes}")
+
         model_cfg = cfg.get("model", {})
-        symbols = discover_symbols(
-            primary=symbol,
-            features_user=features_user,
-            model_cfg=model_cfg
+
+        data_spec = cfg.get("data") or getattr(strategy, "DATA", {})
+        secondary_spec = data_spec.get("secondary") or {}
+        declared_symbols = {symbol} | set(secondary_spec.keys())
+
+        referenced_symbols: set[str] = set()
+        for f in features_user:
+            if not isinstance(f, dict):
+                continue
+            sym = f.get("symbol")
+            if isinstance(sym, str) and sym:
+                referenced_symbols.add(sym)
+            params = f.get("params") or {}
+            if isinstance(params, dict):
+                ref = params.get("ref")
+                if isinstance(ref, str) and ref:
+                    referenced_symbols.add(ref)
+
+        params = model_cfg.get("params") or {}
+        if isinstance(params, dict):
+            for k in ("secondary", "ref"):
+                v = params.get(k)
+                if isinstance(v, str) and v:
+                    referenced_symbols.add(v)
+
+        missing_syms = sorted(referenced_symbols - declared_symbols)
+        if missing_syms:
+            raise ValueError(
+                f"Symbols {missing_syms} are referenced by features/model but not declared in Strategy.DATA.secondary. "
+                f"Declared symbols: {sorted(declared_symbols)}"
+            )
+
+        mode_s = str(mode).upper()
+        backtest = ("BACKTEST" in mode_s)
+
+        required_data = strategy.REQUIRED_DATA
+        data_handlers = build_multi_symbol_handlers(
+            data_spec=data_spec,
+            backtest=backtest,
+            primary_symbol=symbol,
         )
-        
-        log_debug(StrategyLoader._logger, "Symbols discovered", symbols=list(symbols))
 
-        # ----- LAYER 3: Multi-Symbol DataHandler Initialization -----
-        data_handlers = build_multi_symbol_handlers(symbols)
-        log_debug(StrategyLoader._logger, "DataHandlers built", handler_types=list(data_handlers.keys()))
+        if "ohlcv" in required_data and "ohlcv" not in data_handlers:
+            raise RuntimeError(
+                f"Strategy '{strategy}' declares OHLCV but no OHLCV handler was provisioned"
+            )
 
-        log_debug(StrategyLoader._logger, "StrategyLoader received config", keys=list(cfg.keys()))
-
-        log_debug(StrategyLoader._logger, "StrategyLoader building models")
-        # Build model layer
+        model_params = model_cfg.get("params") or {}
+        if not isinstance(model_params, dict):
+            raise TypeError("model.params must be a dict")
         models = {
             "main": build_model(
                 model_cfg["type"],
                 symbol=symbol,
-                **model_cfg.get("params", {})
+                **model_params,
             )
         }
 
-        log_debug(StrategyLoader._logger, "StrategyLoader building risk layer")
-        # Risk layer
-        risk_manager = RiskLoader.from_config(cfg["risk"], symbol=symbol)
+        # Risk layer (some rules require symbol)
+        try:
+            risk_manager = RiskLoader.from_config(cfg["risk"], symbol=symbol)
+        except TypeError:
+            risk_manager = RiskLoader.from_config(cfg["risk"], symbol=symbol)
+
+        # Decision layer (may optionally use symbol, e.g. feature-based decisions)
+        try:
+            decision = DecisionLoader.from_config(cfg["decision"], symbol=symbol)
+        except TypeError:
+            decision = DecisionLoader.from_config(cfg["decision"], symbol=symbol)
+
+        if getattr(decision, "symbol", None) is None:
+            try:
+                decision.symbol = symbol
+            except Exception:
+                pass
 
         # ----- NEW LAYER 4: Feature Dependency Resolver (after building model & risk) -----
         model_main = models["main"]
-        model_required = getattr(model_main, "required_features", [])
-        model_secondary = getattr(model_main, "features_secondary", [])
-        print(model_required, model_secondary)
-        risk_required = []
+        model_required = getattr(model_main, "required_feature_types", set())
+        risk_required: set[str] = set()
         for rule in getattr(risk_manager, "rules", []):
-            risk_required.extend(getattr(rule, "required_features", []))
+            risk_required |= getattr(rule, "required_feature_types", set())
 
         final_features = resolve_feature_config(
             primary_symbol=symbol,
             user_features=features_user,
-            model_required=model_required,
-            model_secondary=model_secondary,
-            risk_required=risk_required,
+            required_feature_types=model_required | risk_required,
         )
-        log_debug(StrategyLoader._logger, "Final feature_config generated",
-                  count=len(final_features))
+        # resolved_feature_names = {f["name"] for f in final_features}
 
-        # ----- NEW LAYER 5: FeatureExtractor Initialization -----
+        resolved_feature_names = {f["name"] for f in final_features if isinstance(f, dict) and f.get("name")}
+        model_feature_names = {n for n in resolved_feature_names if "_MODEL_" in n}
+        risk_feature_names = {n for n in resolved_feature_names if "_RISK_" in n}
+        decision_feature_names = {n for n in resolved_feature_names if "_DECISION_" in n}
+
+        if hasattr(model_main, "set_required_features"):
+            model_main.set_required_features(model_feature_names)
+
+        for rule in getattr(risk_manager, "rules", []):
+            if hasattr(rule, "set_required_features"):
+                rule.set_required_features(risk_feature_names)
+
+        if hasattr(decision, "set_required_features"):
+            decision.set_required_features(decision_feature_names)
+
+        # Bind semantic lookup index for fname()/fget() convenience (validation sets remain separate)
+        if hasattr(model_main, "bind_feature_index"):
+            model_main.bind_feature_index(resolved_feature_names)
+        for rule in getattr(risk_manager, "rules", []):
+            if hasattr(rule, "bind_feature_index"):
+                rule.bind_feature_index(resolved_feature_names)
+        if hasattr(decision, "bind_feature_index"):
+            decision.bind_feature_index(resolved_feature_names)
+
+        # ----- LAYER 5: Post-build feature validation & binding -----
+        check_missing_features(
+            feature_configs=final_features,
+            model=model_main,
+            risk_manager=risk_manager,
+            decision=decision,
+        )
+
+        # Execution layer
+        execution_engine = ExecutionLoader.from_config(symbol=symbol, **cfg["execution"])
+
+        # Portfolio layer
+        portfolio = PortfolioLoader.from_config(symbol=symbol, **cfg["portfolio"])
+
         feature_extractor = FeatureLoader.from_config(
             final_features,
             data_handlers["ohlcv"],
@@ -100,19 +202,6 @@ class StrategyLoader:
             data_handlers.get("sentiment", {}),
         )
 
-        log_debug(StrategyLoader._logger, "StrategyLoader building decision layer")
-        # Decision layer
-        decision = DecisionLoader.from_config(cfg["decision"], symbol=symbol)
-
-        log_debug(StrategyLoader._logger, "StrategyLoader building execution layer")
-        # Execution layer
-        execution_engine = ExecutionLoader.from_config(cfg["execution"], symbol=symbol)
-
-        log_debug(StrategyLoader._logger, "StrategyLoader building portfolio layer")
-        # Portfolio layer
-        portfolio = PortfolioLoader.from_config(cfg["portfolio"], symbol=symbol)
-
-        log_debug(StrategyLoader._logger, "StrategyLoader assembled StrategyEngine")
         # Assemble StrategyEngine
         
 
@@ -137,6 +226,7 @@ class StrategyLoader:
             data_handlers.get("sentiment", {})
         )
         return StrategyEngine(
+            mode=mode,
             symbol=symbol,
             ohlcv_handlers=ohlcv_handlers,
             orderbook_handlers=orderbook_handlers,

@@ -2,23 +2,19 @@
 # NOTE: These IV features use OHLCV-derived IV columns.
 # Option-chain–based IV surface features live in iv_surface.py.
 from quant_engine.contracts.feature import FeatureChannelBase
-from ..registry import register_feature
-from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.features.registry import register_feature
 
+# v4 Feature Module:
+# - Feature identity (name) is injected by Strategy and treated as immutable.
+# - This module performs pure feature computation only.
+# - NOTE: These IV features are OHLCV-derived; option-chain IV surface features live elsewhere.
 
-##### It is redundant, we are moving this to data layer.
 @register_feature("IV30")
 class IV30Feature(FeatureChannelBase):
-    def __init__(self, symbol=None, **kwargs):
-        self._symbol = symbol
-        self._iv30 = None
+    def __init__(self, *, name: str, symbol: str):
+        super().__init__(name=name, symbol=symbol)
+        self._iv30: float | None = None
 
-    @property
-    def symbol(self):
-        return self._symbol
-
-    _logger = get_logger(__name__)
-    """Implied Volatility 30d."""
     def initialize(self, context, warmup_window=None):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot['chain'] is None:
@@ -43,21 +39,15 @@ class IV30Feature(FeatureChannelBase):
         self._iv30 = float(df["iv_30d"].iloc[-1])
 
     def output(self):
-        return {"IV30": self._iv30}
+        return self._iv30
 
 
 @register_feature("IV_SKEW")
 class IVSkewFeature(FeatureChannelBase):
-    def __init__(self, symbol=None, **kwargs):
-        self._symbol = symbol
-        self._skew = None
+    def __init__(self, *, name: str, symbol: str):
+        super().__init__(name=name, symbol=symbol)
+        self._skew: float | None = None
 
-    @property
-    def symbol(self):
-        return self._symbol
-
-    _logger = get_logger(__name__)
-    """25d call - 25d put skew."""
     def initialize(self, context, warmup_window=None):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot['chain'] is None:
@@ -86,4 +76,4 @@ class IVSkewFeature(FeatureChannelBase):
         self._skew = float(call_iv - put_iv)
 
     def output(self):
-        return {"IV_SKEW": self._skew}
+        return self._skew

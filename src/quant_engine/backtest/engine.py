@@ -1,91 +1,89 @@
 # backtest/engine.py
 
-from typing import List, Dict, Any
+from typing import Optional
 
 from quant_engine.strategy.engine import StrategyEngine
-from quant_engine.data.ohlcv.historical import HistoricalDataHandler
-from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.strategy.engine import EngineMode
+
 from quant_engine.utils.logger import get_logger
 from quant_engine.runtime.log_router import attach_artifact_handlers
 
 
 class BacktestEngine:
     """
-    Unified Backtest Driver (skeleton).
+    Deterministic Backtest Driver.
 
-    This wraps:
-        - HistoricalDataHandler (Layer 1 - historical)
-        - RealTimeDataHandler   (Layer 1 - streaming simulator)
-        - StrategyEngine        (Layer 7 orchestrator)
+    Responsibilities:
+    - Own backtest time range
+    - Load historical data
+    - Warm up strategy state
+    - Drive StrategyEngine.step() forward in time
 
-    The backtest engine feeds each historical bar into the
-    RealTimeDataHandler as if it were streaming live data, ensuring
-    backtest and live share the same execution pipeline.
+    StrategyEngine owns:
+    - data handlers
+    - features
+    - models / risk / decision
     """
 
     def __init__(
         self,
-        strategy_engine: StrategyEngine,
-        historical: HistoricalDataHandler,
-        realtime: RealTimeDataHandler,
+        *,
+        engine: StrategyEngine,
+        start_ts: float,
+        end_ts: float,
+        warmup_steps: int = 0,
     ):
-        self.strategy = strategy_engine
-        self.historical = historical
-        self.realtime = realtime
+        if engine.mode is not EngineMode.BACKTEST:
+            raise ValueError("BacktestEngine requires EngineMode.BACKTEST")
 
-        # Store results for analysis / reporting
-        self.results: List[Dict[str, Any]] = []
+        self.engine = engine
+        self.start_ts = start_ts
+        self.end_ts = end_ts
+        self.warmup_steps = warmup_steps
 
-    @classmethod
-    def from_historical(cls, strategy_engine: StrategyEngine, historical: HistoricalDataHandler, window: int = 1000):
-        """
-        Convenience constructor:
-        Automatically create a RealTimeDataHandler for backtesting.
-        """
-        realtime = RealTimeDataHandler(window=window)
-        return cls(strategy_engine, historical, realtime)
+        self._logger = get_logger(__name__)
+        attach_artifact_handlers(self._logger)
 
     # -------------------------------------------------
-    # Main loop
+    # Lifecycle
     # -------------------------------------------------
-    def run(self) -> List[Dict[str, Any]]:
+    def run(self) -> None:
         """
-        Iterate over historical bars.
-        For each bar:
-            (1) push into RealTimeDataHandler
-            (2) call strategy.step()
-            (3) collect snapshot
+        Execute the backtest deterministically.
         """
-        run_id = "2025-12-14_backtest_001"
 
-        logger = get_logger()   # root logger
-
-        attach_artifact_handlers(
-            logger,
-            run_id=run_id,
-            decisions=True,
-            execution=True,
-            data_repairs=True,
+        self._logger.info(
+            "Backtest started",
+            start_ts=self.start_ts,
+            end_ts=self.end_ts,
+            warmup_steps=self.warmup_steps,
         )
-        for bar in self.historical.iter_bars():
 
-            # ---- Feed new bar to the realtime handler ----
-            window_df = self.realtime.on_new_tick(bar)
-            if window_df is None or len(window_df) == 0:
-                continue  # skip until we have enough data
-            # ---- Execute one pipeline step ----
-            snapshot = self.strategy.step()
+        # 1) Load historical data
+        self.engine.load_history(
+            start_ts=self.start_ts,
+            end_ts=self.end_ts,
+        )
 
-            # ---- Record ----
-            self.results.append(snapshot)
+        # 2) Warm up strategy state
+        self.engine.warmup(
+            anchor_ts=self.start_ts,
+            warmup_steps=self.warmup_steps,
+        )
 
-        return self.results
+        # 3) Run main backtest loop
+        while True:
+            snapshot = self.engine.step()
 
-    # -------------------------------------------------
-    # Optional: reset method
-    # -------------------------------------------------
-    def reset(self):
-        """Reset state (optional, for repeated backtests)."""
-        self.results.clear()
-        self.realtime.reset()
-        self.strategy.portfolio.reset()
+            if "timestamp" not in snapshot:
+                raise RuntimeError(
+                    "StrategyEngine.step() must return a snapshot "
+                    "with a 'timestamp' field in BACKTEST mode"
+                )
+
+            ts = snapshot["timestamp"]
+
+            if ts >= self.end_ts:
+                break
+
+        self._logger.info("Backtest completed")

@@ -17,23 +17,62 @@ class RealTimeDataHandler:
         log_debug(self._logger, "RealTimeDataHandler initialized", window=window)
 
     @classmethod
-    def from_historical(cls, historical_handler, window: int = 1000):
+    def from_historical(
+        cls,
+        historical_handler,
+        *,
+        start_ts: float | pd.Timestamp | None = None,
+        window: int = 1000,
+    ):
         """
-        Build a RealTimeDataHandler seeded with historical data.
-        Use case: backtesting where historical bars are preloaded into realtime cache.
+        Build a RealTimeDataHandler seeded from historical data.
+
+        This is used ONLY during backtest initialization to warm up the realtime cache.
+        No historical access happens after construction.
+
+        Parameters
+        ----------
+        historical_handler:
+            Source of historical OHLCV data.
+        start_ts:
+            Backtest start timestamp. If provided, only bars with bar.ts <= start_ts
+            are used for warm‑up (anti‑lookahead safe).
+        window:
+            Cache window size.
         """
         obj = cls(historical_handler.symbol, window=window)
-        # preload historical window into realtime cache
-        df = historical_handler.window_df(window)
+
+        # Resolve timestamp
+        if start_ts is not None:
+            ts = pd.Timestamp(start_ts, tz="UTC") if not isinstance(start_ts, pd.Timestamp) else start_ts
+            df = historical_handler.window_before_ts(ts, window)
+        else:
+            # Fallback: last window without timestamp alignment
+            log_info(
+                obj._logger,
+                "RealTimeDataHandler.from_historical: no start_ts provided, using last window",
+                symbol=historical_handler.symbol,
+            )
+            df = historical_handler.window_df(window)
+
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 obj.cache.update(row.to_frame().T)
+        else:
+            log_info(
+                obj._logger,
+                "RealTimeDataHandler.from_historical: no data to seed cache",
+                symbol=historical_handler.symbol,
+                start_ts=start_ts,
+            )
+        
         return obj
 
     def on_new_tick(self, bar: pd.DataFrame):
         """
         Called when a new bar arrives from exchange or websocket.
         """
+
         log_debug(self._logger, "RealTimeDataHandler received tick")
         self.cache.update(bar)
         log_debug(self._logger, "RealTimeDataHandler updated cache")
@@ -50,37 +89,6 @@ class RealTimeDataHandler:
             return df.tail(window)
         return df
 
-    def latest_bar(self):
-        """
-        [DEPRECATED — v4]
-        Use get_snapshot(ts) instead.
-        """
-
-        warnings.warn(
-            "RealTimeDataHandler.latest_bar() is deprecated in v4.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        log_debug(self._logger, "RealTimeDataHandler retrieving latest bar")
-        df = self.cache.get_window()
-        if df is None or df.empty:
-            return None
-        return df.tail(1)
-
-    def latest_tick(self):
-        """
-        [DEPRECATED — v4]
-        Alias of latest_bar(). Use get_snapshot(ts) instead.
-        """
-
-        warnings.warn(
-            "RealTimeDataHandler.latest_tick() is deprecated in v4.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # Backward compatibility
-        return self.latest_bar()
-
     def last_timestamp(self):
         """
         Return timestamp of the most recent bar.
@@ -89,22 +97,6 @@ class RealTimeDataHandler:
         if df is None or df.empty:
             return None
         return df["timestamp"].iloc[-1]
-
-    def prev_close(self):
-        """
-        [DEPRECATED — v4]
-        Use window(ts, n) and compute previous close manually.
-        """
-
-        warnings.warn(
-            "RealTimeDataHandler.prev_close() is deprecated in v4.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        df = self.cache.get_window()
-        if df is None or len(df) < 2:
-            return None
-        return df["close"].iloc[-2]
 
     # ------------------------------------------------------------------
     # v4 unified data access (timestamp‑aligned)

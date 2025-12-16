@@ -7,25 +7,24 @@ from quant_engine.contracts.feature import FeatureChannel
 FEATURE_REGISTRY: dict[str, type] = {}
 
 
-def register_feature(name: str):
+def register_feature(feature_type: str):
     """
     Decorator: @register_feature("RSI")
     Automatically registers class into FEATURE_REGISTRY.
     """
     def decorator(cls):
-        FEATURE_REGISTRY[name] = cls
+        FEATURE_REGISTRY[feature_type] = cls
         return cls
     return decorator
 
 
-def build_feature(name: str, symbol=None, **params) -> FeatureChannel:
+def build_feature(feature_type: str, *, name: str, symbol=None, **params) -> FeatureChannel:
     """Instantiate a feature class by name (multi‑symbol ready)."""
-    if name not in FEATURE_REGISTRY:
-        raise ValueError(f"Feature '{name}' not found in registry.")
-    
-    cls = FEATURE_REGISTRY[name]
+    if feature_type not in FEATURE_REGISTRY:
+        raise ValueError(f"Feature type '{feature_type}' not found in registry.")
 
-    return cls(symbol=symbol, **params)
+    cls = FEATURE_REGISTRY[feature_type]
+    return cls(name=name, symbol=symbol, **params)
 
 
 from quant_engine.features.ta.ta import *                 # noqa: F401,F403

@@ -1,25 +1,49 @@
 # decision/regime.py
 from quant_engine.contracts.decision import DecisionBase
 from .registry import register_decision
-from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_decision("REGIME")
 class RegimeDecision(DecisionBase):
-    def __init__(self, bull: float = 1.0, bear: float = -1.0):
-        self.bull = bull
-        self.bear = bear
-        self._logger = get_logger(__name__)
-        log_debug(self._logger, "RegimeDecision initialized", bull=bull, bear=bear)
+    """Map a regime label to a decision score.
 
-    def decide(self, context) -> float:
-        regime_label = context.get("regime_label", 0)
-        log_debug(self._logger, "RegimeDecision received regime_label", regime_label=regime_label)
-        if regime_label > 0:
-            log_debug(self._logger, "RegimeDecision output", decision=self.bull)
+    Expected context shape (from StrategyEngine.step):
+        {
+            "features": {...},
+            "models": {"main": <float>, ...} OR {"regime_label": <float>, ...},
+            "portfolio": {...},
+        }
+
+    Backward compatible with legacy flat contexts that put `regime_label` at top level.
+    """
+
+    def __init__(
+        self,
+        symbol: str | None = None,
+        bull: float = 1.0,
+        bear: float = -1.0,
+        **kwargs,
+    ):
+        super().__init__(symbol=symbol, **kwargs)
+        self.bull = float(bull)
+        self.bear = float(bear)
+
+    def decide(self, context: dict) -> float:
+        # Prefer model outputs; tolerate multiple key conventions.
+        models = context.get("models")
+        if not isinstance(models, dict):
+            models = {}
+
+        regime_label = models.get("regime_label")
+        if regime_label is None:
+            regime_label = models.get("main")
+        if regime_label is None:
+            # Legacy/flat context fallback
+            regime_label = context.get("regime_label", 0.0)
+
+        x = float(regime_label)
+        if x > 0.0:
             return self.bull
-        elif regime_label < 0:
-            log_debug(self._logger, "RegimeDecision output", decision=self.bear)
+        if x < 0.0:
             return self.bear
-        log_debug(self._logger, "RegimeDecision output", decision=0.0)
         return 0.0

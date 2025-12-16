@@ -1,72 +1,72 @@
 # features/ta.py
 from quant_engine.contracts.feature import FeatureChannelBase
-from ..registry import register_feature
+from quant_engine.features.registry import register_feature
 import pandas as pd
-from quant_engine.utils.logger import get_logger, log_debug
+
+# v4 Feature Module:
+# - Feature identity (name) is injected by Strategy and treated as immutable.
+# - This module performs pure feature computation only.
 
 @register_feature("RSI")
 class RSIFeature(FeatureChannelBase):
-    _logger = get_logger(__name__)
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "RSIFeature requires a symbol"
-        self.symbol = symbol
-        self.period = kwargs.get("period", 14)
+    def __init__(self, *, name: str, symbol: str, window: int = 14):
+        super().__init__(name=name, symbol=symbol)
+        self.window = window
         self._rsi = None
         self._avg_up = None
         self._avg_down = None
+        self._prev_close: float | None = None
 
     def required_window(self) -> int:
-        return self.period + 1
+        return self.window + 1
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.period + 1, warmup_window) if warmup_window else (self.period + 1)
+        window_len = max(self.window + 1, warmup_window) if warmup_window else (self.window + 1)
         data = self.window_any(context, "ohlcv", window_len)
         delta = data["close"].diff()
         up = delta.clip(lower=0)
         down = (-delta.clip(upper=0))
 
         # Wilder's smoothing initialization
-        self._avg_up = up.rolling(self.period).mean().iloc[-1]
-        self._avg_down = down.rolling(self.period).mean().iloc[-1]
+        self._avg_up = float(up.rolling(self.window).mean().iloc[-1])
+        self._avg_down = float(down.rolling(self.window).mean().iloc[-1])
 
         rs = self._avg_up / (self._avg_down + 1e-12)
-        self._rsi = float(rs)
+        self._rsi = float(100 - (100 / (1 + rs)))
+        self._prev_close = float(data["close"].iloc[-1])
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
         close = float(bar["close"].iloc[0])
         if self._avg_up is None or self._avg_down is None:
             return  # initialize() not called yet
-        prev_close = self._avg_up + self._avg_down if self._rsi is not None else None
-
-        if prev_close is None:
-            return
+        assert self._prev_close is not None
+        prev_close = self._prev_close
 
         delta = close - prev_close
         up = max(delta, 0)
         down = max(-delta, 0)
 
         # Wilder incremental smoothing
-        self._avg_up = (self._avg_up * (self.period - 1) + up) / self.period
-        self._avg_down = (self._avg_down * (self.period - 1) + down) / self.period
+        self._avg_up = (self._avg_up * (self.window - 1) + up) / self.window
+        self._avg_down = (self._avg_down * (self.window - 1) + down) / self.window
 
         rs = self._avg_up / (self._avg_down + 1e-12)
-        self._rsi = float(rs)
+        self._rsi = float(100 - (100 / (1 + rs)))
+        self._prev_close = close
 
     def output(self):
         assert self._rsi is not None, "RSIFeature.output() called before initialize()"
-        return {"RSI": self._rsi}
+        return self._rsi
 
 
 @register_feature("MACD")
 class MACDFeature(FeatureChannelBase):
-    _logger = get_logger(__name__)
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "MACDFeature requires a symbol"
-        self.symbol = symbol
-        self.fast = kwargs.get("fast", 12)
-        self.slow = kwargs.get("slow", 26)
-        self.signal = kwargs.get("signal", 9)
+    def __init__(self, *, name: str, symbol: str, fast: int = 12, slow: int = 26, signal: int = 9):
+        super().__init__(name=name, symbol=symbol)
+        self.fast = fast
+        self.slow = slow
+        self.signal = signal
         self._ema_fast = None
         self._ema_slow = None
         self._macd = None
@@ -79,8 +79,8 @@ class MACDFeature(FeatureChannelBase):
         data = self.window_any(context, "ohlcv", window_len)
         close = data["close"]
 
-        self._ema_fast = close.ewm(span=self.fast, adjust=False).mean().iloc[-1]
-        self._ema_slow = close.ewm(span=self.slow, adjust=False).mean().iloc[-1]
+        self._ema_fast = float(close.ewm(span=self.fast, adjust=False).mean().iloc[-1])
+        self._ema_slow = float(close.ewm(span=self.slow, adjust=False).mean().iloc[-1])
         self._macd = float(self._ema_fast - self._ema_slow)
 
     def update(self, context):
@@ -97,16 +97,13 @@ class MACDFeature(FeatureChannelBase):
 
     def output(self):
         assert self._macd is not None, "MACDFeature.output() called before initialize()"
-        return {"MACD": self._macd}
+        return self._macd
 
 @register_feature("ADX")
 class ADXFeature(FeatureChannelBase):
-    _logger = get_logger(__name__)
-
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "ADXFeature requires a symbol"
-        self.symbol = symbol
-        self.period = kwargs.get("period", 14)
+    def __init__(self, *, name: str, symbol: str, window: int = 14):
+        super().__init__(name=name, symbol=symbol)
+        self.window = window
 
         self._tr = None
         self._dm_pos = None
@@ -117,11 +114,15 @@ class ADXFeature(FeatureChannelBase):
         self._di_neg = None
         self._adx = None
 
+        self._prev_high: float | None = None
+        self._prev_low: float | None = None
+        self._prev_close: float | None = None
+
     def required_window(self) -> int:
-        return self.period + 1
+        return self.window + 1
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.period + 1, warmup_window) if warmup_window else (self.period + 1)
+        window_len = max(self.window + 1, warmup_window) if warmup_window else (self.window + 1)
         data = self.window_any(context, "ohlcv", window_len)
         high = data["high"]
         low = data["low"]
@@ -146,17 +147,24 @@ class ADXFeature(FeatureChannelBase):
         dm_pos = ((up_move > down_move) & (up_move > 0)) * up_move
         dm_neg = ((down_move > up_move) & (down_move > 0)) * down_move
 
-        self._tr = tr.rolling(self.period).sum().iloc[-1]
-        self._dm_pos = dm_pos.rolling(self.period).sum().iloc[-1]
-        self._dm_neg = dm_neg.rolling(self.period).sum().iloc[-1]
+        self._tr = float(tr.rolling(self.window).sum().iloc[-1])
+        self._dm_pos = float(dm_pos.rolling(self.window).sum().iloc[-1])
+        self._dm_neg = float(dm_neg.rolling(self.window).sum().iloc[-1])
 
         self._di_pos = 100 * (self._dm_pos / (self._tr + 1e-12))
         self._di_neg = 100 * (self._dm_neg / (self._tr + 1e-12))
+
+        assert self._di_pos is not None
+        assert self._di_neg is not None
 
         dx = 100 * (abs(self._di_pos - self._di_neg) /
                     (self._di_pos + self._di_neg + 1e-12))
 
         self._adx = float(dx)
+
+        self._prev_high = float(high.iloc[-1])
+        self._prev_low = float(low.iloc[-1])
+        self._prev_close = float(close.iloc[-1])
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
@@ -164,25 +172,33 @@ class ADXFeature(FeatureChannelBase):
         low = float(bar["low"].iloc[0])
         close = float(bar["close"].iloc[0])
 
-        prev_close = None
-        prev_high = None
-        prev_low = None
+        assert self._prev_high is not None
+        assert self._prev_low is not None
+        assert self._prev_close is not None
+
+        prev_high = self._prev_high
+        prev_low = self._prev_low
+        prev_close = self._prev_close
 
         tr_ = max(
             high - low,
-            abs(high - prev_close) if prev_close is not None else 0,
-            abs(low - prev_close) if prev_close is not None else 0,
+            abs(high - prev_close),
+            abs(low - prev_close),
         )
 
-        up_move = high - prev_high if prev_high is not None else 0
-        down_move = prev_low - low if prev_low is not None else 0
+        up_move = high - prev_high
+        down_move = prev_low - low
 
         dm_pos_ = up_move if (up_move > down_move and up_move > 0) else 0
         dm_neg_ = down_move if (down_move > up_move and down_move > 0) else 0
 
-        self._tr = self._tr - (self._tr / self.period) + tr_
-        self._dm_pos = self._dm_pos - (self._dm_pos / self.period) + dm_pos_
-        self._dm_neg = self._dm_neg - (self._dm_neg / self.period) + dm_neg_
+        assert self._tr is not None
+        assert self._dm_pos is not None
+        assert self._dm_neg is not None
+        
+        self._tr = self._tr - (self._tr / self.window) + tr_
+        self._dm_pos = self._dm_pos - (self._dm_pos / self.window) + dm_pos_
+        self._dm_neg = self._dm_neg - (self._dm_neg / self.window) + dm_neg_
 
         self._di_pos = 100 * (self._dm_pos / (self._tr + 1e-12))
         self._di_neg = 100 * (self._dm_neg / (self._tr + 1e-12))
@@ -192,19 +208,20 @@ class ADXFeature(FeatureChannelBase):
 
         self._adx = float(dx)
 
+        self._prev_high = high
+        self._prev_low = low
+        self._prev_close = close
+
     def output(self):
         assert self._adx is not None, "ADXFeature.output() called before initialize()"
-        return {"ADX": self._adx}
+        return self._adx
 
 @register_feature("RETURN")
 class ReturnFeature(FeatureChannelBase):
-    _logger = get_logger(__name__)
-
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "ReturnFeature requires a symbol"
-        self.symbol = symbol
+    def __init__(self, *, name: str, symbol: str, lookback: int = 1):
+        super().__init__(name=name, symbol=symbol)
+        self.lookback = lookback
         self._ret = None
-        self.lookback = kwargs.get("lookback", 1)
 
     def required_window(self) -> int:
         return self.lookback + 1
@@ -221,9 +238,9 @@ class ReturnFeature(FeatureChannelBase):
 
         # need lookback window
         data = self.window_any(context, "ohlcv", self.lookback + 1)
-        prev_close = data["close"].iloc[0]
+        prev_close = float(data["close"].iloc[0])
         self._ret = float((close / prev_close) - 1.0)
 
     def output(self):
         assert self._ret is not None, "ReturnFeature.output() called before initialize()"
-        return {"RETURN": self._ret}
+        return self._ret

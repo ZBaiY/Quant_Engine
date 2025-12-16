@@ -2,18 +2,18 @@
 # Microstructure feature channels (L2/L3 orderbook derived)
 from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.contracts.feature import FeatureChannelBase
-from ..registry import register_feature
-from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.features.registry import register_feature
 
+# v4 Feature Module:
+# - Feature identity (name) is injected by Strategy and treated as immutable.
+# - This module performs pure feature computation only.
 
 @register_feature("SPREAD")
 class SpreadFeature(FeatureChannelBase):
     """Best bid/ask spread."""
-    _logger = get_logger(__name__)
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "SpreadFeature requires a symbol"
-        self.symbol = symbol
-        self._value = None
+    def __init__(self, *, name: str, symbol: str):
+        super().__init__(name=name, symbol=symbol)
+        self._value: float | None = None
 
     def initialize(self, context, warmup_window=None):
         snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
@@ -30,17 +30,15 @@ class SpreadFeature(FeatureChannelBase):
 
     def output(self):
         assert self._value is not None, "SpreadFeature.output() called before initialize()"
-        return {"SPREAD": self._value}
+        return float(self._value)
 
 
 @register_feature("IMBALANCE")
 class OrderImbalanceFeature(FeatureChannelBase):
     """Orderbook imbalance = (bid_size - ask_size) / (sum)."""
-    _logger = get_logger(__name__)
-    def __init__(self, symbol=None, **kwargs):
-        assert symbol is not None, "OrderImbalanceFeature requires a symbol"
-        self.symbol = symbol
-        self._value = None
+    def __init__(self, *, name: str, symbol: str):
+        super().__init__(name=name, symbol=symbol)
+        self._value: float | None = None
 
     def initialize(self, context, warmup_window=None):
         snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
@@ -63,4 +61,4 @@ class OrderImbalanceFeature(FeatureChannelBase):
 
     def output(self):
         assert self._value is not None, "OrderImbalanceFeature.output() called before initialize()"
-        return {"ORDER_IMBALANCE": self._value}
+        return float(self._value)

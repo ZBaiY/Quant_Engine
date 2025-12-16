@@ -10,10 +10,10 @@ def register_risk(name: str):
     return decorator
 
 
-def build_risk(name: str, **kwargs) -> RiskBase:
+def build_risk(name: str, symbol: str, **kwargs) -> RiskBase:
     if name not in RISK_REGISTRY:
         raise ValueError(f"Risk rule '{name}' not found.")
-    return RISK_REGISTRY[name](**kwargs)
+    return RISK_REGISTRY[name](symbol=symbol, **kwargs)
 
 from .rules_atr import *
 from .rules_exposure import *

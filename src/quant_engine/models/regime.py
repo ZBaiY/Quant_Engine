@@ -15,14 +15,24 @@ class VolRegimeModel(ModelBase):
     - predict(features) -> float
     """
 
-    required_features = ["VOLATILITY"]
+    # design-time capability requirement
+    required_feature_types = {"VOLATILITY"}
 
-    def __init__(self, symbol: str, threshold: float = 0.02, **kwargs):
+    def __init__(self, symbol: str, **kwargs):
+        # threshold is a model parameter; keep it in kwargs for loader-style construction
+        threshold = kwargs.get("threshold", 0.02)
         super().__init__(symbol=symbol, **kwargs)
-        self.threshold = threshold
+        self.threshold = float(threshold)
 
     def predict(self, features: Dict[str, Any]) -> float:
-        filtered = self.filter_symbol(features)
-        key = f"VOLATILITY_{self.symbol}"
-        vol = filtered.get(key, 0.0)
+        # Prefer semantic lookup via the bound feature index
+        try:
+            vol = float(self.fget(features, ftype="VOLATILITY", purpose="MODEL"))
+        except Exception:
+            # Fallback: use (validated) required feature names if index is not bound yet
+            if not getattr(self, "required_features", None):
+                vol = 0.0
+            else:
+                name = next(iter(self.required_features))
+                vol = float(features.get(name, 0.0))
         return 1.0 if vol > self.threshold else -1.0

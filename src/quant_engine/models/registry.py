@@ -13,11 +13,10 @@ def register_model(name: str):
     return decorator
 
 
-def build_model(name: str, **kwargs) -> ModelBase:
+def build_model(name: str, symbol: str, **kwargs) -> ModelBase:
     if name not in MODEL_REGISTRY:
         raise ValueError(f"Model '{name}' not found in registry.")
-    return MODEL_REGISTRY[name](**kwargs)
-
+    return MODEL_REGISTRY[name](symbol=symbol, **kwargs)
 
 from .momentum import *
 from .statistical import *

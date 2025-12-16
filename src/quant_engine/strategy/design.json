@@ -1,0 +1,146 @@
+{
+  "strategy": {
+    "name": "PAIR_ZSCORE"
+  },
+
+  "symbol": "BTCUSDT",
+
+  "data": {
+    "primary": {
+      "ohlcv": {
+        "source": "binance",
+        "interval": "1m",
+        "history": {
+          "lookback": "30d",
+          "warmup": 200
+        },
+        "mode": {
+          "backtest": true,
+          "live": true
+        }
+      },
+      "option_chain": {
+        "source": "deribit",
+        "expiry_filter": {
+          "min_days": 7,
+          "max_days": 90
+        },
+        "strike_filter": {
+          "moneyness": [-0.3, 0.3]
+        },
+        "refresh_interval": "5m"
+      },
+      "orderbook": {
+        "depth": 10,
+        "aggregation": "L2",
+        "refresh_interval": "100ms"
+      }
+    },
+
+    "secondary": {
+      "ETHUSDT": {
+        "ohlcv": {
+          "source": "binance",
+          "interval": "1m",
+          "history": {
+            "lookback": "30d",
+            "warmup": 200
+          },
+          "mode": {
+            "backtest": true,
+            "live": true
+          }
+        }
+      }
+    }
+  },
+
+  "features": [
+    {
+      "name": "SPREAD_BTCUSDT^ETHUSDT",
+      "type": "SPREAD",
+      "symbol": "BTCUSDT",
+      "params": {
+        "ref": "ETHUSDT"
+      }
+    },
+    {
+      "name": "RSI_MODEL_BTCUSDT",
+      "type": "RSI",
+      "symbol": "BTCUSDT",
+      "params": {
+        "window": 14
+      }
+    },
+    {
+      "name": "RSI_MODEL_ETHUSDT",
+      "type": "RSI",
+      "symbol": "ETHUSDT",
+      "params": {
+        "window": 14
+      }
+    },
+    {
+      "name": "ZSCORE_MODEL_ETHUSDT^BTCUSDT",
+      "type": "ZSCORE",
+      "symbol": "BTCUSDT",
+      "params": {
+        "secondary": "ETHUSDT",
+        "lookback": 120
+      }
+    }
+  ],
+
+  "model": {
+    "type": "PAIR_ZSCORE",
+    "params": {
+      "zscore_feature": "ZSCORE_MODEL_ETHUSDT^BTCUSDT"
+    }
+  },
+
+  "decision": {
+    "type": "ZSCORE_THRESHOLD",
+    "params": {
+      "zscore_feature": "ZSCORE_MODEL_ETHUSDT^BTCUSDT",
+      "enter": 2.0,
+      "exit": 0.5
+    }
+  },
+
+  "risk": {
+    "rules": {
+      "ATR_SIZER": {
+        "params": {
+          "atr_feature": "ATR_RISK_BTCUSDT"
+        }
+      },
+      "EXPOSURE_LIMIT": {
+        "params": {
+          "limit": 2.0
+        }
+      }
+    }
+  },
+
+  "execution": {
+    "policy": {
+      "type": "IMMEDIATE"
+    },
+    "router": {
+      "type": "SIMPLE"
+    },
+    "slippage": {
+      "type": "LINEAR"
+    },
+    "matching": {
+      "type": "SIMULATED"
+    }
+  },
+
+  "portfolio": {
+    "type": "STANDARD",
+    "params": {
+      "initial_capital": 10000
+    }
+  }
+}
