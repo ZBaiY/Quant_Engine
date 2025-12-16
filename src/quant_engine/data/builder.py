@@ -1,10 +1,10 @@
 from __future__ import annotations
 from typing import Dict, Set, Any
 
-from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 
 from quant_engine.utils.logger import get_logger, log_debug
@@ -38,7 +38,7 @@ def build_multi_symbol_handlers(
     # secondary symbols are explicit
     symbols.update(data_spec.get("secondary", {}).keys())
 
-    ohlcv_handlers: Dict[str, RealTimeDataHandler] = {}
+    ohlcv_handlers: Dict[str, OHLCVDataHandler] = {}
 
     if "ohlcv" in primary:
         cfg = primary["ohlcv"]
@@ -49,21 +49,31 @@ def build_multi_symbol_handlers(
         if backtest:
             from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
             hist = HistoricalOHLCVHandler(symbol=symbol, **cfg)
-            rt = RealTimeDataHandler.from_historical(
+            rt = OHLCVDataHandler.from_historical(
                 hist,
                 start_ts=kwargs.get("start_ts"),
             )
             ohlcv_handlers[symbol] = rt
         else:
-            ohlcv_handlers[symbol] = RealTimeDataHandler(
+            ohlcv_handlers[symbol] = OHLCVDataHandler(
                 symbol=symbol,
                 **cfg,
             )
 
-        for sec_symbol, sec_cfg in secondary.items():
-            if "ohlcv" not in sec_cfg:
-                continue
-            ohlcv_handlers[sec_symbol] = RealTimeDataHandler(
+    for sec_symbol, sec_cfg in secondary.items():
+        if "ohlcv" not in sec_cfg:
+            continue
+        if backtest:
+            from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
+
+            hist = HistoricalOHLCVHandler(symbol=sec_symbol, **sec_cfg["ohlcv"])
+            rt = OHLCVDataHandler.from_historical(
+                hist,
+                start_ts=kwargs.get("start_ts"),
+            )
+            ohlcv_handlers[sec_symbol] = rt
+        else:
+            ohlcv_handlers[sec_symbol] = OHLCVDataHandler(
                 symbol=sec_symbol,
                 **sec_cfg["ohlcv"],
             )
@@ -82,10 +92,11 @@ def build_multi_symbol_handlers(
                 from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler  # type: ignore
 
                 hist = HistoricalOrderbookHandler(symbol=symbol, **cfg)
+                window = int(((cfg.get("cache") or {}).get("max_bars")) or 200)
                 orderbook_handlers[symbol] = RealTimeOrderbookHandler.from_historical(
                     hist,
                     start_ts=kwargs.get("start_ts"),
-                    end_ts=kwargs.get("end_ts"),
+                    window=window,
                 )
             except Exception as e:
                 log_debug(
@@ -118,10 +129,11 @@ def build_multi_symbol_handlers(
                     from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler  # type: ignore
 
                     hist = HistoricalOrderbookHandler(symbol=sec_symbol, **sec_cfg["orderbook"])
+                    window = int((((sec_cfg["orderbook"].get("cache") or {}).get("max_bars")) or 200))
                     orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler.from_historical(
                         hist,
                         start_ts=kwargs.get("start_ts"),
-                        end_ts=kwargs.get("end_ts"),
+                        window=window,
                     )
                 except Exception as e:
                     log_debug(
@@ -155,15 +167,15 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary option_chain")
 
         if backtest and hasattr(OptionChainDataHandler, "from_historical"):
-            # TODO: implement/standardize HistoricalOptionChainHandler and the adapter.
             try:
                 from quant_engine.data.derivatives.option_chain.historical import HistoricalOptionChainHandler  # type: ignore
 
                 hist = HistoricalOptionChainHandler(symbol=symbol, **cfg)
+                window = int(((cfg.get("cache") or {}).get("max_bars")) or 1000)
                 option_chain_handlers[symbol] = OptionChainDataHandler.from_historical(
                     hist,
                     start_ts=kwargs.get("start_ts"),
-                    end_ts=kwargs.get("end_ts"),
+                    window=window,
                 )
             except Exception as e:
                 log_debug(
@@ -196,10 +208,12 @@ def build_multi_symbol_handlers(
                     from quant_engine.data.derivatives.option_chain.historical import HistoricalOptionChainHandler  # type: ignore
 
                     hist = HistoricalOptionChainHandler(symbol=sec_symbol, **sec_cfg["option_chain"])
+                    cfg2 = sec_cfg["option_chain"]
+                    window = int(((cfg2.get("cache") or {}).get("max_bars")) or 1000)
                     option_chain_handlers[sec_symbol] = OptionChainDataHandler.from_historical(
                         hist,
                         start_ts=kwargs.get("start_ts"),
-                        end_ts=kwargs.get("end_ts"),
+                        window=window,
                     )
                 except Exception as e:
                     log_debug(
@@ -227,12 +241,12 @@ def build_multi_symbol_handlers(
     iv_surface_handlers: Dict[str, IVSurfaceDataHandler] = {}
 
     if "iv_surface" in primary:
+        cfg = primary["iv_surface"]
         symbol = kwargs.get("primary_symbol")
         if symbol not in option_chain_handlers:
             raise ValueError(f"IV surface for {symbol} requires option_chain handler")
 
         if backtest and hasattr(IVSurfaceDataHandler, "from_historical"):
-            # TODO: implement/standardize HistoricalIVSurfaceHandler and the adapter.
             try:
                 from quant_engine.data.derivatives.iv.historical import HistoricalIVSurfaceHandler  # type: ignore
 
@@ -255,6 +269,7 @@ def build_multi_symbol_handlers(
                 iv_surface_handlers[symbol] = IVSurfaceDataHandler(
                     symbol=symbol,
                     chain_handler=option_chain_handlers[symbol],
+                    **cfg,
                 )
         else:
             if backtest:
@@ -266,11 +281,13 @@ def build_multi_symbol_handlers(
             iv_surface_handlers[symbol] = IVSurfaceDataHandler(
                 symbol=symbol,
                 chain_handler=option_chain_handlers[symbol],
+                **cfg,
             )
 
     for sec_symbol, sec_cfg in secondary.items():
         if "iv_surface" not in sec_cfg:
             continue
+        cfg2 = sec_cfg["iv_surface"]
         if sec_symbol not in option_chain_handlers:
             raise ValueError(
                 f"IV surface for {sec_symbol} requires option_chain handler"
@@ -298,6 +315,7 @@ def build_multi_symbol_handlers(
                 iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
                     symbol=sec_symbol,
                     chain_handler=option_chain_handlers[sec_symbol],
+                    **cfg2,
                 )
         else:
             if backtest:
@@ -309,81 +327,30 @@ def build_multi_symbol_handlers(
             iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
                 symbol=sec_symbol,
                 chain_handler=option_chain_handlers[sec_symbol],
+                **cfg2,
             )
 
-    sentiment_handlers: Dict[str, SentimentLoader] = {}
+    sentiment_handlers: Dict[str, SentimentHandler] = {}
 
     if "sentiment" in primary:
         cfg = primary["sentiment"]
         symbol = kwargs.get("primary_symbol")
-        if backtest and hasattr(SentimentLoader, "from_historical"):
-            try:
-                from quant_engine.data.sentiment.historical import HistoricalSentimentHandler  # type: ignore
+        if symbol is None:
+            raise ValueError("primary_symbol must be provided for primary sentiment")
 
-                hist = HistoricalSentimentHandler(symbol=symbol, **cfg)
-                sentiment_handlers[symbol] = SentimentLoader.from_historical(
-                    hist,
-                    start_ts=kwargs.get("start_ts"),
-                    end_ts=kwargs.get("end_ts"),
-                )
-            except Exception as e:
-                log_debug(
-                    _logger,
-                    "Sentiment backtest adapter not available; falling back to realtime loader shell",
-                    symbol=symbol,
-                    error=str(e),
-                )
-                sentiment_handlers[symbol] = SentimentLoader(
-                    symbol=symbol,
-                    **cfg,
-                )
-        else:
-            if backtest:
-                log_debug(
-                    _logger,
-                    "Sentiment backtest requested but from_historical not implemented; using realtime loader shell",
-                    symbol=symbol,
-                )
-            sentiment_handlers[symbol] = SentimentLoader(
-                symbol=symbol,
-                **cfg,
-            )
+        # v4: SentimentHandler is runtime IO-free; adapters for historical live elsewhere.
+        sentiment_handlers[symbol] = SentimentHandler(
+            symbol=symbol,
+            **cfg,
+        )
 
         for sec_symbol, sec_cfg in secondary.items():
             if "sentiment" not in sec_cfg:
                 continue
-            if backtest and hasattr(SentimentLoader, "from_historical"):
-                try:
-                    from quant_engine.data.sentiment.historical import HistoricalSentimentHandler  # type: ignore
-
-                    hist = HistoricalSentimentHandler(symbol=sec_symbol, **sec_cfg["sentiment"])
-                    sentiment_handlers[sec_symbol] = SentimentLoader.from_historical(
-                        hist,
-                        start_ts=kwargs.get("start_ts"),
-                        end_ts=kwargs.get("end_ts"),
-                    )
-                except Exception as e:
-                    log_debug(
-                        _logger,
-                        "Sentiment backtest adapter not available for secondary; falling back to realtime loader shell",
-                        symbol=sec_symbol,
-                        error=str(e),
-                    )
-                    sentiment_handlers[sec_symbol] = SentimentLoader(
-                        symbol=sec_symbol,
-                        **sec_cfg["sentiment"],
-                    ) 
-            else:
-                if backtest:
-                    log_debug(
-                        _logger,
-                        "Sentiment backtest requested for secondary but from_historical not implemented; using realtime loader shell",
-                        symbol=sec_symbol,
-                    )
-                sentiment_handlers[sec_symbol] = SentimentLoader(
-                    symbol=sec_symbol,
-                    **sec_cfg["sentiment"],
-                )
+            sentiment_handlers[sec_symbol] = SentimentHandler(
+                symbol=sec_symbol,
+                **sec_cfg["sentiment"],
+            )
 
     handler_dict = {}
     if ohlcv_handlers:

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from quant_engine.strategy.base import StrategyBase
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.loader import SentimentLoader
 from quant_engine.features.loader import FeatureLoader
@@ -201,7 +201,7 @@ class StrategyLoader:
         # -----------------------
 
         ohlcv_handlers = cast(
-            Mapping[str, RealTimeDataHandler],
+            Mapping[str, OHLCVDataHandler],
             data_handlers["ohlcv"]
         )
         orderbook_handlers = cast(

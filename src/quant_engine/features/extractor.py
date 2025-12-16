@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 
 from quant_engine.contracts.feature import FeatureChannel
-from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.sentiment.loader import SentimentLoader
@@ -127,7 +127,7 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        ohlcv_handlers: Dict[str, RealTimeDataHandler],
+        ohlcv_handlers: Dict[str, OHLCVDataHandler],
         orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
         option_chain_handlers: Dict[str, OptionChainDataHandler],
         iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
@@ -193,7 +193,7 @@ class FeatureExtractor:
         warmup_window = max(max_window, min_warmup)
 
         # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
-        primary_handler: Optional[RealTimeDataHandler] = None
+        primary_handler: Optional[OHLCVDataHandler] = None
         ohlcv_window = None
         timestamp_candidates: list[float] = []
 

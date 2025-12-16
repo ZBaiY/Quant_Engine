@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from typing import SupportsInt, cast
 
 import pandas as pd
 
@@ -149,10 +150,10 @@ class OHLCVIngestionEngine:
         interval: str,
     ) -> None:
         df = df.copy()
-        df["year"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.year
-
+        df["year"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.year.astype("int32")        
         for year, chunk in df.groupby("year"):
-            path = self._year_path(kind, symbol, interval, year)
+            year_i = int(cast(SupportsInt, year))
+            path = self._year_path(kind, symbol, interval, year_i)
             path.parent.mkdir(parents=True, exist_ok=True)
             chunk.to_parquet(path, engine="pyarrow", index=False)
 

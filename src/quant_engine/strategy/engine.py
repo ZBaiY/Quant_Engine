@@ -6,7 +6,7 @@ from enum import Enum
 
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.loader import SentimentLoader
 from quant_engine.features.extractor import FeatureExtractor
@@ -32,7 +32,7 @@ class StrategyEngine:
         *,
         mode: EngineMode,
         symbol: str,
-        ohlcv_handlers: Mapping[str, RealTimeDataHandler],          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
+        ohlcv_handlers: Mapping[str, OHLCVDataHandler],          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
         orderbook_handlers: Mapping[str, RealTimeOrderbookHandler],      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
         option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
         iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]

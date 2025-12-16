@@ -33,47 +33,63 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         "source": "binance",
         "depth": 10,
         "aggregation": "L2",
-        "refresh_interval": "100ms",
+        "interval": "100ms",
+        "bootstrap": {"lookback": "1d"},
+        "cache": {"max_bars": 10000},
     },
     "BINANCE_ORDERBOOK_L2_20_250MS": {
         "source": "binance",
         "depth": 20,
         "aggregation": "L2",
         "refresh_interval": "250ms",
+        "bootstrap": {"lookback": "1d"},
+        "cache": {"max_bars": 10000},
     },
 
     # --- Option chain ---
     "DERIBIT_OPTION_CHAIN_5M": {
         "source": "deribit",
-        "refresh_interval": "5m",
+        "interval": "5m",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
     "DERIBIT_OPTION_CHAIN_1M": {
         "source": "deribit",
-        "refresh_interval": "1m",
+        "interval": "1m",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
 
     # --- IV surface ---
     "DERIBIT_IV_SURFACE_5M": {
         "source": "deribit",
-        "refresh_interval": "5m",
+        "interval": "5m",
         "calibrator": "SSVI",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
     "DERIBIT_IV_SURFACE_1M": {
         "source": "deribit",
-        "refresh_interval": "1m",
+        "interval": "1m",
         "calibrator": "SSVI",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
 
     # --- Sentiment ---
     "SENTIMENT_BASIC_5M": {
         "source": "news",
-        "refresh_interval": "5m",
+        "interval": "5m",
         "model": "lexicon",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
     "SENTIMENT_EMBEDDING_15M": {
         "source": "news",
-        "refresh_interval": "15m",
+        "interval": "15m",
         "model": "embedding",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
     },
     }
 

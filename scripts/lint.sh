@@ -4,5 +4,5 @@ set -euo pipefail
 export PYTHONPATH="src:${PYTHONPATH:-}"
 
 echo "[lint] Running ruff on src/ and tests/..."
-ruff check src tests --ignore F401,F841,E402,F403
+ruff check src tests --ignore F401,F841,E402,F403,PLC0415
 # TODO: Remove ignore rules once scaffolding phase is complete

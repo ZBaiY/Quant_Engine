@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import pandas as pd
-
+import numpy as np
 from quant_engine.utils.logger import get_logger, log_debug
 
 _logger = get_logger(__name__)
@@ -97,8 +97,9 @@ class OHLCVLoader:
         ts = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         if ts.isna().any():
             raise ValueError("Invalid timestamps detected during OHLCV loading")
-
-        df["timestamp"] = ts.view("int64") / 1e9
+        ns = ts.astype("int64")  # ns since epoch
+        sec = ns.astype("float64") / 1_000_000_000.0
+        df["timestamp"] = sec.where(ts.notna(), np.nan).astype("float64")
 
         # ------------------------------------------------------------------
         # Validate required columns
