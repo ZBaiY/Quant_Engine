@@ -36,14 +36,16 @@ v4 keeps the runtime event-driven, but **logic boundaries are enforced by contra
 
 ## Strategy loading and runtime control-flow
 
+For a zoomable version of this diagram on GitHub, open **[loading-and-runtime-control-flow.pdf](loading-and-runtime-control-flow.pdf)**.
+
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User / Entry
     participant S as Strategy (static spec)
     participant L as StrategyLoader
-    participant E as StrategyEngine (runtime semantics)
     participant D as Driver (BacktestEngine / RealtimeEngine)
+    participant E as StrategyEngine (runtime semantics)
     participant H as DataHandlers (OHLCV/Orderbook/Options/IV/Sentiment)
     participant F as FeatureExtractor
     participant M as Model
@@ -102,58 +104,71 @@ Each layer depends **only on contracts**, not implementations.
 ---
 
 # Minimal Strategy Configuration Example (v4 JSON)
+This is the *runtime assembly config* consumed by `StrategyLoader.from_config(...)`. In practice your real strategies will have more features and data sources; the important part is the **shape** (and the naming convention).
+
 ```json
 {
-  "BTCUSDT": {
-    "strategy": {
-      "model": {
-        "class": "RSIModel",
-        "params": { "window": 14 }
-      },
-      "decision": {
-        "class": "ThresholdDecision",
-        "params": { "threshold": 0.0 }
-      },
-      "risk": {
-        "class": "ATRSizer",
-        "params": { "atr_window": 14, "risk_fraction": 0.02 }
-      },
-      "execution": {
-        "class": "TWAPPolicy",
-        "params": { "segments": 5 }
+  "data": {
+    "primary": {
+      "ohlcv": { "symbol": "BTCUSDT", "tf": "15m" },
+      "orderbook": { "symbol": "BTCUSDT", "depth": 20 }
+    },
+    "secondary": {
+      "ETHUSDT": {
+        "ohlcv": { "tf": "15m" }
       }
     }
+  },
+  "features_user": [
+    { "name": "RSI_MODEL_BTCUSDT", "type": "RSI", "symbol": "BTCUSDT", "params": { "window": 14 } },
+    { "name": "ATR_RISK_BTCUSDT", "type": "ATR", "symbol": "BTCUSDT", "params": { "window": 14 } }
+  ],
+  "model": {
+    "type": "RSI_MODEL",
+    "params": { "rsi_feature": "RSI_MODEL_BTCUSDT" }
+  },
+  "decision": {
+    "type": "THRESHOLD",
+    "params": { "threshold": 0.0 }
+  },
+  "risk": {
+    "type": "ATR_SIZER",
+    "params": { "risk_fraction": 0.02 }
+  },
+  "execution": {
+    "type": "TWAP",
+    "params": { "segments": 5 }
   }
 }
 ```
-This JSON assembles components — it does **not** select branches inside a pipeline.
+
+Notes:
+- **Symbols are declared only in `data`** (primary + secondary). Features/models may reference symbols but must not introduce new ones.
+- Feature names follow: `TYPE_PURPOSE_SYMBOL` (and if there is a ref: `TYPE_PURPOSE_REF^SYMBOL`).
 
 ---
 
 # Minimal Working Example (Python)
 ```python
-from quant_engine import (
-    RSIModel,
-    ThresholdDecision,
-    ATRSizer,
-    TWAPPolicy,
-    StrategyEngine,
-)
+from quant_engine.strategy.engine import EngineMode
+from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.backtest.engine import BacktestEngine
 
-strategy = StrategyEngine(
-    model=RSIModel(window=14),
-    decision=ThresholdDecision(threshold=0.0),
-    risk=ATRSizer(atr_window=14, risk_fraction=0.02),
-    execution=TWAPPolicy(segments=5),
-)
+# user-defined strategy: static spec only (no mode/time/side effects)
+from strategies.example_strategy import ExampleStrategy
 
-strategy.backtest(
-    symbol="BTCUSDT",
-    start="2022-01-01",
-    end="2023-01-01"
-)
+strategy = ExampleStrategy()
 
-strategy.report.save("reports/btc_rsi_twap/")
+# assembly: Strategy + mode -> StrategyEngine (handlers are shells; no history loaded yet)
+engine = StrategyLoader.from_config(strategy=strategy, mode=EngineMode.BACKTEST)
+
+# driver: time pusher (strategy-agnostic)
+BacktestEngine(
+    engine,
+    start_ts=1640995200.0,   # 2022-01-01 UTC
+    end_ts=1672531200.0,     # 2023-01-01 UTC
+    warmup_steps=200,
+).run()
 ```
 
 ---
