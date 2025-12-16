@@ -5,9 +5,16 @@
 </h1>
 
 <p align="center" style="font-size:26px; font-weight:600; line-height:1.35; padding:10px 0;">
-  A modular, extensible, execution-realistic research & trading framework —
+  A modular, extensible, execution-faithful research & trading framework —
   designed for professional-grade systematic trading.
 </p>
+
+---
+
+> **Infrastructure Freeze Policy (v1)**  
+> The Quant Engine v4 infrastructure is **frozen**.  
+> Strategy logic, parameters, and data sources may evolve —  
+> **core execution semantics and contracts will not.**
 
 ---
 
@@ -25,7 +32,7 @@ Core idea: components communicate through explicit contracts (Protocols), while 
 - **Driver** (BacktestEngine / RealtimeEngine) = time pusher (calls `engine.step()`), strategy-agnostic.
 
 ## Event-driven → Contract-driven
-Earlier versions chained logic directly (Data → Features → Model → Decision → Risk → Execution), which became fragile with multi-source data and execution realism.
+Earlier versions relied on implicit control flow between components, which became fragile under multi-source data and execution constraints.
 
 v4 keeps the runtime event-driven, but **logic boundaries are enforced by contracts**:
 - `FeatureChannel` → features
