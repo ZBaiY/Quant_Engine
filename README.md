@@ -231,6 +231,7 @@ end
 MERGE --> RISK
 
 subgraph L6[Layer 6 — Execution Layer]
+    direction LR
     POLICY[ExecutionPolicy<br>Immediate<br>TWAP<br>Maker first]
     ROUTER[Router<br>L1 L2 aware<br>timeout rules]
     SLIP[SlippageModel<br>Linear impact<br>Depth model]
