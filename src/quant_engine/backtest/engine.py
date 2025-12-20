@@ -3,7 +3,7 @@
 import time
 
 from quant_engine.strategy.engine import StrategyEngine
-from quant_engine.strategy.engine import EngineMode
+from quant_engine.strategy.engine import EngineSpec
 
 from quant_engine.utils.logger import get_logger
 from quant_engine.runtime.log_router import attach_artifact_handlers
@@ -23,10 +23,11 @@ class BacktestEngine:
         warmup_steps: int = 0,
         run_id: str | None = None,
     ):
-        if engine.mode != EngineMode.BACKTEST:
-            raise ValueError("BacktestEngine requires EngineMode.BACKTEST")
+        if not isinstance(engine.spec, EngineSpec) or engine.spec.mode is not engine.spec.mode.BACKTEST:
+            raise ValueError("BacktestEngine requires EngineSpec(mode=EngineMode.BACKTEST)")
 
         self.engine = engine
+        # Time-range is a driver concern; it must not live in EngineSpec.
         self.start_ts = start_ts
         self.end_ts = end_ts
         self.warmup_steps = warmup_steps
@@ -53,6 +54,7 @@ class BacktestEngine:
         )
 
         self.engine.load_history(start_ts=self.start_ts, end_ts=self.end_ts)
+        # Warmup is executed after history load, anchored at start_ts
         self.engine.warmup(anchor_ts=self.start_ts, warmup_steps=self.warmup_steps)
 
         prev_ts: float | None = None

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
-from .surface import IVSurface
+from ..surface import IVSurface
 
 
 @dataclass

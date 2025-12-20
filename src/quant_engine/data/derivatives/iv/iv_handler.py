@@ -5,8 +5,8 @@ from typing import Any, Deque, Optional, Iterable
 
 from quant_engine.utils.logger import get_logger, log_debug
 
-from quant_engine.data.protocol_realtime import RealTimeDataHandler, TimestampLike
-from quant_engine.data.protocol_historical import HistoricalSignalSource
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
+from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
@@ -170,13 +170,13 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             if isinstance(item, IVSurfaceSnapshot):
                 # enforce symbol if missing
                 if item.symbol is None:
-                    return IVSurfaceSnapshot.from_surface(
-                        ts=float(item.timestamp),
-                        surface_ts=float(item.timestamp),
+                    return IVSurfaceSnapshot.from_surface_aligned(
+                        timestamp=float(item.timestamp),
+                        data_ts=float(item.timestamp),
                         atm_iv=float(item.atm_iv),
                         skew=float(item.skew),
                         curve=dict(item.curve),
-                        surface_params=dict(item.surface),
+                        surface=dict(item.surface),
                         symbol=rt.symbol,
                         expiry=item.expiry,
                         model=item.model,
@@ -184,56 +184,52 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 return item
 
             if isinstance(item, dict):
-                # tolerant dict schema
+                # tolerant dict schema, require keys for from_surface_aligned
                 ts_val = item.get("timestamp", item.get("ts"))
+                if ts_val is None:
+                    return None
                 try:
-                    assert ts_val is not None
-                    t = float(ts_val)
+                    data_ts = float(ts_val)
                 except Exception:
                     return None
 
                 # Anti-lookahead guard
-                if start_ts_f is not None and t > float(start_ts_f):
+                if start_ts_f is not None and data_ts > float(start_ts_f):
                     return None
 
-                atm = item.get("atm_iv", 0.0)
-                sk = item.get("skew", 0.0)
-                curve = item.get("curve", {})
-                surface = item.get("surface", {})
+                # Required keys for from_surface_aligned
+                atm_iv = item.get("atm_iv")
+                skew = item.get("skew")
+                curve = item.get("curve")
+                surface = item.get("surface")
+
+                if atm_iv is None or skew is None or curve is None or surface is None:
+                    return None
 
                 try:
-                    atm_f = float(atm)
+                    atm_iv_f = float(atm_iv)
+                    skew_f = float(skew)
                 except Exception:
-                    atm_f = 0.0
-                try:
-                    sk_f = float(sk)
-                except Exception:
-                    sk_f = 0.0
+                    return None
 
-                curve_d: dict[str, float] = {}
-                if isinstance(curve, dict):
-                    for k, v in curve.items():
-                        try:
-                            curve_d[str(k)] = float(v)
-                        except Exception:
-                            continue
-
-                surface_d: dict[str, Any] = dict(surface) if isinstance(surface, dict) else {}
-
+                symbol = rt.symbol
                 expiry = item.get("expiry")
                 expiry_s = expiry if isinstance(expiry, str) and expiry else None
 
                 model = item.get("model")
                 model_s = model if isinstance(model, str) and model else rt.model_name
 
-                return IVSurfaceSnapshot.from_surface(
-                    ts=t,
-                    surface_ts=t,
-                    atm_iv=atm_f,
-                    skew=sk_f,
-                    curve=curve_d,
-                    surface_params=surface_d,
-                    symbol=rt.symbol,
+                # Enforce timestamp = engine ts = data_ts (no separate engine ts here, use data_ts)
+                timestamp = data_ts
+
+                return IVSurfaceSnapshot.from_surface_aligned(
+                    timestamp=timestamp,
+                    data_ts=data_ts,
+                    atm_iv=atm_iv_f,
+                    skew=skew_f,
+                    curve=dict(curve) if isinstance(curve, dict) else {},
+                    surface=dict(surface) if isinstance(surface, dict) else {},
+                    symbol=symbol,
                     expiry=expiry_s,
                     model=model_s,
                 )
@@ -319,15 +315,14 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         skew = float(getattr(chain_snap, "skew", 0.0))
         curve = dict(getattr(chain_snap, "smile", {}))
 
-        params = {"source": "chain_snapshot", "model": self.model_name}
-
-        return IVSurfaceSnapshot.from_surface(
-            ts=ts,
-            surface_ts=surface_ts,
+        # Enforce timestamp = engine ts, data_ts = surface_ts
+        return IVSurfaceSnapshot.from_surface_aligned(
+            timestamp=ts,
+            data_ts=surface_ts,
             atm_iv=atm_iv,
             skew=skew,
             curve=curve,
-            surface_params=params,
+            surface={},
             symbol=self.symbol,
             expiry=self.expiry,
             model=self.model_name,

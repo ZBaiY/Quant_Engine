@@ -6,8 +6,8 @@ from typing import Any, Deque, Dict, List, Optional
 
 import pandas as pd
 
-from quant_engine.data.protocol_historical import HistoricalSignalSource
-from quant_engine.data.protocol_realtime import RealTimeDataHandler, TimestampLike
+from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
@@ -230,7 +230,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         df = self.get_latest_snapshot()
         if not df.empty:
             chain_ts = float(ts) if ts is not None else float(df["timestamp"].iloc[0]) if "timestamp" in df.columns else float(time.time())
-            self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df))
+            self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
     @classmethod
     def from_historical_legacy(cls, historical_handler: Any) -> "OptionChainDataHandler":
@@ -264,7 +264,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         # Push v4 snapshot
         chain_ts = float(df["timestamp"].iloc[0]) if "timestamp" in df.columns else float(time.time())
-        self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df))
+        self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
     def update_contract(self, expiry: str, strike: float, option_type: OptionType, **fields: Any) -> None:
         chain = self.chains.get(expiry)
@@ -392,28 +392,43 @@ def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
         if x.empty:
             return None
         chain_ts = float(x["timestamp"].iloc[0]) if "timestamp" in x.columns else float(time.time())
-        return OptionChainSnapshot.from_chain(chain_ts, x)
+        return OptionChainSnapshot.from_chain(chain_ts, x, symbol)
 
     if isinstance(x, dict):
-        # accept {engine_ts, chain_timestamp/timestamp, chain/contracts}
-        chain_ts = x.get("chain_timestamp", x.get("timestamp", x.get("ts")))
-        if chain_ts is None:
+        # accept {engine_ts, data_ts/chain_timestamp/timestamp, chain/contracts/payload}
+        data_ts = x.get("data_ts", x.get("chain_timestamp", x.get("timestamp", x.get("ts"))))
+        if data_ts is None:
             return None
-        chain_ts_f = float(chain_ts)
+        data_ts_f = float(data_ts)
 
-        chain = x.get("chain")
-        if chain is None:
-            chain = x.get("contracts")
-        if chain is None:
+        payload = x.get("chain")
+        if payload is None:
+            payload = x.get("contracts")
+        if payload is None:
+            payload = x.get("payload")
+        if payload is None:
             return None
 
-        engine_ts = x.get("engine_ts", x.get("ts_engine", chain_ts_f))
-        return OptionChainSnapshot.from_chain_aligned(ts=float(engine_ts), chain_timestamp=chain_ts_f, chain=chain)  # type: ignore[arg-type]
+        engine_ts = x.get("engine_ts", x.get("ts_engine", data_ts_f))
+        return OptionChainSnapshot.from_chain_aligned(
+            timestamp=float(engine_ts),
+            data_ts=data_ts_f,
+            symbol=symbol,
+            chain=payload,
+        )
 
-    # OptionChain object
-    if hasattr(x, "to_snapshot"):
+    # OptionChain object (ingestion object) -> freeze to snapshot
+    if hasattr(x, "to_snapshot_dict"):
         try:
-            return x.to_snapshot(engine_ts=None)  # type: ignore[attr-defined]
+            payload = x.to_snapshot_dict()  # type: ignore[attr-defined]
+            data_ts = getattr(x, "timestamp", None)
+            data_ts_f = float(data_ts) if data_ts is not None else float(time.time())
+            return OptionChainSnapshot.from_chain_aligned(
+                timestamp=data_ts_f,
+                data_ts=data_ts_f,
+                symbol=symbol,
+                chain=payload,
+            )
         except Exception:
             return None
 

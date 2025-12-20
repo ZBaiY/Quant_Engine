@@ -1,100 +1,143 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List
-import pandas as pd
+from typing import Dict, List, Mapping, Any
 
-"""
-{
-  "timestamp": tick_ts,
-  "bids": [(price, qty), ...],
-  "asks": [(price, qty), ...],
-  "mid": float,
-  "spread": float,
-  "latency": ts - tick_ts,
-}
-"""
+from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.utils.num import to_float
 
-@dataclass
-class OrderbookSnapshot:
+
+@dataclass(frozen=True)
+class OrderbookSnapshot(Snapshot):
     """
-    Lightweight container for L1/L2 orderbook snapshots.
+    Immutable orderbook snapshot (L1 + optional aggregated L2).
 
-    This can be expanded later to full depth,
-    but for now we store:
-        - best bid/ask (L1)
-        - optional aggregated depth (L2)
-        - timestamp
+    Represents orderbook state aligned to engine clock `timestamp`,
+    derived from tick timestamp `data_ts`.
     """
 
+    # --- common snapshot fields ---
     timestamp: float
+    data_ts: float
+    latency: float
     symbol: str
+    domain: str
+    schema_version: int
 
-    # L1
+    # --- L1 ---
     best_bid: float
     best_bid_size: float
     best_ask: float
     best_ask_size: float
 
-    # L2 aggregated data
+    # --- L2 aggregated ---
     bids: List[Dict[str, float]] = field(default_factory=list)
     asks: List[Dict[str, float]] = field(default_factory=list)
 
-    latency: float = 0.0
+    # ---------- helpers ----------
 
     @staticmethod
-    def _ensure_depth_list(x):
+    def _ensure_depth_list(x: Any) -> List[Dict[str, float]]:
         """
         Normalize bids/asks into List[Dict[str, float]].
-        Acceptable input forms:
-            • list of dicts
-            • list of (price, qty) tuples
-            • stringified list (from CSV)
-            • None / float / invalid → returns empty list
+        Acceptable input:
+          - list of dicts {"price": ..., "qty": ...}
+          - list of (price, qty)
+          - None / invalid -> empty list
         """
+        cleaned: List[Dict[str, float]] = []
+
         if isinstance(x, list):
-            cleaned = []
             for item in x:
                 if isinstance(item, dict):
-                    # ensure proper float typing
-                    cleaned.append({
-                        "price": float(item.get("price", 0.0)),
-                        "qty": float(item.get("qty", 0.0)),
-                    })
+                    cleaned.append(
+                        {
+                            "price": to_float(item.get("price", 0.0)),
+                            "qty": to_float(item.get("qty", 0.0)),
+                        }
+                    )
                 elif isinstance(item, (tuple, list)) and len(item) == 2:
                     price, qty = item
-                    cleaned.append({
-                        "price": float(price),
-                        "qty": float(qty),
-                    })
-            return cleaned
+                    cleaned.append(
+                        {
+                            "price": to_float(price),
+                            "qty": to_float(qty),
+                        }
+                    )
+        return cleaned
 
-        # Handle CSV string case
-        if isinstance(x, str):
-            try:
-                parsed = eval(x)
-                return OrderbookSnapshot._ensure_depth_list(parsed)
-            except Exception:
-                return []
+    # ---------- constructors ----------
 
-        # Any other type → empty list
-        return []
+    @classmethod
+    def from_tick_aligned(
+        cls,
+        *,
+        timestamp: float,
+        tick: Mapping[str, Any],
+        symbol: str,
+        schema_version: int = 1,
+    ) -> "OrderbookSnapshot":
+        """
+        Canonical tolerant constructor from an aligned orderbook tick.
+        """
+        ts = to_float(timestamp)
+        tick_ts = to_float(tick.get("timestamp", ts))
+
+        return cls(
+            timestamp=ts,
+            data_ts=tick_ts,
+            latency=ts - tick_ts,
+            symbol=symbol,
+            domain="orderbook",
+            schema_version=schema_version,
+            best_bid=to_float(tick.get("best_bid", 0.0)),
+            best_bid_size=to_float(tick.get("best_bid_size", 0.0)),
+            best_ask=to_float(tick.get("best_ask", 0.0)),
+            best_ask_size=to_float(tick.get("best_ask_size", 0.0)),
+            bids=cls._ensure_depth_list(tick.get("bids")),
+            asks=cls._ensure_depth_list(tick.get("asks")),
+        )
+
+    # ---- backward-compatible wrappers ----
+
+    @classmethod
+    def from_tick(cls, ts: float, tick: Mapping[str, Any], symbol: str) -> "OrderbookSnapshot":
+        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol)
+
+    @classmethod
+    def from_dataframe(cls, df: Any, ts: float, symbol: str) -> "OrderbookSnapshot":
+        """
+        Backward-compatible helper for 1-row DataFrame input.
+        Pandas is intentionally not imported at module scope.
+        """
+        row = df.iloc[0]
+        tick = {
+            "timestamp": row.get("timestamp", ts),
+            "best_bid": row.get("best_bid", 0.0),
+            "best_bid_size": row.get("best_bid_size", 0.0),
+            "best_ask": row.get("best_ask", 0.0),
+            "best_ask_size": row.get("best_ask_size", 0.0),
+            "bids": row.get("bids", []),
+            "asks": row.get("asks", []),
+        }
+        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol)
+
+    # ---------- utilities ----------
 
     def mid_price(self) -> float:
-        """Return mid price if both bid and ask exist."""
-        if self.best_bid is None or self.best_ask is None:
-            return float("nan")
         return 0.5 * (self.best_bid + self.best_ask)
 
     def spread(self) -> float:
-        """Return bid-ask spread."""
-        if self.best_bid is None or self.best_ask is None:
-            return float("nan")
-        return float(self.best_ask - self.best_bid)
+        return self.best_ask - self.best_bid
 
-    def to_dict(self) -> Dict:
-        """Convert to plain dict for logging or JSON."""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "timestamp": self.timestamp,
+            "data_ts": self.data_ts,
+            "latency": self.latency,
             "symbol": self.symbol,
+            "domain": self.domain,
+            "schema_version": self.schema_version,
             "best_bid": self.best_bid,
             "best_bid_size": self.best_bid_size,
             "best_ask": self.best_ask,
@@ -103,42 +146,4 @@ class OrderbookSnapshot:
             "asks": self.asks,
             "mid": self.mid_price(),
             "spread": self.spread(),
-            "latency": self.latency,
         }
-
-    @staticmethod
-    def from_dataframe(df: pd.DataFrame, ts: float, symbol: str) -> "OrderbookSnapshot":
-        """
-        Convert 1-row DataFrame into snapshot.
-        Expected columns:
-            timestamp, best_bid, best_bid_size, best_ask, best_ask_size
-        """
-        row = df.iloc[0]
-        latency = float(ts - row["timestamp"])
-
-        return OrderbookSnapshot(
-            timestamp=float(row["timestamp"]),
-            symbol=symbol,
-            best_bid=float(row["best_bid"]),
-            best_bid_size=float(row["best_bid_size"]),
-            best_ask=float(row["best_ask"]),
-            best_ask_size=float(row["best_ask_size"]),
-            bids=OrderbookSnapshot._ensure_depth_list(row.get("bids", [])),
-            asks=OrderbookSnapshot._ensure_depth_list(row.get("asks", [])),
-            latency=latency,
-        )
-
-    @classmethod
-    def from_tick(cls, ts: float, tick: Dict[str, float], symbol: str):
-        tick_ts = float(tick.get("timestamp", ts))
-        return cls(
-            timestamp=tick_ts,
-            symbol=symbol,
-            best_bid=float(tick.get("best_bid", 0.0)),
-            best_bid_size=float(tick.get("best_bid_size", 0.0)),
-            best_ask=float(tick.get("best_ask", 0.0)),
-            best_ask_size=float(tick.get("best_ask_size", 0.0)),
-            bids=OrderbookSnapshot._ensure_depth_list(tick.get("bids", [])),
-            asks=OrderbookSnapshot._ensure_depth_list(tick.get("asks", [])),
-            latency=float(ts - tick_ts),
-        )

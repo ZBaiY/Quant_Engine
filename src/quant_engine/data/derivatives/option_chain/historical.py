@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
+import time
 
 import numpy as np
 import pandas as pd
@@ -218,7 +219,14 @@ class HistoricalOptionChainHandler:
         for snap_ts in tail_ts:
             rows = sub[sub["timestamp"] == float(snap_ts)]
             # historical context: engine_ts == chain_ts => latency=0
-            out.append(OptionChainSnapshot.from_chain_aligned(ts=float(snap_ts), chain_timestamp=float(snap_ts), chain=rows))
+            out.append(
+                OptionChainSnapshot.from_chain_aligned(
+                    timestamp=float(snap_ts),
+                    data_ts=float(snap_ts),
+                    symbol=self.symbol,
+                    chain=rows,
+                )
+            )
         return out
 
     def iter_range(self, *, start_ts: float, end_ts: float | None = None) -> Iterable[Any]:
@@ -244,8 +252,9 @@ class HistoricalOptionChainHandler:
                 if t is None:
                     continue
                 yield OptionChainSnapshot.from_chain_aligned(
-                    ts=t,
-                    chain_timestamp=t,
+                    timestamp=float(t),
+                    data_ts=float(t),
+                    symbol=self.symbol,
                     chain=rows,
                 )
 

@@ -103,11 +103,10 @@ class OptionChain:
     # ------------------------------------------------------------------
     def to_snapshot_dict(self):
         """
-        Flatten all contract dicts and attach timestamp, symbol, expiry.
+        Flatten all contract dicts and attach symbol, expiry.
         Handler will feed this into OptionChainSnapshot.from_chain_aligned().
         """
         return {
-            "timestamp": self.timestamp,
             "symbol": self.symbol,
             "expiry": self.expiry,
             "contracts": [c.to_dict() for c in self.contracts],
@@ -138,11 +137,10 @@ class OptionChain:
 
         ts = float(engine_ts) if engine_ts is not None else chain_ts
 
-        # Use the DataFrame representation as ChainInput for the snapshot
-        df = self.to_dataframe()
-
+        # Use the raw chain payload for the snapshot
         return OptionChainSnapshot.from_chain_aligned(
-            ts=ts,
-            chain_timestamp=chain_ts,
-            chain=df,
+            timestamp=ts,
+            data_ts=chain_ts,
+            symbol=self.symbol,
+            chain=self.to_snapshot_dict(),
         )

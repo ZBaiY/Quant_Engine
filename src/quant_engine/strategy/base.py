@@ -68,10 +68,17 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
+    "DERIBIT_IV_SURFACE_5M_FETCHED": {
+        "source": "deribit",
+        "interval": "5m",
+        "calibrator": "FETCHED",
+        "bootstrap": {"lookback": "30d"},
+        "cache": {"max_bars": 10000},
+    },
     "DERIBIT_IV_SURFACE_1M": {
         "source": "deribit",
         "interval": "1m",
-        "calibrator": "SSVI",
+        "calibrator": "SSVI", # “SSVI”, “SABR”, "FETCHED"
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
@@ -119,6 +126,10 @@ class StrategyBase:
 
     # Set by registry
     STRATEGY_NAME: str = "UNREGISTERED"
+
+    # Optional: template/bound universe (B-style)
+    UNIVERSE_TEMPLATE: Dict[str, Any] = field(default_factory=dict)
+    UNIVERSE: Dict[str, Any] = field(default_factory=dict)
 
     # redundant, but making the class syntactically cleaner
     REQUIRED_DATA: Set[str] = field(default_factory=set) 
@@ -192,6 +203,59 @@ class StrategyBase:
                 raise TypeError(f"{name} must be a dict or None")
 
     # =================================================================
+    # B-style binding (template -> bound strategy instance)
+    # =================================================================
+
+    @staticmethod
+    def _resolve_templates(obj: Any, symbols: Dict[str, str]) -> Any:
+        """Resolve `{NAME}` placeholders recursively in nested specs."""
+        if isinstance(obj, str):
+            try:
+                return obj.format(**symbols)
+            except KeyError as e:
+                raise KeyError(f"Missing bind symbol {e!s} for template string: {obj!r}") from e
+        if isinstance(obj, list):
+            return [StrategyBase._resolve_templates(x, symbols) for x in obj]
+        if isinstance(obj, dict):
+            return {StrategyBase._resolve_templates(k, symbols) if isinstance(k, str) else k:
+                    StrategyBase._resolve_templates(v, symbols) for k, v in obj.items()}
+        return obj
+
+    def bind(self: T, **symbols: str) -> T:
+        """Return a *new* Strategy instance with `{A}`, `{B}`, ... placeholders resolved.
+
+        Binding is purely structural: it resolves template placeholders in DATA / FEATURES / CFG blocks.
+        It MUST NOT introduce runtime time-range concepts (start_ts/end_ts/warmup, etc.).
+        """
+        bound: T = copy.deepcopy(self)
+
+        # Resolve universe first (if provided)
+        if isinstance(bound.UNIVERSE_TEMPLATE, dict) and bound.UNIVERSE_TEMPLATE:
+            bound.UNIVERSE = StrategyBase._resolve_templates(bound.UNIVERSE_TEMPLATE, symbols)
+        elif not bound.UNIVERSE:
+            bound.UNIVERSE = {}
+
+        # Resolve the rest of the semi-JSON spec blocks
+        bound.DATA = StrategyBase._resolve_templates(bound.DATA, symbols)
+        bound.FEATURES_USER = StrategyBase._resolve_templates(bound.FEATURES_USER, symbols)
+        bound.MODEL_CFG = StrategyBase._resolve_templates(bound.MODEL_CFG, symbols) if bound.MODEL_CFG else None
+        bound.DECISION_CFG = StrategyBase._resolve_templates(bound.DECISION_CFG, symbols) if bound.DECISION_CFG else None
+        bound.RISK_CFG = StrategyBase._resolve_templates(bound.RISK_CFG, symbols) if bound.RISK_CFG else None
+        bound.EXECUTION_CFG = StrategyBase._resolve_templates(bound.EXECUTION_CFG, symbols) if bound.EXECUTION_CFG else None
+        bound.PORTFOLIO_CFG = StrategyBase._resolve_templates(bound.PORTFOLIO_CFG, symbols) if bound.PORTFOLIO_CFG else None
+
+        # Backward compatibility for existing loader: expose primary symbol if available.
+        # (Loader will be upgraded later to prefer UNIVERSE.)
+        primary = None
+        if isinstance(bound.UNIVERSE, dict):
+            primary = bound.UNIVERSE.get("primary")
+        if isinstance(primary, str) and primary:
+            setattr(bound, "SYMBOL", primary)
+
+        bound.validate()
+        return bound
+
+    # =================================================================
     # Spec standardization (semi-JSON -> normalized cfg)
     # =================================================================
 
@@ -258,9 +322,24 @@ class StrategyBase:
         """
         merged = self.apply_defaults(cfg or {})
 
+        # Guard: time-range & warmup are runtime/driver concerns, never strategy config.
+        forbidden = {"start_ts", "end_ts", "warmup_steps", "warmup_to", "warmup"}
+        present = forbidden.intersection(set(merged.keys()))
+        if present:
+            raise ValueError(f"Forbidden runtime keys in Strategy.standardize(): {sorted(present)}")
+
         out: Dict[str, Any] = copy.deepcopy(merged)
         out.setdefault("required_data", sorted(self.REQUIRED_DATA))
-        out.setdefault("symbol", getattr(self, "SYMBOL", None))
+        # Prefer bound universe primary symbol when available; fallback to legacy SYMBOL.
+        primary_symbol = None
+        if isinstance(getattr(self, "UNIVERSE", None), dict) and self.UNIVERSE:
+            primary_symbol = self.UNIVERSE.get("primary")
+        if not primary_symbol:
+            primary_symbol = getattr(self, "SYMBOL", None)
+
+        out.setdefault("symbol", primary_symbol)
+        if isinstance(getattr(self, "UNIVERSE", None), dict) and self.UNIVERSE:
+            out.setdefault("universe", copy.deepcopy(self.UNIVERSE))
 
         # Merge precedence: global -> strategy -> runtime
         combined_presets: Dict[str, Any] = copy.deepcopy(GLOBAL_PRESETS)
@@ -428,6 +507,8 @@ class StrategyBase:
         """
         return {
             "strategy": {"name": self.STRATEGY_NAME},
+            "universe_template": copy.deepcopy(self.UNIVERSE_TEMPLATE),
+            "universe": copy.deepcopy(self.UNIVERSE),
             "presets": copy.deepcopy(self.PRESETS),
             "required_data": sorted(self.REQUIRED_DATA),
             "data": copy.deepcopy(self.DATA),
@@ -445,6 +526,8 @@ class StrategyBase:
         Construct a Strategy from a dict (e.g. JSON‑deserialized).
         """
         return cls(
+            UNIVERSE_TEMPLATE=data.get("universe_template", {}),
+            UNIVERSE=data.get("universe", {}),
             PRESETS=data.get("presets", {}),
             REQUIRED_DATA=set(data.get("required_data", [])),
             DATA=data.get("data", {}),

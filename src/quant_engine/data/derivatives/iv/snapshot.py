@@ -1,73 +1,87 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Mapping, Any, Dict
 
-"""
-{
-  "timestamp": ts,
-  "atm_iv": float,
-  "skew": float,
-  "curve": {moneyness: iv},
-  "surface": {...}
-}
-"""
+from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.utils.num import to_float
 
-@dataclass
-class IVSurfaceSnapshot:
+
+@dataclass(frozen=True)
+class IVSurfaceSnapshot(Snapshot):
     """
-    Unified IV surface snapshot used by OptionChainDataHandler or IVSurfaceModel.
+    Immutable IV surface snapshot.
 
-    The surface is optional; if unavailable, fallback fields remain empty.
+    Domain payload represents a fitted or extracted implied-volatility surface
+    at a given engine timestamp, derived from market data at `data_ts`.
     """
 
+    # --- common snapshot fields ---
     timestamp: float
-    symbol: str | None
+    data_ts: float
+    latency: float
+    symbol: str
+    domain: str
+    schema_version: int
+
+    # --- IV surface specific payload ---
     expiry: str | None
     model: str | None            # e.g. "SSVI", "SABR"
     atm_iv: float
     skew: float
-    curve: Dict[str, float]      # moneyness → implied volatility
-    surface: Dict[str, Any]      # optional SABR/SSVI parameters
-    latency: float
+    curve: Dict[str, float]      # moneyness -> implied volatility
+    surface: Dict[str, Any]      # optional model parameters
 
     @classmethod
-    def from_surface(
+    def from_surface_aligned(
         cls,
-        ts: float,
-        surface_ts: float,
+        *,
+        timestamp: float,
+        data_ts: float,
+        symbol: str,
         atm_iv: float,
         skew: float,
-        curve: Dict[str, float],
-        surface_params: Dict[str, Any] | None = None,
-        symbol: str | None = None,
+        curve: Mapping[Any, Any],
+        surface: Mapping[str, Any] | None = None,
         expiry: str | None = None,
         model: str | None = None,
+        schema_version: int = 1,
     ) -> "IVSurfaceSnapshot":
         """
-        Construct a snapshot from extracted surface quantities.
+        Tolerant constructor from aligned IV surface quantities.
+
+        All numeric values are normalized to float.
         """
+        ts = to_float(timestamp)
+        dts = to_float(data_ts)
+
         return cls(
-            timestamp=float(surface_ts),
+            timestamp=ts,
+            data_ts=dts,
+            latency=ts - dts,
             symbol=symbol,
+            domain="iv_surface",
+            schema_version=schema_version,
             expiry=expiry,
             model=model,
-            atm_iv=float(atm_iv),
-            skew=float(skew),
-            curve={str(k): float(v) for k, v in curve.items()},
-            surface=surface_params or {},
-            latency=float(ts - surface_ts),
+            atm_iv=to_float(atm_iv),
+            skew=to_float(skew),
+            curve={str(k): to_float(v) for k, v in curve.items()},
+            surface=dict(surface) if surface is not None else {},
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert snapshot to plain dict for logging or JSON serialization."""
         return {
             "timestamp": self.timestamp,
+            "data_ts": self.data_ts,
+            "latency": self.latency,
             "symbol": self.symbol,
+            "domain": self.domain,
+            "schema_version": self.schema_version,
             "expiry": self.expiry,
             "model": self.model,
             "atm_iv": self.atm_iv,
             "skew": self.skew,
             "curve": self.curve,
             "surface": self.surface,
-            "latency": self.latency,
         }

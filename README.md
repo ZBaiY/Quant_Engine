@@ -27,7 +27,11 @@ Quant Engine (TradeBot v4) is a **contract-driven quant research & execution fra
 Core idea: components communicate through explicit contracts (Protocols), while the runtime enforces **time/lifecycle correctness** and **execution realism**.
 
 **Design rules (non-negotiable):**
-- **Strategy** = static specification (what to run). No mode, no time, no side effects.
+- **Strategy** = static *template* specification (what to run).  
+  No mode, no time, no side effects.  
+  Concrete symbols are resolved via an explicit **bind** step.
+- **BoundStrategy** = a fully-instantiated strategy (symbols resolved).  
+  This is the only form accepted by the runtime.
 - **Engine** = runtime semantics (time, lifecycle, legality).
 - **Driver** (BacktestEngine / RealtimeEngine) = time pusher (calls `engine.step()`), strategy-agnostic.
 
@@ -43,7 +47,22 @@ v4 keeps the runtime event-driven, but **logic boundaries are enforced by contra
 
 ## Strategy loading and runtime control-flow
 
-For a zoomable version of this diagram on GitHub, open **[loading-and-runtime-control-flow.pdf](loading-and-runtime-control-flow.pdf)**.
+### Strategy Template → Bind → Runtime
+
+Quant Engine v4 distinguishes **strategy structure** from **strategy instantiation**:
+
+1. **Strategy (template)**  
+   Declares data dependencies, feature structure, and model logic using symbolic placeholders  
+   (e.g. `{A}`, `{B}` for asset roles).
+
+2. **Bind step**  
+   Resolves placeholders into a concrete *universe* (primary / secondary symbols).  
+   This step is purely structural and introduces **no runtime or time semantics**.
+
+3. **BoundStrategy**  
+   The fully-resolved strategy specification consumed by `StrategyLoader`.
+
+This separation enables clean research semantics, explicit symbol universes, and reproducible execution.
 
 ```mermaid
 sequenceDiagram
@@ -60,17 +79,18 @@ sequenceDiagram
     participant X as ExecutionEngine
     participant P as Portfolio
 
-    U->>S: strategy = ExampleStrategy()
-    U->>L: from_config(strategy, mode, overrides?)
+    U->>S: strategy_tpl = ExampleStrategy()
+    U->>S: strategy = strategy_tpl.bind(A="BTCUSDT", B="ETHUSDT")
+    U->>L: from_config(strategy, mode)
 
-    Note over L: DATA is the *only* symbol declaration source
+    Note over L: symbols are resolved from the bound strategy universe
     L->>H: build_multi_symbol_handlers(data_spec, backtest?, primary_symbol)
     Note over H: handlers are created as shells (no history loaded yet)
 
     L->>F: FeatureLoader.from_config(features_user, handlers...)
     L->>M: build_model(type, symbol, **params)
     L->>R: RiskLoader.from_config(risk_cfg, symbol?)
-    L->>E: assemble StrategyEngine(mode, handlers, F, M/R/Decision, execution, portfolio)
+    L->>E: assemble StrategyEngine(spec, handlers, F, M/R/Decision, execution, portfolio)
 
     Note over E: Engine is assembled but not running yet
     D->>E: (BACKTEST only) load_history(start_ts, end_ts)
@@ -153,31 +173,75 @@ Notes:
 - **Symbols are declared only in `data`** (primary + secondary). Features/models may reference symbols but must not introduce new ones.
 - Feature names follow: `TYPE_PURPOSE_SYMBOL` (and if there is a ref: `TYPE_PURPOSE_REF^SYMBOL`).
 
+
 ---
 
 # Minimal Working Example (Python)
+### Example 1 — Pair Strategy (A + B)
 ```python
 from quant_engine.strategy.engine import EngineMode
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.backtest.engine import BacktestEngine
 
-# user-defined strategy: static spec only (no mode/time/side effects)
 from strategies.example_strategy import ExampleStrategy
 
-strategy = ExampleStrategy()
+# 1) define strategy template
+strategy_tpl = ExampleStrategy()
 
-# assembly: Strategy + mode -> StrategyEngine (handlers are shells; no history loaded yet)
-engine = StrategyLoader.from_config(strategy=strategy, mode=EngineMode.BACKTEST)
+# 2) bind concrete universe (no time semantics)
+strategy = strategy_tpl.bind(
+    A="BTCUSDT",
+    B="ETHUSDT",
+)
 
-# driver: time pusher (strategy-agnostic)
+# 3) assembly: BoundStrategy + mode -> StrategyEngine
+engine = StrategyLoader.from_config(
+    strategy=strategy,
+    mode=EngineMode.BACKTEST,
+)
+
+# 4) driver: owns time and execution horizon
 BacktestEngine(
-    engine,
+    engine=engine,
     start_ts=1640995200.0,   # 2022-01-01 UTC
     end_ts=1672531200.0,     # 2023-01-01 UTC
     warmup_steps=200,
 ).run()
 ```
-
+### Example 2 — Single-Asset Strategy (A only, no B)
+Some strategies operate on a single asset and do not require a secondary symbol.
+This is a valid **B-style degenerate case**, where only `{A}` is bound.
+```python
+from quant_engine.strategy.engine import EngineMode
+from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.backtest.engine import BacktestEngine
+from strategies.rsi_adx_sideways import RSIADXSidewaysStrategy
+# 1) define strategy template (single-asset)
+strategy_tpl = RSIADXSidewaysStrategy()
+# 2) bind only the primary asset
+strategy = strategy_tpl.bind(
+    A="BTCUSDT",
+)
+# 3) assembly: BoundStrategy + mode -> StrategyEngine
+engine = StrategyLoader.from_config(
+    strategy=strategy,
+    mode=EngineMode.BACKTEST,
+)
+# 4) driver: owns time and execution horizon
+BacktestEngine(
+    engine=engine,
+    start_ts=1640995200.0,
+    end_ts=1672531200.0,
+    warmup_steps=50,
+).run()
+```
+Notes:
+- `{A}`-only binding is a first-class use case.
+- Pair / multi-asset strategies simply extend this pattern by introducing `{B}`, `{C}`, etc.
+- Strategy structure remains static; only the bound universe changes.
+- Time ranges (`start_ts`, `end_ts`, `warmup_steps`) are **driver concerns only**.
+- `EngineSpec` carries runtime semantics (mode, primary symbol, universe) but never time.
+- Backtest, mock, and live trading share identical execution semantics.
 ---
 
 # Why This Architectural Shift Matters

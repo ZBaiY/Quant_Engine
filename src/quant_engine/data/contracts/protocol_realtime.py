@@ -10,7 +10,7 @@ if TYPE_CHECKING:  # pragma: no cover
 else:
     TimestampLike = float
 
-from quant_engine.data.protocol_historical import HistoricalSignalSource
+from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 
 
 @runtime_checkable

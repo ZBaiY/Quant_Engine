@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any
 from collections.abc import Mapping
 from enum import Enum
+from dataclasses import dataclass
 
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -17,6 +18,14 @@ class EngineMode(Enum):
     REALTIME = "realtime"
     BACKTEST = "backtest"
     MOCK = "mock"
+
+
+# EngineSpec dataclass for encapsulating engine configuration
+@dataclass(frozen=True)
+class EngineSpec:
+    mode: EngineMode
+    symbol: str
+    universe: dict[str, Any] | None = None
 
 class StrategyEngine:
     """Orchestrator of the entire quant pipeline.
@@ -30,13 +39,12 @@ class StrategyEngine:
     def __init__(
         self,
         *,
-        mode: EngineMode,
-        symbol: str,
+        spec: EngineSpec,
         ohlcv_handlers: Mapping[str, OHLCVDataHandler],          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
         orderbook_handlers: Mapping[str, RealTimeOrderbookHandler],      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
         option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
         iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]
-        sentiment_handlers: Mapping[str, SentimentLoader],      # dict[str, SentimentLoader]
+        sentiment_handlers: Mapping[str, SentimentHandler],      # dict[str, SentimentHandler]
         feature_extractor: FeatureExtractor,
         models,
         decision,
@@ -44,7 +52,10 @@ class StrategyEngine:
         execution_engine,
         portfolio_manager
     ):
-        self.mode = mode
+        self.spec = spec
+        self.mode = spec.mode
+        self.symbol = spec.symbol
+        self.universe = spec.universe or {}
         self.ohlcv_handlers = ohlcv_handlers
         self.orderbook_handlers = orderbook_handlers
         self.option_chain_handlers = option_chain_handlers
@@ -56,9 +67,8 @@ class StrategyEngine:
         self.risk_manager = risk_manager
         self.execution_engine = execution_engine
         self.portfolio = portfolio_manager
-        self.symbol = symbol
         log_debug(self._logger, "StrategyEngine initialized",
-                  mode=self.mode.value,
+                  mode=self.spec.mode.value,
                   model_count=len(models))
 
     def _get_primary_ohlcv_handler(self):

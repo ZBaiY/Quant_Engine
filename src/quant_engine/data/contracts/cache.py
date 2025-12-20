@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from typing import Protocol, Iterable, TypeVar, runtime_checkable
+
+from quant_engine.data.contracts.snapshot import Snapshot
+
+SnapT = TypeVar("SnapT", bound=Snapshot)
+
+@runtime_checkable
+class SnapshotCache(Protocol[SnapT]):
+    """
+    Snapshot cache contract.
+
+    Responsibilities:
+    - Store immutable Snapshot objects in a bounded structure
+    - Provide O(1) append and efficient time-based lookup
+    - Remain completely agnostic to engine mode (backtest / realtime / mock)
+
+    Non-responsibilities:
+    - No timestamp validation (anti-lookahead is handler/engine concern)
+    - No alignment, resampling, or semantic interpretation
+    """
+
+    def push(self, snapshot: SnapT) -> None:
+        """
+        Append a snapshot to the cache.
+        Eviction policy (ring / LRU / etc.) is implementation-defined.
+        """
+        ...
+
+    def last(self) -> SnapT | None:
+        """
+        Return the most recent snapshot, or None if empty.
+        """
+        ...
+
+    def get_at_or_before(self, timestamp: float) -> SnapT | None:
+        """
+        Return the latest snapshot with snapshot.timestamp <= timestamp.
+        """
+        ...
+
+    def window(self, n: int) -> Iterable[SnapT]:
+        """
+        Return the last n snapshots in insertion order.
+        """
+        ...
+
+    def clear(self) -> None:
+        """
+        Clear all cached snapshots.
+        """
+        ...

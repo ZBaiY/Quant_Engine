@@ -1,186 +1,108 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence, Union, Mapping, Hashable
+from typing import Any, Dict, List, Mapping, Sequence, Hashable
 
-import pandas as pd
+from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.utils.num import to_float
 
-ChainInput = Union[pd.DataFrame, Sequence[Dict[str, Any]]]
 
-@dataclass
-class OptionChainSnapshot:
+@dataclass(frozen=True)
+class OptionChainSnapshot(Snapshot):
+    """
+    Immutable option chain snapshot.
+
+    Represents a full option chain aligned to engine clock `timestamp`,
+    derived from observation time `data_ts`.
+    """
+
+    # --- common snapshot fields ---
     timestamp: float
-    chain: pd.DataFrame
-    atm_iv: float
-    skew: float
-    smile: Dict[str, float]
+    data_ts: float
     latency: float
+    symbol: str
+    domain: str
+    schema_version: int
+
+    # --- option chain payload ---
+    records: List[Dict[str, Any]]
+
+    # ---------- helpers ----------
 
     @staticmethod
-    def _extract_iv(opt: Mapping[Hashable, Any]) -> float:
+    def _normalize_records(chain: Any) -> List[Dict[str, Any]]:
         """
-        Extract implied volatility in a tolerant way.
+        Normalize raw chain input into List[Dict[str, Any]].
 
-        Supports both legacy "iv" field and the newer "implied_vol" field
-        that comes from OptionContract.to_dict().
+        Accepts:
+          - list[dict]
+          - pandas DataFrame (duck-typed)
         """
-        iv = opt.get("iv")
-        if iv is None:
-            iv = opt.get("implied_vol")
-        if iv is None:
-            return 0.0
-        try:
-            return float(iv)
-        except Exception:
-            return 0.0
+        if chain is None:
+            return []
 
-    @staticmethod
-    def _extract_type(opt: Mapping[Hashable, Any]) -> str | None:
-        """
-        Normalize option type to "call" / "put".
+        # pandas DataFrame (duck-typed)
+        if hasattr(chain, "to_dict"):
+            try:
+                return list(chain.to_dict(orient="records"))
+            except Exception:
+                pass
 
-        Supports both legacy "type" field ("call"/"put") and the
-        newer "option_type" field ("C"/"P" or "CALL"/"PUT").
-        """
-        t = opt.get("type")
-        if isinstance(t, str):
-            t_lower = t.lower()
-            if t_lower in ("call", "put"):
-                return t_lower
+        if isinstance(chain, list):
+            return [dict(r) for r in chain if isinstance(r, Mapping)]
 
-        opt_type = opt.get("option_type")
-        if isinstance(opt_type, str):
-            ot = opt_type.upper()
-            if ot in ("C", "CALL"):
-                return "call"
-            if ot in ("P", "PUT"):
-                return "put"
+        return []
 
-        return None
-
-    @classmethod
-    def _compute_metrics(cls, records: Sequence[Mapping[Hashable, Any]]) -> tuple[float, float, Dict[str, float]]:
-        """
-        Compute ATM IV, skew and smile from a list of option records.
-
-        This function is tolerant to mixed schemas and will work with both
-        legacy dict-style chains and OptionContract.to_dict() output.
-        """
-        # ATM estimate (closest-to-money by |moneyness| if available)
-        try:
-            sorted_chain = sorted(records, key=lambda x: abs(x.get("moneyness", 0.0)))
-            atm = sorted_chain[0]
-            atm_iv = cls._extract_iv(atm)
-        except Exception:
-            atm_iv = 0.0
-
-        # Skew: call_iv - put_iv
-        try:
-            calls = [o for o in records if cls._extract_type(o) == "call"]
-            puts = [o for o in records if cls._extract_type(o) == "put"]
-
-            call_iv = cls._extract_iv(calls[0]) if calls else 0.0
-            put_iv = cls._extract_iv(puts[0]) if puts else 0.0
-            skew = float(call_iv) - float(put_iv)
-        except Exception:
-            skew = 0.0
-
-        # Smile: strike → iv
-        smile: Dict[str, float] = {}
-        for opt in records:
-            strike = opt.get("strike")
-            if strike is None:
-                continue
-            iv = cls._extract_iv(opt)
-            smile[str(strike)] = float(iv)
-
-        return float(atm_iv), float(skew), smile
-
-    @staticmethod
-    def _to_dataframe(chain: ChainInput) -> pd.DataFrame:
-        """Normalize raw chain input (list[dict] or DataFrame) into a DataFrame.
-
-        This keeps the public constructors flexible while ensuring that
-        OptionChainSnapshot.chain is always a pandas DataFrame.
-        """
-        if isinstance(chain, pd.DataFrame):
-            return chain.copy()
-        # Fallback: interpret as sequence of dict-like rows
-        return pd.DataFrame(list(chain)) if chain else pd.DataFrame()
-
-    @classmethod
-    def from_chain(cls, timestamp: float, chain: ChainInput) -> "OptionChainSnapshot":
-        """Construct a snapshot from raw chain data at a given timestamp.
-
-        This is a non-aligned constructor (latency is set to 0.0). Use
-        from_chain_aligned() when you have both engine ts and chain ts.
-        """
-        df = cls._to_dataframe(chain)
-
-        if df.empty:
-            return cls(timestamp, df, 0.0, 0.0, {}, 0.0)
-
-        records = df.to_dict(orient="records")
-        
-        atm_iv, skew, smile = cls._compute_metrics(records)
-
-        return cls(
-            timestamp=timestamp,
-            chain=df,
-            atm_iv=atm_iv,
-            skew=skew,
-            smile=smile,
-            latency=0.0,
-        )
+    # ---------- constructors ----------
 
     @classmethod
     def from_chain_aligned(
         cls,
-        ts: float,
-        chain_timestamp: float,
-        chain: ChainInput,
+        *,
+        timestamp: float,
+        data_ts: float,
+        symbol: str,
+        chain: Any,
+        schema_version: int = 1,
     ) -> "OptionChainSnapshot":
-        """v4-aligned snapshot constructor.
+        ts = to_float(timestamp)
+        dts = to_float(data_ts)
 
-        Parameters
-        ----------
-        ts : float
-            Engine timestamp (current logical time).
-        chain_timestamp : float
-            Actual timestamp of the option chain observation.
-        chain : ChainInput
-            Raw chain data (list[dict] or DataFrame) to be normalized.
-        """
-
-        df = cls._to_dataframe(chain)
-
-        if df.empty:
-            return cls(
-                timestamp=chain_timestamp,
-                chain=df,
-                atm_iv=0.0,
-                skew=0.0,
-                smile={},
-                latency=float(ts - chain_timestamp),
-            )
-
-        records = df.to_dict(orient="records")
-        atm_iv, skew, smile = cls._compute_metrics(records)
+        records = cls._normalize_records(chain)
 
         return cls(
-            timestamp=chain_timestamp,
-            chain=df,
-            atm_iv=atm_iv,
-            skew=skew,
-            smile=smile,
-            latency=float(ts - chain_timestamp),
+            timestamp=ts,
+            data_ts=dts,
+            latency=ts - dts,
+            symbol=symbol,
+            domain="option_chain",
+            schema_version=schema_version,
+            records=records,
         )
+
+    # ---- backward-compatible wrapper ----
+
+    @classmethod
+    def from_chain(
+        cls,
+        ts: float,
+        chain: Any,
+        symbol: str,
+    ) -> "OptionChainSnapshot":
+        return cls.from_chain_aligned(
+            timestamp=ts,
+            data_ts=ts,
+            symbol=symbol,
+            chain=chain,
+        )
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert snapshot to plain dict for logging or JSON serialization."""
         return {
             "timestamp": self.timestamp,
-            "chain": self.chain,
-            "atm_iv": self.atm_iv,
-            "skew": self.skew,
-            "smile": self.smile,
+            "data_ts": self.data_ts,
             "latency": self.latency,
+            "symbol": self.symbol,
+            "domain": self.domain,
+            "schema_version": self.schema_version,
+            "records": self.records,
         }

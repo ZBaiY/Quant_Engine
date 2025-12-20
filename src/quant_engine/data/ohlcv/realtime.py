@@ -5,8 +5,8 @@ from typing import Any
 import pandas as pd
 import numpy as np
 from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
-from quant_engine.data.protocol_historical import HistoricalSignalSource
-from quant_engine.data.protocol_realtime import TimestampLike, RealTimeDataHandler
+from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
+from quant_engine.data.contracts.protocol_realtime import TimestampLike, RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import DataCache

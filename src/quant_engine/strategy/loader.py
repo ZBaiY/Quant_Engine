@@ -6,7 +6,7 @@ from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -15,7 +15,7 @@ from quant_engine.execution.loader import ExecutionLoader
 from quant_engine.portfolio.loader import PortfolioLoader
 from quant_engine.strategy.feature_resolver import resolve_feature_config, check_missing_features
 from quant_engine.data.builder import build_multi_symbol_handlers
-from quant_engine.strategy.registry import build_strategy
+from quant_engine.strategy.engine import EngineSpec
 from .engine import StrategyEngine, EngineMode
 
 
@@ -36,9 +36,14 @@ class StrategyLoader:
         else:
             cfg = strategy.apply_defaults(overrides)
 
-        symbol = cfg.get("symbol") or getattr(strategy, "SYMBOL", None)
-        if symbol is None:
-            raise ValueError("Primary symbol must be defined in Strategy or overrides")
+        # Enforce B-style: strategy must be bound (template resolved)
+        universe = cfg.get("universe") or {}
+        if not isinstance(universe, dict) or not universe:
+            raise ValueError("Strategy must be bound via strategy.bind(...) before loading")
+
+        symbol = cfg.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError("Primary symbol must be resolved from bound strategy universe")
 
         features_user = cfg.get("features_user", [])
 
@@ -96,15 +101,14 @@ class StrategyLoader:
         # 1st massive Validation complete
         # ---------------------------------
 
-        mode_s = str(mode).upper()
-        backtest = ("BACKTEST" in mode_s) ## feed to the data handlers init
-
-        required_data = set(cfg.get("required_data") or strategy.REQUIRED_DATA)
         data_handlers = build_multi_symbol_handlers(
             data_spec=data_spec,
-            backtest=backtest,
+            mode=mode,
+            universe=universe,
             primary_symbol=symbol,
         )
+
+        required_data = set(cfg.get("required_data") or strategy.REQUIRED_DATA)
 
         if "ohlcv" in required_data and "ohlcv" not in data_handlers:
             raise RuntimeError(
@@ -217,12 +221,18 @@ class StrategyLoader:
             data_handlers.get("iv_surface", {})
         )
         sentiment_handlers = cast(
-            Mapping[str, SentimentLoader],
+            Mapping[str, SentimentHandler],
             data_handlers.get("sentiment", {})
         )
-        return StrategyEngine(
+
+        spec = EngineSpec(
             mode=mode,
             symbol=symbol,
+            universe=universe,
+        )
+
+        return StrategyEngine(
+            spec=spec,
             ohlcv_handlers=ohlcv_handlers,
             orderbook_handlers=orderbook_handlers,
             option_chain_handlers=option_chain_handlers,

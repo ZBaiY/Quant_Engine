@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, Iterable
-from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
+from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 
 
 class IVSurface(ABC):
@@ -8,9 +8,9 @@ class IVSurface(ABC):
     Abstract interface for implied volatility surfaces (SABR, SSVI, spline, MC, etc.)
 
     A valid surface must support:
-        - Fitting from an OptionChain
+        - Fitting from an OptionChainSnapshot
         - Querying σ(K, T)
-        - ATM IV / slope / curvature summary stats
+        - ATM IV / skew / curvature summary stats
         - Expiry / strike grids for interpolation
         - Timestamp tracking
     """
@@ -19,8 +19,11 @@ class IVSurface(ABC):
     # Core fitting API
     # --------------------------------------------------------
     @abstractmethod
-    def fit(self, chain: OptionChain):
-        """Fit the IV surface to the given option chain."""
+    def fit(self, chain: OptionChainSnapshot):
+        """
+        Fit the IV surface from a frozen OptionChainSnapshot.
+        Implementations must be deterministic and side-effect free.
+        """
         raise NotImplementedError
 
     # --------------------------------------------------------
@@ -42,11 +45,11 @@ class IVSurface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def smile_slope(self) -> float:
+    def skew(self) -> float:
         raise NotImplementedError
 
     @abstractmethod
-    def smile_curvature(self) -> float:
+    def curvature(self) -> float:
         raise NotImplementedError
 
     # --------------------------------------------------------
@@ -63,9 +66,10 @@ class IVSurface(ABC):
     # --------------------------------------------------------
     # Metadata
     # --------------------------------------------------------
-    def last_timestamp(self) -> int | None:
-        """Timestamp of the option chain used to build this surface."""
-        return None
+    @abstractmethod
+    def data_timestamp(self) -> float:
+        """Observation timestamp of the chain used for fitting."""
+        raise NotImplementedError
 
     # --------------------------------------------------------
     # Utility
@@ -74,6 +78,6 @@ class IVSurface(ABC):
         """Return a dictionary summarizing the surface (for logging/debugging)."""
         return {
             "atm_iv": self.atm_iv(),
-            "slope": self.smile_slope(),
-            "curvature": self.smile_curvature(),
+            "skew": self.skew(),
+            "curvature": self.curvature(),
         }

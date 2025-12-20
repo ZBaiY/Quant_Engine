@@ -1,19 +1,71 @@
-# quant_engine/data/sentiment/snapshot.py
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, Mapping, List
+
+from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.utils.num import to_float
+
 
 @dataclass(frozen=True)
-class SentimentSnapshot:
-    timestamp: float          # observation timestamp (obs_ts)
+class SentimentSnapshot(Snapshot):
+    """
+    Immutable sentiment snapshot.
+
+    Represents a sentiment observation aligned to engine clock `timestamp`,
+    derived from observation time `data_ts`.
+    """
+
+    # --- common snapshot fields ---
+    timestamp: float
+    data_ts: float
+    latency: float
     symbol: str
+    domain: str
+    schema_version: int
+
+    # --- sentiment payload ---
     source: str
-    interval: str
     model: str
     score: float
-    embedding: list[float] | None
-    meta: dict[str, Any]
-    latency: float            # engine_ts - obs_ts
+    embedding: List[float] | None
+    meta: Dict[str, Any]
+
+    @classmethod
+    def from_payload_aligned(
+        cls,
+        *,
+        timestamp: float,
+        data_ts: float,
+        symbol: str,
+        source: str,
+        model: str,
+        score: float,
+        embedding: List[float] | None,
+        meta: Mapping[str, Any] | None = None,
+        schema_version: int = 1,
+    ) -> "SentimentSnapshot":
+        """
+        Canonical tolerant constructor for sentiment payloads.
+        """
+        ts = to_float(timestamp)
+        dts = to_float(data_ts)
+
+        return cls(
+            timestamp=ts,
+            data_ts=dts,
+            latency=ts - dts,
+            symbol=symbol,
+            domain="sentiment",
+            schema_version=schema_version,
+            source=source,
+            model=model,
+            score=to_float(score),
+            embedding=list(embedding) if embedding is not None else None,
+            meta=dict(meta or {}),
+        )
+
+    # ---- backward-compatible wrapper ----
 
     @classmethod
     def from_payload(
@@ -23,32 +75,33 @@ class SentimentSnapshot:
         obs_ts: float,
         symbol: str,
         source: str,
-        interval: str,
         model: str,
         score: float,
-        embedding: list[float] | None,
-        meta: dict[str, Any] | None = None,
+        embedding: List[float] | None,
+        meta: Mapping[str, Any] | None = None,
     ) -> "SentimentSnapshot":
-        return cls(
-            timestamp=float(obs_ts),
+        return cls.from_payload_aligned(
+            timestamp=engine_ts,
+            data_ts=obs_ts,
             symbol=symbol,
             source=source,
-            interval=interval,
             model=model,
-            score=float(score),
+            score=score,
             embedding=embedding,
-            meta=dict(meta or {}),
-            latency=float(engine_ts - obs_ts),
+            meta=meta,
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "timestamp": self.timestamp,
+            "data_ts": self.data_ts,
+            "latency": self.latency,
             "symbol": self.symbol,
+            "domain": self.domain,
+            "schema_version": self.schema_version,
             "source": self.source,
             "model": self.model,
             "score": self.score,
             "embedding": self.embedding,
             "meta": self.meta,
-            "latency": self.latency,
         }
