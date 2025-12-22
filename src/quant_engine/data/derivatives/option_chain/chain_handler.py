@@ -106,9 +106,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
             lookback=lookback,
         )
 
-    def warmup_to(self, ts: float) -> None:
+    def align_to(self, ts: float) -> None:
         self._anchor_ts = float(ts)
-        log_debug(self._logger, "OptionChainDataHandler warmup_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "OptionChainDataHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     def last_timestamp(self) -> float | None:
         if not self._snapshots:
@@ -153,57 +153,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self.chains.clear()
 
     # ----------------------------------------------------------------------
-    # Seeding (backtest)
-    # ----------------------------------------------------------------------
-
-    @classmethod
-    def from_historical(
-        cls,
-        historical_handler: HistoricalSignalSource,
-        *,
-        start_ts: TimestampLike | None = None,
-        window: int = 1000,
-        **kwargs: Any,
-    ) -> "OptionChainDataHandler":
-        # IMPORTANT: keep kwargs-driven init; do NOT hardcode interval/source/etc.
-        init_kwargs = dict(kwargs)
-        init_kwargs.setdefault("window", window)
-        rt = cls(symbol=historical_handler.symbol, **init_kwargs)
-
-        # normalize start_ts -> float|None
-        if start_ts is None:
-            start_ts_f: float | None = None
-        else:
-            try:
-                import pandas as pd
-                if isinstance(start_ts, pd.Timestamp):
-                    start_ts_f = float(start_ts.timestamp())
-                else:
-                    start_ts_f = float(start_ts)
-            except Exception:
-                start_ts_f = None
-
-        seed = historical_handler.window(ts=start_ts_f, n=window)
-        if not seed:
-            rt._anchor_ts = start_ts_f
-            return rt
-
-        # seed snapshots (expect iterable of OptionChainSnapshot / OptionChain / dict convertible)
-        try:
-            for item in seed:
-                snap = _coerce_snapshot(rt.symbol, item)  # you should already have this pattern
-                if snap is not None:
-                    rt._snapshots.append(snap)
-                    # optional: maintain rt.chains index here if you want
-        except TypeError:
-            snap = _coerce_snapshot(rt.symbol, seed)
-            if snap is not None:
-                rt._snapshots.append(snap)
-
-        rt._anchor_ts = start_ts_f
-        return rt
-
-    # ----------------------------------------------------------------------
     # Existing API (kept for compatibility)
     # ----------------------------------------------------------------------
 
@@ -232,22 +181,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
             chain_ts = float(ts) if ts is not None else float(df["timestamp"].iloc[0]) if "timestamp" in df.columns else float(time.time())
             self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
-    @classmethod
-    def from_historical_legacy(cls, historical_handler: Any) -> "OptionChainDataHandler":
-        """Backward-compat constructor for older historical handlers that expose `.data`."""
-        snapshot = getattr(historical_handler, "data", None)
-        if snapshot is None:
-            raise ValueError("Historical handler has no loaded data; expected `.data`.")
-
-        # Determine symbol
-        if isinstance(snapshot, dict) and "chains" in snapshot:
-            first = snapshot["chains"][0]
-        else:
-            first = snapshot[0]
-
-        obj = cls(symbol=first.symbol, interval="0")
-        obj.load_initial(snapshot)
-        return obj
 
     def on_new_snapshot(self, df: pd.DataFrame) -> None:
         """Receive a full option-chain snapshot from exchange (DataFrame)."""

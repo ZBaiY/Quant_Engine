@@ -15,7 +15,6 @@ _logger = get_logger(__name__)
 def build_multi_symbol_handlers(
     *,
     data_spec: Dict[str, Any],
-    backtest: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Dict[str, object]]:
     """
@@ -45,38 +44,18 @@ def build_multi_symbol_handlers(
         symbol = kwargs.get("primary_symbol")
         if symbol is None:
             raise ValueError("primary_symbol must be provided for primary OHLCV")
-
-        if backtest:
-            from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
-            hist = HistoricalOHLCVHandler(symbol=symbol, **cfg)
-            rt = OHLCVDataHandler.from_historical(
-                hist,
-                start_ts=kwargs.get("start_ts"),
-            )
-            ohlcv_handlers[symbol] = rt
-        else:
-            ohlcv_handlers[symbol] = OHLCVDataHandler(
-                symbol=symbol,
-                **cfg,
-            )
+        ohlcv_handlers[symbol] = OHLCVDataHandler(
+            symbol=symbol,
+            **cfg,
+        )
 
     for sec_symbol, sec_cfg in secondary.items():
         if "ohlcv" not in sec_cfg:
             continue
-        if backtest:
-            from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
-
-            hist = HistoricalOHLCVHandler(symbol=sec_symbol, **sec_cfg["ohlcv"])
-            rt = OHLCVDataHandler.from_historical(
-                hist,
-                start_ts=kwargs.get("start_ts"),
-            )
-            ohlcv_handlers[sec_symbol] = rt
-        else:
-            ohlcv_handlers[sec_symbol] = OHLCVDataHandler(
-                symbol=sec_symbol,
-                **sec_cfg["ohlcv"],
-            )
+        ohlcv_handlers[sec_symbol] = OHLCVDataHandler(
+            symbol=sec_symbol,
+            **sec_cfg["ohlcv"],
+        )
 
     orderbook_handlers: Dict[str, RealTimeOrderbookHandler] = {}
 
@@ -85,78 +64,18 @@ def build_multi_symbol_handlers(
         symbol = kwargs.get("primary_symbol")
         if symbol is None:
             raise ValueError("primary_symbol must be provided for primary orderbook")
-
-        if backtest and hasattr(RealTimeOrderbookHandler, "from_historical"):
-            # TODO: implement/standardize HistoricalOrderbookHandler and the adapter.
-            try:
-                from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler  # type: ignore
-
-                hist = HistoricalOrderbookHandler(symbol=symbol, **cfg)
-                window = int(((cfg.get("cache") or {}).get("max_bars")) or 200)
-                orderbook_handlers[symbol] = RealTimeOrderbookHandler.from_historical(
-                    hist,
-                    start_ts=kwargs.get("start_ts"),
-                    window=window,
-                )
-            except Exception as e:
-                log_debug(
-                    _logger,
-                    "Orderbook backtest adapter not available; falling back to realtime handler shell",
-                    symbol=symbol,
-                    error=str(e),
-                )
-                orderbook_handlers[symbol] = RealTimeOrderbookHandler(
-                    symbol=symbol,
-                    **cfg,
-                )
-        else:
-            if backtest:
-                log_debug(
-                    _logger,
-                    "Orderbook backtest requested but from_historical not implemented; using realtime handler shell",
-                    symbol=symbol,
-                )
-            orderbook_handlers[symbol] = RealTimeOrderbookHandler(
-                symbol=symbol,
-                **cfg,
-            )
+        orderbook_handlers[symbol] = RealTimeOrderbookHandler(
+            symbol=symbol,
+            **cfg,
+        )
 
         for sec_symbol, sec_cfg in secondary.items():
             if "orderbook" not in sec_cfg:
                 continue
-            if backtest and hasattr(RealTimeOrderbookHandler, "from_historical"):
-                try:
-                    from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler  # type: ignore
-
-                    hist = HistoricalOrderbookHandler(symbol=sec_symbol, **sec_cfg["orderbook"])
-                    window = int((((sec_cfg["orderbook"].get("cache") or {}).get("max_bars")) or 200))
-                    orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler.from_historical(
-                        hist,
-                        start_ts=kwargs.get("start_ts"),
-                        window=window,
-                    )
-                except Exception as e:
-                    log_debug(
-                        _logger,
-                        "Orderbook backtest adapter not available for secondary; falling back to realtime handler shell",
-                        symbol=sec_symbol,
-                        error=str(e),
-                    )
-                    orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
-                        symbol=sec_symbol,
-                        **sec_cfg["orderbook"],
-                    )
-            else:
-                if backtest:
-                    log_debug(
-                        _logger,
-                        "Orderbook backtest requested for secondary but from_historical not implemented; using realtime handler shell",
-                        symbol=sec_symbol,
-                    )
-                orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
-                    symbol=sec_symbol,
-                    **sec_cfg["orderbook"],
-                )
+            orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
+                symbol=sec_symbol,
+                **sec_cfg["orderbook"],
+            )
 
     option_chain_handlers: Dict[str, OptionChainDataHandler] = {}
 
@@ -165,78 +84,18 @@ def build_multi_symbol_handlers(
         symbol = kwargs.get("primary_symbol")
         if symbol is None:
             raise ValueError("primary_symbol must be provided for primary option_chain")
-
-        if backtest and hasattr(OptionChainDataHandler, "from_historical"):
-            try:
-                from quant_engine.data.derivatives.option_chain.historical import HistoricalOptionChainHandler  # type: ignore
-
-                hist = HistoricalOptionChainHandler(symbol=symbol, **cfg)
-                window = int(((cfg.get("cache") or {}).get("max_bars")) or 1000)
-                option_chain_handlers[symbol] = OptionChainDataHandler.from_historical(
-                    hist,
-                    start_ts=kwargs.get("start_ts"),
-                    window=window,
-                )
-            except Exception as e:
-                log_debug(
-                    _logger,
-                    "OptionChain backtest adapter not available; falling back to realtime handler shell",
-                    symbol=symbol,
-                    error=str(e),
-                )
-                option_chain_handlers[symbol] = OptionChainDataHandler(
-                    symbol=symbol,
-                    **cfg,
-                )
-        else:
-            if backtest:
-                log_debug(
-                    _logger,
-                    "OptionChain backtest requested but from_historical not implemented; using realtime handler shell",
-                    symbol=symbol,
-                )
-            option_chain_handlers[symbol] = OptionChainDataHandler(
-                symbol=symbol,
-                **cfg,
-            )
+        option_chain_handlers[symbol] = OptionChainDataHandler(
+            symbol=symbol,
+            **cfg,
+        )
 
         for sec_symbol, sec_cfg in secondary.items():
             if "option_chain" not in sec_cfg:
                 continue
-            if backtest and hasattr(OptionChainDataHandler, "from_historical"):
-                try:
-                    from quant_engine.data.derivatives.option_chain.historical import HistoricalOptionChainHandler  # type: ignore
-
-                    hist = HistoricalOptionChainHandler(symbol=sec_symbol, **sec_cfg["option_chain"])
-                    cfg2 = sec_cfg["option_chain"]
-                    window = int(((cfg2.get("cache") or {}).get("max_bars")) or 1000)
-                    option_chain_handlers[sec_symbol] = OptionChainDataHandler.from_historical(
-                        hist,
-                        start_ts=kwargs.get("start_ts"),
-                        window=window,
-                    )
-                except Exception as e:
-                    log_debug(
-                        _logger,
-                        "OptionChain backtest adapter not available; falling back to realtime handler shell",
-                        symbol=sec_symbol,
-                        error=str(e),
-                    )
-                    option_chain_handlers[sec_symbol] = OptionChainDataHandler(
-                        symbol=sec_symbol,
-                        **sec_cfg["option_chain"],
-                    )
-            else:
-                if backtest:
-                    log_debug(
-                        _logger,
-                        "OptionChain backtest requested but from_historical not implemented; using realtime handler shell",
-                        symbol=sec_symbol,
-                    )
-                option_chain_handlers[sec_symbol] = OptionChainDataHandler(
-                    symbol=sec_symbol,
-                    **sec_cfg["option_chain"],
-                )
+            option_chain_handlers[sec_symbol] = OptionChainDataHandler(
+                symbol=sec_symbol,
+                **sec_cfg["option_chain"],
+            )
 
     iv_surface_handlers: Dict[str, IVSurfaceDataHandler] = {}
 
@@ -245,44 +104,11 @@ def build_multi_symbol_handlers(
         symbol = kwargs.get("primary_symbol")
         if symbol not in option_chain_handlers:
             raise ValueError(f"IV surface for {symbol} requires option_chain handler")
-
-        if backtest and hasattr(IVSurfaceDataHandler, "from_historical"):
-            try:
-                from quant_engine.data.derivatives.iv.historical import HistoricalIVSurfaceHandler  # type: ignore
-
-                hist = HistoricalIVSurfaceHandler(
-                    symbol=symbol,
-                    chain_handler=option_chain_handlers[symbol],
-                )
-                iv_surface_handlers[symbol] = IVSurfaceDataHandler.from_historical(
-                    hist,
-                    start_ts=kwargs.get("start_ts"),
-                    end_ts=kwargs.get("end_ts"),
-                )
-            except Exception as e:
-                log_debug(
-                    _logger,
-                    "IVSurface backtest adapter not available; falling back to realtime handler shell",
-                    symbol=symbol,
-                    error=str(e),
-                )
-                iv_surface_handlers[symbol] = IVSurfaceDataHandler(
-                    symbol=symbol,
-                    chain_handler=option_chain_handlers[symbol],
-                    **cfg,
-                )
-        else:
-            if backtest:
-                log_debug(
-                    _logger,
-                    "IVSurface backtest requested but from_historical not implemented; using realtime handler shell",
-                    symbol=symbol,
-                )
-            iv_surface_handlers[symbol] = IVSurfaceDataHandler(
-                symbol=symbol,
-                chain_handler=option_chain_handlers[symbol],
-                **cfg,
-            )
+        iv_surface_handlers[symbol] = IVSurfaceDataHandler(
+            symbol=symbol,
+            chain_handler=option_chain_handlers[symbol],
+            **cfg,
+        )
 
     for sec_symbol, sec_cfg in secondary.items():
         if "iv_surface" not in sec_cfg:
@@ -292,43 +118,11 @@ def build_multi_symbol_handlers(
             raise ValueError(
                 f"IV surface for {sec_symbol} requires option_chain handler"
             )
-        if backtest and hasattr(IVSurfaceDataHandler, "from_historical"):
-            try:
-                from quant_engine.data.derivatives.iv.historical import HistoricalIVSurfaceHandler  # type: ignore
-
-                hist = HistoricalIVSurfaceHandler(
-                    symbol=sec_symbol,
-                    chain_handler=option_chain_handlers[sec_symbol],
-                )
-                iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler.from_historical(
-                    hist,
-                    start_ts=kwargs.get("start_ts"),
-                    end_ts=kwargs.get("end_ts"),
-                )
-            except Exception as e:
-                log_debug(
-                    _logger,
-                    "IVSurface backtest adapter not available; falling back to realtime handler shell",
-                    symbol=sec_symbol,
-                    error=str(e),
-                )
-                iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
-                    symbol=sec_symbol,
-                    chain_handler=option_chain_handlers[sec_symbol],
-                    **cfg2,
-                )
-        else:
-            if backtest:
-                log_debug(
-                    _logger,
-                    "IVSurface backtest requested but from_historical not implemented; using realtime handler shell",
-                    symbol=sec_symbol,
-                )
-            iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
-                symbol=sec_symbol,
-                chain_handler=option_chain_handlers[sec_symbol],
-                **cfg2,
-            )
+        iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
+            symbol=sec_symbol,
+            chain_handler=option_chain_handlers[sec_symbol],
+            **cfg2,
+        )
 
     sentiment_handlers: Dict[str, SentimentHandler] = {}
 

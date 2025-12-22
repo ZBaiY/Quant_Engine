@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from quant_engine.data.protocol_realtime import RealTimeDataHandler
-from quant_engine.data.protocol_historical import HistoricalSignalSource
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from quant_engine.data.orderbook.cache import OrderbookCache
@@ -84,79 +84,6 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         )
 
     # ------------------------------------------------------------------
-    # Seeding (backtest)
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_historical(
-        cls,
-        historical_handler: HistoricalSignalSource,
-        *,
-        start_ts: float | None = None,
-        window: int = 200,
-        **kwargs: Any,
-    ) -> "RealTimeOrderbookHandler":
-        """Seed a runtime orderbook handler from a historical signal source.
-
-        Anti-lookahead: if start_ts is provided, only items with ts <= start_ts are used.
-        """
-        rt = cls(symbol=historical_handler.symbol, window=window)
-
-        # ---- config shadow (attach to rt, not self) ----
-        source = kwargs.get("source", "binance")
-        if not isinstance(source, str) or not source:
-            raise ValueError("Orderbook 'source' must be a non-empty string")
-        rt.source = source
-
-        # allow either interval or refresh_interval (pick one convention, but tolerate both)
-        ri = kwargs.get("interval", kwargs.get("refresh_interval"))
-        if ri is not None and (not isinstance(ri, str) or not ri):
-            raise ValueError("Orderbook 'interval' must be a non-empty string if provided")
-        rt.interval = ri
-
-        bootstrap = kwargs.get("bootstrap") or {}
-        if not isinstance(bootstrap, dict):
-            raise TypeError("Orderbook 'bootstrap' must be a dict")
-        rt.bootstrap_cfg = dict(bootstrap)
-
-        cache = kwargs.get("cache") or {}
-        if not isinstance(cache, dict):
-            raise TypeError("Orderbook 'cache' must be a dict")
-        rt.cache_cfg = dict(cache)
-
-        # cache depth precedence:
-        #   1) cache.max_snaps
-        #   2) legacy window
-        #   3) default
-        max_snaps = rt.cache_cfg.get("max_snaps")
-        if max_snaps is None:
-            max_snaps = kwargs.get("window", window)
-        max_snaps_i = int(max_snaps)
-        if max_snaps_i <= 0:
-            raise ValueError("Orderbook cache.max_snaps must be > 0")
-
-        rt.cache = OrderbookCache(window=max_snaps_i)
-        rt._logger = get_logger(__name__)
-
-        # ---- seed from historical (anti-lookahead handled by HistoricalSignalSource.window) ----
-        seed = historical_handler.window(ts=start_ts, n=window)
-        if not seed:
-            rt._anchor_ts = start_ts
-            return rt
-
-        try:
-            for item in seed:
-                snap = _coerce_snapshot(rt.symbol, item)
-                if snap is not None:
-                    rt.cache.update(snap)
-        except TypeError:
-            snap = _coerce_snapshot(rt.symbol, seed)
-            if snap is not None:
-                rt.cache.update(snap)
-
-        rt._anchor_ts = start_ts
-        return rt
-    # ------------------------------------------------------------------
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
 
@@ -177,10 +104,10 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             lookback=lookback,
         )
 
-    def warmup_to(self, ts: float) -> None:
+    def align_to(self, ts: float) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
         self._anchor_ts = float(ts)
-        log_debug(self._logger, "RealTimeOrderbookHandler warmup_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "RealTimeOrderbookHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     # ------------------------------------------------------------------
     # Streaming tick API

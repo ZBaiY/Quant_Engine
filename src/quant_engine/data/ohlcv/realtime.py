@@ -97,71 +97,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
             bootstrap=self.bootstrap_cfg,
         )
 
-    # ------------------------------------------------------------------
-    # Seeding (backtest)
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_historical(
-        cls,
-        historical_handler: HistoricalOHLCVHandler,
-        *,
-        start_ts: TimestampLike | None = None,
-        window: int = 1000,
-        **kwargs: Any,
-    ) -> "OHLCVDataHandler":
-        """Seed a runtime OHLCV handler from a historical signal source.
-
-        Anti-lookahead: if start_ts is provided, only items with item.ts <= start_ts are used.
-        """
-
-        # ---- IMPORTANT: keep kwargs-driven init; do NOT lose interval/source/bootstrap/cache ----
-        init_kwargs = dict(kwargs)
-        init_kwargs.setdefault("window", window)  # only as fallback; cache.max_bars still wins inside __init__
-
-        obj = cls(symbol=historical_handler.symbol, **init_kwargs)
-
-        # Normalize start_ts -> float|None
-        if start_ts is None:
-            start_ts_f: float | None = None
-        elif isinstance(start_ts, pd.Timestamp):
-            start_ts_f = float(start_ts.timestamp())
-        else:
-            start_ts_f = float(start_ts)
-
-        # HistoricalSignalSource.window should already enforce anti-lookahead on its side
-        seed = historical_handler.window(ts=start_ts_f, n=window)
-
-        df = _coerce_ohlcv_to_df(seed)
-        if df is None or df.empty:
-            log_info(
-                obj._logger,
-                "OHLCVDataHandler.from_historical: no data to seed cache",
-                symbol=historical_handler.symbol,
-                start_ts=start_ts_f,
-            )
-            obj._anchor_ts = start_ts_f
-            return obj
-
-        # Ensure chronological order for deterministic warm-up.
-        df = _ensure_timestamp(df).sort_values("timestamp")
-
-        # If your DataCache.update can take a full DataFrame, prefer this:
-        # obj.cache.update(df)
-        # Otherwise keep row-wise (slower but safe):
-        for _, row in df.iterrows():
-            obj.cache.update(row.to_frame().T)
-
-        obj._anchor_ts = start_ts_f
-
-        log_info(
-            obj._logger,
-            "OHLCVDataHandler.from_historical: seeded cache",
-            symbol=historical_handler.symbol,
-            rows=int(len(df)),
-            anchor_ts=start_ts_f,
-        )
-        return obj
 
     # ------------------------------------------------------------------
     # Lifecycle (realtime/mock)
@@ -187,12 +122,12 @@ class OHLCVDataHandler(RealTimeDataHandler):
             lookback=lookback,
         )
 
-    def warmup_to(self, ts: float) -> None:
+    def align_to(self, ts: float) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
         self._anchor_ts = float(ts)
         log_debug(
             self._logger,
-            "RealTimeDataHandler warmup_to",
+            "RealTimeDataHandler align_to",
             symbol=self.symbol,
             anchor_ts=self._anchor_ts,
         )

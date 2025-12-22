@@ -3,7 +3,7 @@ from typing import Any, Optional
 import pandas as pd
 from quant_engine.data.sentiment.snapshot import SentimentSnapshot
 from quant_engine.data.sentiment.cache import SentimentCache
-from quant_engine.data.protocol_realtime import RealTimeDataHandler, TimestampLike
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
 from quant_engine.data.sentiment.historical import HistoricalSentimentHandler
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -107,9 +107,9 @@ class SentimentHandler(RealTimeDataHandler):
             lookback=lookback,
         )
 
-    def warmup_to(self, ts: float) -> None:
+    def align_to(self, ts: float) -> None:
         self._anchor_ts = float(ts)
-        log_debug(self._logger, "SentimentHandler warmup_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "SentimentHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     # ------------------------------------------------------------------
     # Streaming ingestion
@@ -147,42 +147,6 @@ class SentimentHandler(RealTimeDataHandler):
     def reset(self) -> None:
         self.cache.clear()
     
-    @classmethod
-    def from_historical(
-        cls,
-        historical_handler: HistoricalSentimentHandler,
-        *,
-        start_ts: float | pd.Timestamp | None = None,
-        window: int = 1000,
-        **kwargs: Any,
-    ) -> "SentimentHandler":
-        init_kwargs = dict(kwargs)
-        init_kwargs.setdefault("window", window)
-        rt = cls(symbol=historical_handler.symbol, **init_kwargs)
-
-        start_ts_f = _to_float_ts(start_ts)
-        seed = historical_handler.window(ts=start_ts_f, n=int(window))
-        if not seed:
-            rt._anchor_ts = start_ts_f
-            return rt
-
-        engine_ts = start_ts_f
-        if engine_ts is None:
-            last = historical_handler.last_timestamp()
-            engine_ts = float(last) if last is not None else 0.0
-
-        try:
-            for item in seed:
-                snap = rt._coerce_snapshot(item, engine_ts=engine_ts)
-                if snap is not None:
-                    rt.cache.update(snap)
-        except TypeError:
-            snap = rt._coerce_snapshot(seed, engine_ts=engine_ts)
-            if snap is not None:
-                rt.cache.update(snap)
-
-        rt._anchor_ts = start_ts_f
-        return rt
 
     def _coerce_snapshot(self, item: Any, *, engine_ts: float) -> SentimentSnapshot | None:
         if isinstance(item, SentimentSnapshot):

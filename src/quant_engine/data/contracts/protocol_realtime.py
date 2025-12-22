@@ -10,8 +10,6 @@ if TYPE_CHECKING:  # pragma: no cover
 else:
     TimestampLike = float
 
-from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
-
 
 @runtime_checkable
 class DataHandlerProto(Protocol):
@@ -30,7 +28,7 @@ class DataHandlerProto(Protocol):
         """REALTIME/MOCK: preload recent data into cache."""
         ...
 
-    def warmup_to(self, ts: float) -> None:
+    def align_to(self, ts: float) -> None:
         """Align internal cursor/cache to ts. Must be idempotent."""
         ...
 
@@ -51,24 +49,14 @@ class DataHandlerProto(Protocol):
 
 @runtime_checkable
 class RealTimeDataHandler(DataHandlerProto, Protocol):
-    """Runtime OHLCV handler contract.
+    """Runtime data handler contract.
 
     Design intent:
       - Runtime handler is what Engine consumes in ALL modes.
-      - In BACKTEST, runtime handler is seeded from a HistoricalSignalSource and driven by replay ticks.
+      - Data origin (live / replay) is external to the handler.
+      - Handler exposes a single ingestion entrypoint: on_new_tick().
     """
-
-    @classmethod
-    def from_historical(
-        cls,
-        historical_handler: HistoricalSignalSource,
-        *,
-        start_ts: TimestampLike | None = None,
-        window: int = 1000,
-        **kwargs: Any,
-    ) -> "RealTimeDataHandler":
-        """Seed a runtime handler from historical data (anti-lookahead safe)."""
-        ...
+    bootstrap_cfg: dict[str, Any]
 
     def on_new_tick(self, bar: Any) -> None:
         """Push one new tick/bar into the runtime cache (live or replay)."""

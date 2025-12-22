@@ -24,6 +24,7 @@ class EngineMode(Enum):
 @dataclass(frozen=True)
 class EngineSpec:
     mode: EngineMode
+    interval: str # e.g. "1m", "5m"
     symbol: str
     universe: dict[str, Any] | None = None
 
@@ -76,30 +77,31 @@ class StrategyEngine:
         if h is None and self.ohlcv_handlers:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
- 
-    # -------------------------------------------------
-    # Historical data loading phase (backtest only)
-    # -------------------------------------------------
-    def load_history(
-        self,
-        *,
-        start_ts: float,
-        end_ts: float | None = None,
-    ) -> None:
-        """
-        Load historical data into data handlers.
-        Must be called before warmup() in backtest mode.
-        """
-        if self.mode != EngineMode.BACKTEST:
-            raise RuntimeError(
-                "load_history() is only valid in BACKTEST mode"
-            )
 
-        log_debug(self._logger, "StrategyEngine load_history started",
-                  start_ts=start_ts, end_ts=end_ts)
+    def preload_data(self) -> None:
+        """
+        Preload historical data into handler caches.
 
-        self._history_start_ts = start_ts
-        self._history_end_ts = end_ts
+        Semantics:
+            - Data-layer operation only.
+            - Window-driven (feature_extractor.warmup_window).
+            - No feature computation.
+            - No state progression.
+        """
+        required_window = getattr(self.feature_extractor, "warmup_window", None)
+        if not isinstance(required_window, int) or required_window <= 0:
+            raise RuntimeError("Invalid warmup_window for preload")
+        
+        max_window = getattr(self.feature_extractor, "max_window", None)
+        
+        if not isinstance(max_window, int) or max_window <= 0:
+            raise RuntimeError("Invalid max_window for preload")
+        required_window += max_window
+        log_debug(
+            self._logger,
+            "StrategyEngine preload_data started",
+            required_window=required_window,
+        )
 
         for hmap in (
             self.ohlcv_handlers,
@@ -109,36 +111,34 @@ class StrategyEngine:
             self.sentiment_handlers,
         ):
             for h in hmap.values():
-                if hasattr(h, "load_history"):
-                    h.load_history(start_ts=start_ts, end_ts=end_ts)
+                if hasattr(h, "bootstrap"):
+                    h.bootstrap(required_window=required_window)
 
-        log_debug(self._logger, "StrategyEngine load_history completed")
+        self._preload_done = True
+
+        log_debug(
+            self._logger,
+            "StrategyEngine preload_data completed",
+            required_window=required_window,
+        )
 
     # -------------------------------------------------
-    def warmup(
-        self,
-        *,
-        anchor_ts: float | None = None,
-        warmup_steps: int = 0,
-    ) -> None:
+    def warmup_features(self, *, anchor_ts: float | None = None) -> None:
         """
-        Prepare the strategy for execution by aligning all handlers
-        to a common anchor timestamp and warming up feature caches.
+        Warm up feature / model state using preloaded data.
+
+        Semantics:
+            - Feature-layer operation.
+            - Assumes preload_data() has been called.
+            - Does NOT load data.
+            - Does NOT advance data cursors.
         """
-        if self.mode == EngineMode.REALTIME:
-            log_debug(self._logger, "Warmup in REALTIME mode")
+        if not getattr(self, "_preload_done", False):
+            raise RuntimeError("warmup_features() requires preload_data() first")
 
-        if hasattr(self, "_history_start_ts"):
-            log_debug(self._logger, "Warmup using preloaded historical data")
-
-        log_debug(self._logger, "StrategyEngine warmup started")
-
-        # -------------------------------------------------
-        # 1. Resolve anchor timestamp
-        # -------------------------------------------------
+        # Resolve anchor_ts (only to define alignment point)
         if anchor_ts is None:
-            candidates = []
-
+            candidates: list[float] = []
             for hmap in (
                 self.ohlcv_handlers,
                 self.orderbook_handlers,
@@ -153,21 +153,65 @@ class StrategyEngine:
                             candidates.append(ts)
 
             if not candidates:
-                raise ValueError("Cannot infer anchor_ts from data handlers")
+                raise RuntimeError("Cannot infer anchor_ts for warmup")
 
             anchor_ts = min(candidates)
 
         self._anchor_ts = anchor_ts
 
-        if self.mode == EngineMode.BACKTEST and not hasattr(self, "_history_start_ts"):
-            raise RuntimeError(
-                "BACKTEST warmup requires load_history() to be called first"
-            )
+        log_debug(
+            self._logger,
+            "StrategyEngine warmup_features started",
+            anchor_ts=anchor_ts,
+        )
 
-        log_debug(self._logger, "StrategyEngine resolved anchor_ts", anchor_ts=anchor_ts)
+        # IMPORTANT:
+        # StrategyEngine does NOT loop history.
+        # It delegates warmup to FeatureExtractor.
+        if hasattr(self.feature_extractor, "warmup"):
+            self.feature_extractor.warmup(anchor_ts=anchor_ts)
+        else:
+            # fallback: at least initialize features at anchor
+            self.feature_extractor.update(timestamp=anchor_ts)
+
+        self._warmup_done = True
+
+        log_debug(
+            self._logger,
+            "StrategyEngine warmup_features completed",
+            anchor_ts=anchor_ts,
+        )
+
+
+    # -------------------------------------------------
+    # Bootstrap / backfill phase (realtime/mock only)
+    # -------------------------------------------------
+
+
+    def step(self, *, ts: float) -> dict[str, Any]:
+        """
+        Execute a single strategy step at an explicit timestamp.
+
+        Semantics:
+            - `ts` is provided by the driver (primary clock).
+            - All data handlers are aligned (anti-lookahead) to `ts`.
+            - No handler is allowed to infer or advance time internally.
+        """
+        if not getattr(self, "_warmup_done", False):
+            raise RuntimeError(
+                "StrategyEngine.step() called before warmup_features(). "
+                "Call engine.preload_data() then engine.warmup_features() first."
+            )
+        if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
+            raise RuntimeError("BACKTEST step() called before preload_data()")
+
+        timestamp = float(ts)
+        self._anchor_ts = timestamp  # keep last alignment point
+
+        log_debug(self._logger, "StrategyEngine step() called", timestamp=timestamp)
 
         # -------------------------------------------------
-        # 2. Warm up data handlers to anchor_ts
+        # 0. Align all handlers to this timestamp (anti-lookahead clamp)
         # -------------------------------------------------
         for hmap in (
             self.ohlcv_handlers,
@@ -177,159 +221,30 @@ class StrategyEngine:
             self.sentiment_handlers,
         ):
             for h in hmap.values():
-                if hasattr(h, "warmup_to"):
-                    h.warmup_to(anchor_ts)
-
-        # -------------------------------------------------
-        # 3. Warm up feature extractor caches
-        # -------------------------------------------------
-        for _ in range(warmup_steps):
-            self.feature_extractor.update(timestamp=anchor_ts)
-
-        log_debug(self._logger, "StrategyEngine warmup completed")
-
-
-    # -------------------------------------------------
-    # Bootstrap / backfill phase (realtime/mock only)
-    # -------------------------------------------------
-
-
-    def bootstrap(
-        self,
-        *,
-        end_ts: float | None = None,
-        lookback: Any | None = None,
-        lookbacks: dict[str, Any] | None = None,
-    ) -> None:
-        """
-        Purpose:
-            - Preload recent data into handler caches (bootstrap/backfill),
-              so that warmup() can infer anchor_ts and rolling features can compute.
-
-        Args:
-            end_ts:
-                Backfill end timestamp. If None, will use current wall-clock time.
-            lookback:
-                Default lookback horizon passed to handlers that accept it.
-                (e.g. \"30d\" or bars count depending on handler implementation)
-            lookbacks:
-                Optional per-domain overrides, e.g.
-                {\"ohlcv\": \"30d\", \"orderbook\": \"10m\", \"sentiment\": \"7d\"}
-        
-        example usage:
-            engine.bootstrap(bootstrap="30d")    
-            engine.warmup(warmup_steps=0)       
-        """
-        if self.mode == EngineMode.BACKTEST:
-            raise RuntimeError("bootstrap() is only valid in REALTIME / MOCK mode")
-
-        if end_ts is None:
-            from time import time as _time
-            end_ts = float(_time())
-
-        per = lookbacks or {}
-
-        def _call_bootstrap(h: Any, *, end_ts: float, lookback: Any | None) -> None:
-            # Best-effort signature compatibility (protocols later)
-            # Try (end_ts, lookback) -> (end_ts) -> (lookback) -> ()
-            if not hasattr(h, "bootstrap"):
-                return
-
-            fn = getattr(h, "bootstrap")
-
-            for kwargs in (
-                {"end_ts": end_ts, "lookback": lookback},
-                {"end_ts": end_ts},
-                {"lookback": lookback},
-                {},
-            ):
-                try:
-                    fn(**kwargs)
-                    return
-                except TypeError:
-                    continue
-
-            raise TypeError(
-                f"{type(h).__name__}.bootstrap(...) signature not supported; "
-                f"tried end_ts/lookback variations."
-            )
-
-        log_debug(self._logger, "StrategyEngine bootstrap started", end_ts=end_ts, lookback=lookback)
-
-        domains = (
-            ("ohlcv", self.ohlcv_handlers),
-            ("orderbook", self.orderbook_handlers),
-            ("option_chain", self.option_chain_handlers),
-            ("iv_surface", self.iv_surface_handlers),
-            ("sentiment", self.sentiment_handlers),
-        )
-
-        for domain, hmap in domains:
-            lk = per.get(domain, lookback)
-            for h in hmap.values():
-                _call_bootstrap(h, end_ts=end_ts, lookback=lk)
-
-        self._bootstrap_end_ts = end_ts
-        log_debug(self._logger, "StrategyEngine bootstrap completed", end_ts=end_ts)
-
-    # -------------------------------------------------
-    # Single event loop step (1 tick)
-    # -------------------------------------------------
-
-    def step(self) -> dict[str, Any]:
-        """
-        Execute a single strategy step / tick.
-        """
-        if not hasattr(self, "_anchor_ts"):
-            raise RuntimeError(
-                "StrategyEngine.step() called before warmup(). "
-                "Call engine.warmup(...) first."
-            )
-        if self.mode == EngineMode.BACKTEST and not hasattr(self, "_history_start_ts"):
-            raise RuntimeError("BACKTEST step() called before load_history()")
-
-        log_debug(self._logger, "StrategyEngine step() called")
+                if hasattr(h, "align_to"):
+                    h.align_to(timestamp)
 
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
-
         primary_handler = self._get_primary_ohlcv_handler()
         market_data: Any = None
-        timestamp: float | None = None
-
         if primary_handler is not None and hasattr(primary_handler, "get_snapshot"):
-            market_data = primary_handler.get_snapshot()
-            if isinstance(market_data, dict):
-                # tolerate different snapshot key conventions
-                ts_val = market_data.get("timestamp")
-                if ts_val is None:
-                    ts_val = market_data.get("ts")
-                if ts_val is not None:
-                    try:
-                        timestamp = float(ts_val)
-                    except Exception:
-                        timestamp = None
-
-        if timestamp is None and primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
-            timestamp = primary_handler.last_timestamp()
-
-        # If handler has no timestamp yet, fall back to anchor_ts (warmup resolved it)
-        if timestamp is None:
-            timestamp = getattr(self, "_anchor_ts", None)
-
-        if timestamp is None:
-            raise RuntimeError("Cannot resolve timestamp for step()")
-
-        log_debug(self._logger, "StrategyEngine resolved timestamp", timestamp=timestamp)
+            try:
+                market_data = primary_handler.get_snapshot(timestamp)
+            except TypeError:
+                # backward compatibility: older handlers may not accept ts
+                market_data = primary_handler.get_snapshot()
 
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
         # -------------------------------------------------
-
         features = self.feature_extractor.update(timestamp=timestamp)
-        log_debug(self._logger, "StrategyEngine computed features",
-                  feature_keys=list(features.keys()))
+        log_debug(
+            self._logger,
+            "StrategyEngine computed features",
+            feature_keys=list(features.keys()),
+        )
 
         # Use ALL features — model decides what to use (v4 contract)
         filtered_features = features
@@ -337,8 +252,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 3. Model predictions
         # -------------------------------------------------
-
-        model_outputs = {}
+        model_outputs: dict[str, Any] = {}
         for name, model in self.models.items():
             model_outputs[name] = model.predict(filtered_features)
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
@@ -346,7 +260,6 @@ class StrategyEngine:
         # -------------------------------------------------
         # 4. Construct decision context
         # -------------------------------------------------
-
         portfolio_state = self.portfolio.state()
         if hasattr(portfolio_state, "to_dict"):
             portfolio_state_dict = portfolio_state.to_dict()
@@ -356,9 +269,11 @@ class StrategyEngine:
             portfolio_state_dict = dict(portfolio_state)
 
         context = {
+            "timestamp": timestamp,
             "features": filtered_features,
             "models": model_outputs,
             "portfolio": portfolio_state_dict,
+            "market_data": market_data,
         }
 
         # DecisionProto.decide(context) → score
@@ -368,17 +283,17 @@ class StrategyEngine:
         # -------------------------------------------------
         # 5. Risk: convert score to target position
         # -------------------------------------------------
-        # risk.adjust(size, features)
-
         size_intent = decision_score
         target_position = self.risk_manager.adjust(size_intent, context)
-        log_debug(self._logger, "StrategyEngine risk target", target_position=target_position)
+        log_debug(
+            self._logger,
+            "StrategyEngine risk target",
+            target_position=target_position,
+        )
 
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
-        # Execution engine is responsible for mode-specific behavior (mock/backtest/live)
-
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],
@@ -390,14 +305,12 @@ class StrategyEngine:
         # -------------------------------------------------
         # 7. Apply fills to portfolio
         # -------------------------------------------------
-
         for f in fills:
             self.portfolio.apply_fill(f)
 
         # -------------------------------------------------
         # 8. Return current strategy snapshot
         # -------------------------------------------------
-        
         snapshot = {
             "timestamp": timestamp,
             "context": context,

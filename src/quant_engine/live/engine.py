@@ -1,64 +1,103 @@
-from quant_engine.strategy.engine import StrategyEngine
+from __future__ import annotations
+
+from typing import Any, Callable, Iterable
+
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.strategy.engine import StrategyEngine
 
 
 class LiveEngine:
     """
-    Unified Live Trading Engine (skeleton).
+    Unified Live Trading Engine (realtime driver).
 
-    Responsibilities:
-        • Receive real-time bars/ticks from a live feed (WebSocket / REST poll).
-        • Push each update into RealTimeDataHandler.
-        • Call StrategyEngine.step() on each update.
-        • Let ExecutionEngine handle routing → slippage → matching (live).
+    Semantics:
+        - Data ingestion runs independently (feed / websocket / poller).
+        - Strategy execution is EVENT-DRIVEN by the primary clock
+          (typically OHLCV bar close).
+        - Engine NEVER fetches data itself.
     """
 
     def __init__(
         self,
-        strategy: StrategyEngine,
-        realtime: RealTimeDataHandler,
-        feed=None,
+        *,
+        engine: StrategyEngine,
+        ohlcv_handler: RealTimeDataHandler,
+        feed: Iterable[dict] | None = None,
+        on_snapshot: Callable[[Any], None] | None = None,
     ):
         """
-        feed: object providing live bars/ticks.
-               Expected to yield dict-like bars:
-               {
-                   "timestamp": ...,
-                   "open": ...,
-                   "high": ...,
-                   "low": ...,
-                   "close": ...,
-                   "volume": ...
-               }
+        Parameters
+        ----------
+        engine:
+            Assembled StrategyEngine (already preloaded + warmed up).
+        ohlcv_handler:
+            Primary OHLCV handler acting as the realtime clock source.
+        feed:
+            Iterable / generator yielding OHLCV bars, e.g.
+            {
+                "timestamp": float,
+                "open": float,
+                "high": float,
+                "low": float,
+                "close": float,
+                "volume": float,
+            }
+        on_snapshot:
+            Optional callback invoked after each engine.step().
         """
-        self.strategy = strategy
-        self.realtime = realtime
-        self.feed = feed   # WebSocket wrapper or polling generator
+        self.engine = engine
+        self.ohlcv_handler = ohlcv_handler
+        self.feed = feed
+        self._on_snapshot = on_snapshot or self._default_on_snapshot
 
-    def run(self):
-        """
-        Main live loop.
-        For each bar from the live feed:
-            1) realtime.on_new_tick(bar)
-            2) strategy.step()
-            3) handle returned snapshot (log, store, print)
-        """
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:
         if self.feed is None:
-            raise ValueError("LiveEngine requires a live feed source.")
+            raise ValueError("LiveEngine requires a feed iterable.")
+
+        # ---- lifecycle guard ----
+        if not getattr(self.engine, "_warmup_done", False):
+            raise RuntimeError(
+                "LiveEngine.run() requires engine.preload_data() "
+                "and engine.warmup_features() to be called first"
+            )
+        # -------------------------
 
         for bar in self.feed:
-            # 1) Feed the bar into the real-time handler
-            self.realtime.on_new_tick(bar)
+            self._ingest_bar(bar)
 
-            # 2) Execute one strategy iteration
-            snapshot = self.strategy.step()
+            # Primary clock: OHLCV bar close timestamp
+            ts = self._extract_timestamp(bar)
 
-            # 3) Hook for logging / printing / storage
-            self.on_snapshot(snapshot)
+            snapshot = self.engine.step(ts=ts)
+            self._on_snapshot(snapshot)
 
-    def on_snapshot(self, snapshot):
+    # ------------------------------------------------------------------
+    # Hooks (override-friendly)
+    # ------------------------------------------------------------------
+
+    def _ingest_bar(self, bar: dict) -> None:
         """
-        Override or extend this method in the future.
-        For now, skeleton simply prints minimal info.
+        Push one OHLCV bar into the realtime handler.
         """
-        print("[LIVE] snapshot:", snapshot.get("decision_score"), snapshot.get("target_position"))
+        self.ohlcv_handler.on_new_tick(bar)
+
+    def _extract_timestamp(self, bar: dict) -> float:
+        """
+        Extract the canonical step timestamp from a bar.
+
+        Default: bar["timestamp"] (bar close time).
+        """
+        try:
+            return float(bar["timestamp"])
+        except Exception as e:
+            raise KeyError("OHLCV bar must contain 'timestamp'") from e
+
+    def _default_on_snapshot(self, snapshot: Any) -> None:
+        """
+        Default snapshot hook (no-op logging).
+        """
+        return

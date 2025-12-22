@@ -5,7 +5,7 @@ from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
-from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug
@@ -131,7 +131,7 @@ class FeatureExtractor:
         orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
         option_chain_handlers: Dict[str, OptionChainDataHandler],
         iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
-        sentiment_handlers: Dict[str, SentimentLoader],
+        sentiment_handlers: Dict[str, SentimentHandler],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
@@ -144,6 +144,9 @@ class FeatureExtractor:
 
         # Optional: helps choose a stable clock source when multiple symbols exist.
         self._primary_symbol = next(iter(ohlcv_handlers.keys()), "") if ohlcv_handlers else ""
+
+        # Strategy observation interval (injected by engine)
+        self._interval: str | None = None
 
         raw_cfg = feature_config or []
         normalized: list[Dict[str, Any]] = [_normalize_feature_item(dict(item)) for item in raw_cfg]
@@ -175,10 +178,26 @@ class FeatureExtractor:
             "FeatureExtractor channels loaded",
             channels=[type(c).__name__ for c in self.channels]
         )
-
+        self.max_window = max((ch.required_window() for ch in self.channels), default=1)
+        self.warmup_window = max(self.max_window, min_warmup)
         self._initialized = False
         self._last_timestamp = None
         self._last_output = {}
+
+    # ------------------------------------------------------------------
+    # Strategy interval (engine-injected)
+    # ------------------------------------------------------------------
+    def set_interval(self, interval: str | None) -> None:
+        """
+        Inject strategy observation interval (e.g. '1m', '15m').
+
+        This does NOT affect data handlers.
+        It only informs feature semantics / aggregation policy.
+        """
+        self._interval = interval
+        for ch in self.channels:
+            if hasattr(ch, "interval"):
+                ch.interval = interval
 
     # ----------------------------------------------------------------------
     # Full-window initialization
@@ -189,8 +208,7 @@ class FeatureExtractor:
         Called on backtest startup or live cold-start.
         """
         # 1) Determine required warmup window across all channels
-        max_window = max((ch.required_window() for ch in self.channels), default=1)
-        warmup_window = max(max_window, min_warmup)
+        
 
         # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
         primary_handler: Optional[OHLCVDataHandler] = None
@@ -203,7 +221,7 @@ class FeatureExtractor:
             if primary_handler is None:
                 primary_handler = next(iter(self.ohlcv_handlers.values()))
             # warmup OHLCV window (legacy interface, still valid in v4)
-            ohlcv_window = primary_handler.window_df(warmup_window)
+            ohlcv_window = primary_handler.window_df(self.warmup_window)
             if hasattr(primary_handler, "last_timestamp"):
                 v = primary_handler.last_timestamp()
                 if v is not None:
@@ -227,6 +245,7 @@ class FeatureExtractor:
 
         context = {
             "timestamp": timestamp0,
+            "interval": self._interval,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -234,13 +253,13 @@ class FeatureExtractor:
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
             },
-            "warmup_window": warmup_window,
+            "warmup_window": self.warmup_window,
             "ohlcv_window": ohlcv_window,
         }
 
         # 5) Initialize all channels with the same context + warmup_window
         for ch in self.channels:
-            ch.initialize(context, warmup_window)
+            ch.initialize(context, self.warmup_window)
 
         # 6) Store initial output and internal state
         self._last_output = self.compute_output()
@@ -267,42 +286,11 @@ class FeatureExtractor:
         if not self._initialized:
             return self.initialize()
 
-        # ----------------------------------------------------------
-        # 1) Infer timestamp if not provided
-        # ----------------------------------------------------------
         if timestamp is None:
-            candidates: list[float] = []
-
-            # Prefer OHLCV as primary clock if present
-            if self.ohlcv_handlers:
-                primary = self.ohlcv_handlers.get(getattr(self, "_primary_symbol", ""))
-                if primary is None:
-                    primary = next(iter(self.ohlcv_handlers.values()))
-                if hasattr(primary, "last_timestamp"):
-                    v = primary.last_timestamp()
-                    if v is not None:
-                        candidates.append(float(v))
-
-            # Helper to harvest last_timestamp() from other handler families
-            def collect_ts(handlers: Dict[str, Any]) -> None:
-                for h in handlers.values():
-                    if hasattr(h, "last_timestamp"):
-                        v = h.last_timestamp()
-                        if v is not None:
-                            candidates.append(float(v))
-
-            # Other clocks
-            collect_ts(self.orderbook_handlers)
-            collect_ts(self.option_chain_handlers)
-            collect_ts(self.iv_surface_handlers)
-            collect_ts(self.sentiment_handlers)
-
-            if candidates:
-                # Use the most advanced available timestamp
-                timestamp = max(candidates)
-            else:
-                # Pure fallback: reuse previous logical time, or 0.0 if none
-                timestamp = self._last_timestamp if self._last_timestamp is not None else 0.0
+            raise RuntimeError(
+                "FeatureExtractor.update() requires an explicit timestamp. "
+                "Timestamp inference is owned by the engine/driver in v4."
+            )
 
         assert timestamp is not None
 
@@ -317,6 +305,7 @@ class FeatureExtractor:
         # ----------------------------------------------------------
         context = {
             "timestamp": timestamp,
+            "interval": self._interval,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,

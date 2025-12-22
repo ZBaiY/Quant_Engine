@@ -27,14 +27,31 @@ class FeatureChannel(Protocol):
     def symbol(self) -> str | None:
         ...
 
+    @property
+    def interval(self) -> str | None:
+        """
+        Strategy observation interval injected by the engine.
+        Feature logic may branch on this value.
+        """
+        ...
+
+    @interval.setter
+    def interval(self, value: str | None) -> None:
+        ...
+
     def initialize(self, context: Dict[str, Any], warmup_window: int | None = None) -> None:
         """
         Full-window initialization using full context:
             context = {
-                "realtime_ohlcv": RealTimeDataHandler,
-                "orderbook_realtime": RealTimeOrderbookHandler | None,
-                "option_chain": OptionChainDataHandler | None,
-                "sentiment": SentimentLoader | None,
+                "timestamp": float,        # strategy observation timestamp (ts)
+                "interval": str,           # strategy observation interval (e.g. "1m", "15m")
+                "data": {
+                    "ohlcv": {...},
+                    "orderbook": {...},
+                    "option_chain": {...},
+                    "iv_surface": {...},
+                    "sentiment": {...},
+                }
             }
         """
         ...
@@ -43,11 +60,15 @@ class FeatureChannel(Protocol):
         """
         Incremental update using NEW data only, e.g.:
             context = {
-                "ohlcv": new_bar_df (single-row),
-                "historical": HistoricalDataHandler,
-                "realtime": RealTimeDataHandler,
-                "option_chain": latest option chain,
-                "sentiment": latest sentiment,
+                "timestamp": float,        # strategy observation timestamp (ts)
+                "interval": str,           # strategy observation interval (e.g. "1m", "15m")
+                "data": {
+                    "ohlcv": {...},
+                    "orderbook": {...},
+                    "option_chain": {...},
+                    "iv_surface": {...},
+                    "sentiment": {...},
+                }
             }
         """
         ...
@@ -62,6 +83,10 @@ class FeatureChannel(Protocol):
         If symbol is None, uses self.symbol.
         Implementations MUST retrieve snapshot via:
             handler.get_snapshot(context["ts"])
+
+        NOTE:
+            Snapshot reflects the latest handler state with timestamp <= context["timestamp"].
+            Handlers may update asynchronously between strategy steps.
         """
         ...
 
@@ -109,6 +134,7 @@ class FeatureChannelBase(FeatureChannel):
     def __init__(self, *, name: str, symbol: str | None = None, **kwargs):
         self._name = name
         self._symbol = symbol
+        self._interval: str | None = None
 
     @property
     def symbol(self) -> str | None:
@@ -117,6 +143,14 @@ class FeatureChannelBase(FeatureChannel):
     @symbol.setter
     def symbol(self, value: str | None) -> None:
         self._symbol = value
+
+    @property
+    def interval(self) -> str | None:
+        return self._interval
+
+    @interval.setter
+    def interval(self, value: str | None) -> None:
+        self._interval = value
 
     # ------------------------------------------------------------------
     # Handler lookup (generic)
@@ -142,6 +176,10 @@ class FeatureChannelBase(FeatureChannel):
         Retrieve timestamp-aligned snapshot.
         Equivalent to:
             handler.get_snapshot(context["timestamp"])
+
+        NOTE:
+            Snapshot reflects the latest handler state with timestamp <= context["timestamp"].
+            Handlers may update asynchronously between strategy steps.
         """
         h = self._get_handler(context, data_type, symbol)
         if not hasattr(h, "get_snapshot"):
@@ -161,3 +199,17 @@ class FeatureChannelBase(FeatureChannel):
         if not hasattr(h, "window"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no window().")
         return h.window(context["timestamp"], n)
+
+    # ------------------------------------------------------------------
+    # Strategy-interval helper (optional)
+    # ------------------------------------------------------------------
+    def strategy_window(self, context: Dict[str, Any], data_type: str, n: int, symbol: str | None = None):
+        """
+        Retrieve rolling window aligned to the *strategy observation interval*.
+
+        This is a semantic helper, not a data-layer primitive.
+        Feature implementations may choose to:
+            - aggregate high-frequency data into one strategy-step value
+            - or ignore this helper and use snapshot/window_any directly
+        """
+        return self.window_any(context, data_type, n, symbol)

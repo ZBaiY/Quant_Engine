@@ -36,7 +36,7 @@ class StrategyLoader:
         else:
             cfg = strategy.apply_defaults(overrides)
 
-        # Enforce B-style: strategy must be bound (template resolved)
+        # to cast symbol mapping and etc.
         universe = cfg.get("universe") or {}
         if not isinstance(universe, dict) or not universe:
             raise ValueError("Strategy must be bound via strategy.bind(...) before loading")
@@ -44,6 +44,12 @@ class StrategyLoader:
         symbol = cfg.get("symbol")
         if not isinstance(symbol, str) or not symbol:
             raise ValueError("Primary symbol must be resolved from bound strategy universe")
+
+        interval = cfg.get("interval")
+        if not isinstance(interval, str) or not interval:
+            raise ValueError(
+                "Strategy observation interval must be resolved from standardized config"
+            )
 
         features_user = cfg.get("features_user", [])
 
@@ -199,6 +205,9 @@ class StrategyLoader:
             data_handlers.get("iv_surface", {}),
             data_handlers.get("sentiment", {}),
         )
+        # Inject strategy observation interval early (authoritative)
+        if hasattr(feature_extractor, "set_interval"):
+            feature_extractor.set_interval(interval)
 
         # -----------------------
         # Assemble StrategyEngine
@@ -228,6 +237,7 @@ class StrategyLoader:
         spec = EngineSpec(
             mode=mode,
             symbol=symbol,
+            interval=interval,
             universe=universe,
         )
 
