@@ -87,7 +87,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
 
-    def bootstrap(self, *, end_ts: float, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
         """Preload recent data into cache.
 
         IO-free by default (no-op). Keeps params for observability/future adapters.
@@ -99,8 +99,8 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             self._logger,
             "RealTimeOrderbookHandler.bootstrap (no-op)",
             symbol=self.symbol,
+            anchor_ts=anchor_ts,
             source=self.source,
-            end_ts=end_ts,
             lookback=lookback,
         )
 

@@ -4,7 +4,7 @@ from typing import Any
 from collections.abc import Mapping
 from enum import Enum
 from dataclasses import dataclass
-
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
@@ -78,7 +78,7 @@ class StrategyEngine:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
 
-    def preload_data(self) -> None:
+    def preload_data(self, anchor_ts: float | None = None) -> None:
         """
         Preload data into handler caches (mode-agnostic).
         """
@@ -110,17 +110,18 @@ class StrategyEngine:
                 raise ValueError(
                     f"Invalid preload window for domain '{domain}': {window!r}"
                 )
-
+            window += self.feature_extractor.warmup_steps  # ensure warmup coverage
             handlers = domain_handlers.get(domain)
             if not handlers:
                 continue
 
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
-                    h.bootstrap(required_window=window)
+                    assert isinstance(h, RealTimeDataHandler)
+                    h.bootstrap(anchor_ts=anchor_ts, lookback=window)
 
         self._preload_done = True
-
+        self._anchor_ts = anchor_ts
         log_debug(
             self._logger,
             "StrategyEngine preload_data completed",

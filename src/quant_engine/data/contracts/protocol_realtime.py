@@ -24,7 +24,7 @@ class DataHandlerProto(Protocol):
 
     # -------- lifecycle --------
 
-    def bootstrap(self, *, end_ts: float, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
         """REALTIME/MOCK: preload recent data into cache."""
         ...
 

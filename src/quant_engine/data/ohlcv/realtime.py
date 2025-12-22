@@ -102,7 +102,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
 
-    def bootstrap(self, *, end_ts: float, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
         """Preload recent data into cache.
 
         By default: no-op (IO-free handler).
@@ -116,9 +116,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
             self._logger,
             "RealTimeDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
+            anchor_ts=anchor_ts,
             source=self.source,
             interval=self.interval,
-            end_ts=end_ts,
             lookback=lookback,
         )
 

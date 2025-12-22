@@ -119,15 +119,15 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         )
 
 
-    def bootstrap(self, *, end_ts: float, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
         log_debug(
             self._logger,
             "IVSurfaceDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
+            anchor_ts=anchor_ts,
             source=self.source,
-            end_ts=end_ts,
             lookback=lookback,
         )
 
