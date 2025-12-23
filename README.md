@@ -46,6 +46,7 @@ Ingestion → Tick → Driver → Engine → DataHandler
 - Strategy / Engine / DataHandler never know data sources.
 
 Strategy configs describe **data semantics**, not data provenance.
+Ingestion is free to be synchronous or asynchronous; this is intentionally unspecified.
 
 ## Strategy loading and runtime control-flow
 
