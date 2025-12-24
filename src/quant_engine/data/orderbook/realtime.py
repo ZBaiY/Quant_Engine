@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from quant_engine.data.orderbook.cache import OrderbookCache
@@ -25,6 +25,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # --- declared attributes (protocol/typing) ---
     symbol: str
     interval: str | None
+    interval_seconds: float | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: OrderbookCache
@@ -38,6 +39,10 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         if ri is not None and (not isinstance(ri, str) or not ri):
             raise ValueError("Orderbook 'interval' must be a non-empty string if provided")
         self.interval = ri
+        interval_seconds = to_float_interval(self.interval) if self.interval is not None else None
+        if self.interval is not None and interval_seconds is None:
+            raise ValueError(f"Invalid interval format: {self.interval}")
+        self.interval_seconds = interval_seconds
 
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}

@@ -1,33 +1,63 @@
-
-
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from quant_engine.runtime.context import RuntimeContext
+from quant_engine.runtime.modes import EngineMode
+from quant_engine.contracts.portfolio import PortfolioState
 
 
 @dataclass(frozen=True)
 class EngineSnapshot:
     """
-    Runtime-level engine snapshot.
-
-    Semantics:
-      - Represents the result of one engine.step(ts).
-      - Owned by runtime / driver.
-      - Used for backtest records, artifacts, and debugging.
-
-    Non-responsibilities:
-      - NOT a market data snapshot.
-      - NOT a data-layer Snapshot.
-      - Does NOT own handlers or caches.
+    Immutable snapshot of a single engine step.
     """
+    timestamp: float
+    mode: EngineMode
 
-    context: RuntimeContext
+    # --- strategy perception ---
     features: Dict[str, Any]
     model_outputs: Dict[str, Any]
+
+    # --- decision & execution ---
     decision_score: Any
     target_position: Any
-    fills: List[Any]
-    market_data: Any | None = None
+    fills: List[Dict]
+
+    # --- market & accounting ---
+    market_data: Any
+    portfolio: PortfolioState
+
+    def __init__(
+        self,
+        timestamp: float,
+        mode: EngineMode,
+        features: Dict[str, Any],
+        model_outputs: Dict[str, Any],
+        decision_score: Any,
+        target_position: Any,
+        fills: List[Dict],
+        market_data: Any,
+        portfolio: PortfolioState,
+    ):
+        object.__setattr__(self, "timestamp", timestamp)
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "features", features)
+        object.__setattr__(self, "model_outputs", model_outputs)
+        object.__setattr__(self, "decision_score", decision_score)
+        object.__setattr__(self, "target_position", target_position)
+        object.__setattr__(self, "fills", fills)
+        object.__setattr__(self, "market_data", market_data)
+        object.__setattr__(self, "portfolio", portfolio)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "mode": self.mode.value,
+            "features": self.features,
+            "model_outputs": self.model_outputs,
+            "decision_score": self.decision_score,
+            "target_position": self.target_position,
+            "fills": self.fills,
+            "market_data": self.market_data,
+            "portfolio": self.portfolio.to_dict(),
+        }

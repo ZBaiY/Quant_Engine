@@ -62,11 +62,12 @@ class ArtifactStore:
         for s in self._snapshots:
             out.append(
                 {
-                    "timestamp": s.context.timestamp,
-                    "mode": s.context.mode.value,
+                    "timestamp": s.timestamp,
+                    "mode": s.mode.value,
                     "decision_score": s.decision_score,
                     "target_position": s.target_position,
                     "fills": s.fills,
+                    "portfolio": s.portfolio.to_dict(),
                 }
             )
         return out

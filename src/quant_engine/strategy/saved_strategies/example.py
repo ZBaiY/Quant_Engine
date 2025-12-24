@@ -9,140 +9,156 @@ from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.registry import register_strategy
 
 
-@register_strategy("EXAMPLE_1")
-class Example1Strategy(StrategyBase):
-    """
-    Pair trading via Z-score.
+@register_strategy("EXAMPLE_safe")
+class ExampleStrategy(StrategyBase):
 
-    Python-first declarative strategy specification.
-    This class is the single source of truth for the experiment setup.
-    """
+    STRATEGY_NAME = "EXAMPLE"
+    UNIVERSE_TEMPLATE = {
+        "primary": "{A}",
+        "secondary": {"{B}"},
+    }
 
-    STRATEGY_NAME = "EXAMPLE_1"
-
-    # --------------------------------------------------
-    # Primary symbol
-    # --------------------------------------------------
-    SYMBOL = "BTCUSDT"
-
-    # --------------------------------------------------
-    # Data declaration (resource layer)
-    # --------------------------------------------------
     DATA = {
         "primary": {
-            "ohlcv": {
-                "source": "binance",
-                "interval": "1m",
-                "history": {
-                    "lookback": "30d",
-                    "warmup": 200,
-                },
-            },
-            "option_chain": {
-                "source": "deribit",
-                "refresh_interval": "5m",
-            },
-            "orderbook": {
-                "depth": 10,
-                "aggregation": "L2",
-                "refresh_interval": "100ms",
-            },
+            "ohlcv": {"$ref": "OHLCV_1M_30D"},
+            "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
+            "option_chain": {"$ref": "OPTION_CHAIN_5M"},
+            "iv_surface": {"$ref": "IV_SURFACE_5M"},
+            "sentiment": {"$ref": "SENTIMENT_BASIC_5M"},
         },
         "secondary": {
-            "ETHUSDT": {
-                "ohlcv": {
-                    "source": "binance",
-                    "interval": "1m",
-                    "history": {
-                        "lookback": "30d",
-                        "warmup": 200,
-                    },
-                }
+            "{B}": {
+                "ohlcv": {"$ref": "OHLCV_1M_30D"},
             }
         },
     }
-
-    # Data domains required by this strategy type
-    REQUIRED_DATA = {
-        "ohlcv",
-        "orderbook",
-        "option_chain",
-    }
-
-    # --------------------------------------------------
-    # Feature layer
-    # --------------------------------------------------
+    REQUIRED_DATA = {"ohlcv", "orderbook", "option_chain", "iv_surface", "sentiment"}
     FEATURES_USER = [
         {
-            "name": "SPREAD_BTCUSDT^ETHUSDT",
+            "name": "SPREAD_MODEL_{A}^{B}",
             "type": "SPREAD",
-            "symbol": "BTCUSDT",
-            "params": {"ref": "ETHUSDT"},
+            "symbol": "{A}",
+            "params": {"ref": "{B}"},
         },
         {
-            "name": "RSI_MODEL_BTCUSDT",
-            "type": "RSI",
-            "symbol": "BTCUSDT",
-            "params": {"window": 14},
-        },
-        {
-            "name": "RSI_MODEL_ETHUSDT",
-            "type": "RSI",
-            "symbol": "ETHUSDT",
-            "params": {"window": 14},
-        },
-        {
-            "name": "ZSCORE_MODEL_ETHUSDT^BTCUSDT",
+            "name": "ZSCORE_MODEL_{A}^{B}",
             "type": "ZSCORE",
-            "symbol": "BTCUSDT",
-            "params": {
-                "secondary": "ETHUSDT",
-                "lookback": 120,
-            },
+            "symbol": "{A}",
+            "params": {"ref": "{B}", "lookback": 120},
         },
         {
-            "name": "ATR_RISK_BTCUSDT",
+            "name": "ATR_RISK_{A}",
             "type": "ATR",
-            "symbol": "BTCUSDT",
+            "symbol": "{A}",
             "params": {"window": 14},
-        }
+        },
     ]
-
-    # --------------------------------------------------
-    # Model / Decision / Risk
-    # --------------------------------------------------
     MODEL_CFG = {
         "type": "PAIR_ZSCORE",
-        "params": {
-            "zscore_feature": "ZSCORE_MODEL_ETHUSDT^BTCUSDT",
-        },
+        "params": {"zscore_feature": "ZSCORE_MODEL_{A}^{B}"},
     }
-
     DECISION_CFG = {
         "type": "ZSCORE_THRESHOLD",
         "params": {
-            "zscore_feature": "ZSCORE_MODEL_ETHUSDT^BTCUSDT",
+            "zscore_feature": "ZSCORE_MODEL_{A}^{B}",
             "enter": 2.0,
             "exit": 0.5,
         },
     }
-
     RISK_CFG = {
         "rules": {
             "ATR_SIZER": {
-                "params": {
-                    "atr_feature": "ATR_RISK_BTCUSDT",
-                }
+                "params": {"atr_feature": "ATR_RISK_{A}"}
             },
             "EXPOSURE_LIMIT": {
                 "params": {"limit": 2.0},
             },
         }
     }
+    EXECUTION_CFG = {
+        "policy": {"type": "IMMEDIATE"},
+        "router": {"type": "SIMPLE"},
+        "slippage": {"type": "LINEAR"},
+        "matching": {"type": "SIMULATED"},
+    }
+    PORTFOLIO_CFG = {
+        "type": "STANDARD",
+        "params": {"initial_capital": 10000,},
+    }
 
-    # --------------------------------------------------
-    # Execution / Portfolio
-    # --------------------------------------------------
+@register_strategy("RSI_ADX_SIDEWAYS_safe")
+class RSIADXSidewaysStrategy(StrategyBase):
+
+    STRATEGY_NAME = "RSI_ADX_SIDEWAYS"
+
+    # B-style, but single-symbol
+    UNIVERSE_TEMPLATE = {
+        "primary": "{A}",
+    }
+
+    DATA = {
+        "primary": {
+            "ohlcv": {"$ref": "OHLCV_1M_30D"},
+        }
+    }
+
+    REQUIRED_DATA = {"ohlcv"}
+
+    FEATURES_USER = [
+        {
+            "name": "RSI_MODEL_{A}",
+            "type": "RSI",
+            "symbol": "{A}",
+            "params": {"window": 14},
+        },
+        {
+            "name": "ADX_MODEL_{A}",
+            "type": "ADX",
+            "symbol": "{A}",
+            "params": {"window": 14},
+        },
+        {
+            "name": "RSI_MEAN_MODEL_{A}",
+            "type": "RSI_ROLLING_MEAN",
+            "symbol": "{A}",
+            "params": {
+                "feature": "RSI_{A}",
+                "window": "{window}",
+            },
+        },
+        {
+            "name": "RSI_STD_MODEL_{A}",
+            "type": "RSI_ROLLING_STD",
+            "symbol": "{A}",
+            "params": {
+                "feature": "RSI_{A}",
+                "window": "{window}",
+            },
+        },
+    ]
+
+    # no model — rule-based decision
+    MODEL_CFG = None
+
+    DECISION_CFG = {
+        "type": "RSI_DYNAMIC_BAND",
+        "params": {
+            "rsi": "RSI_MODEL_{A}",
+            "rsi_mean": "RSI_MEAN_MODEL_{A}",
+            "rsi_std": "RSI_STD_MODEL_{A}",
+            "adx": "ADX_MODEL_{A}",
+            "adx_threshold": 25,
+            "variance_factor": 1.8,
+            "mae": 0.0,
+        },
+    }
+
+    RISK_CFG = {
+        "rules": {
+            "FULL_ALLOCATION": {}
+        }
+    }
+
     EXECUTION_CFG = {
         "policy": {"type": "IMMEDIATE"},
         "router": {"type": "SIMPLE"},
@@ -152,9 +168,5 @@ class Example1Strategy(StrategyBase):
 
     PORTFOLIO_CFG = {
         "type": "STANDARD",
-        "params": {
-            "initial_capital": 10000,
-        },
+        "params": {"initial_capital": 1000},
     }
-
-

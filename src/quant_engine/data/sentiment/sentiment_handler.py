@@ -3,8 +3,7 @@ from typing import Any, Optional
 import pandas as pd
 from quant_engine.data.sentiment.snapshot import SentimentSnapshot
 from quant_engine.data.sentiment.cache import SentimentCache
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
-from quant_engine.data.sentiment.historical import HistoricalSentimentHandler
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -32,6 +31,7 @@ class SentimentHandler(RealTimeDataHandler):
     symbol: str
     interval: str
     model: str
+    interval_seconds: float | None
 
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
@@ -48,6 +48,10 @@ class SentimentHandler(RealTimeDataHandler):
         if not isinstance(interval, str) or not interval:
             raise ValueError("Sentiment handler requires non-empty 'interval' (e.g. '15m')")
         self.interval = interval
+        interval_seconds = to_float_interval(self.interval) if self.interval is not None else None
+        if self.interval is not None and interval_seconds is None:
+            raise ValueError(f"Invalid interval format: {self.interval}")
+        self.interval_seconds = interval_seconds
 
         model = kwargs.get("model")
         if not isinstance(model, str) or not model:

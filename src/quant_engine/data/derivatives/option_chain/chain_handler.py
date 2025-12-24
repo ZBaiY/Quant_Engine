@@ -6,7 +6,7 @@ from typing import Any, Deque, Dict, List, Optional
 
 import pandas as pd
 
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
@@ -39,6 +39,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     chains: Dict[str, OptionChain]
+    interval_seconds: float | None
     _snapshots: Deque[OptionChainSnapshot]
     _anchor_ts: float | None
     _logger: Any
@@ -51,7 +52,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("OptionChain handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = ri
-
+        ri_seconds = to_float_interval(self.interval)
+        if ri_seconds is None:
+            raise ValueError(f"Invalid interval format: {self.interval}")
+        self.interval_seconds = ri_seconds
+        
         bootstrap = kwargs.get("bootstrap") or {}
         if not isinstance(bootstrap, dict):
             raise TypeError("OptionChain 'bootstrap' must be a dict")

@@ -86,6 +86,7 @@ class ExampleStrategy(StrategyBase):
         "params": {"initial_capital": 10000,},
     }
 
+@register_strategy("RSI_ADX_SIDEWAYS")
 class RSIADXSidewaysStrategy(StrategyBase):
 
     STRATEGY_NAME = "RSI_ADX_SIDEWAYS"

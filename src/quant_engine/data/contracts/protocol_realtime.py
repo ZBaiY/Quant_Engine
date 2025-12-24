@@ -10,6 +10,22 @@ if TYPE_CHECKING:  # pragma: no cover
 else:
     TimestampLike = float
 
+def to_float_interval(interval: str) -> float | None:
+    if interval is None:
+        return None
+    # Simple parser for common intervals (e.g., "15m", "1h", "1d")
+    unit_multipliers = {
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+        "d": 86400,
+    }
+    try:
+        unit = interval[-1]
+        value = int(interval[:-1])
+        return value * unit_multipliers[unit]
+    except (ValueError, KeyError):
+        return None # Unknown format
 
 @runtime_checkable
 class DataHandlerProto(Protocol):

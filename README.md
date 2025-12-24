@@ -39,7 +39,7 @@ It only consumes **already-arrived ticks**.
 
 **Hard boundary:**
 ```
-Ingestion → Tick → Driver → Engine → DataHandler
+WORLD → Ingestion → Tick → Driver → Engine → DataHandler → Feature/Model
 ```
 - Ingestion may run in parallel and block on I/O.
 - Runtime is single-threaded and time-driven.

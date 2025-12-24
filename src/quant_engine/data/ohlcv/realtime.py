@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 import numpy as np
 from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
-from quant_engine.data.contracts.protocol_realtime import TimestampLike, RealTimeDataHandler
+from quant_engine.data.contracts.protocol_realtime import TimestampLike, RealTimeDataHandler, to_float_interval
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import DataCache
@@ -32,9 +32,13 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # --- declared attributes (protocol/typing) ---
     symbol: str
     interval: str
+    interval_seconds: float | None
+
+    columns: list[str] | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: DataCache
+    
     _anchor_ts: float | None
     _logger: Any
 
@@ -51,7 +55,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
         if not isinstance(interval, str) or not interval:
             raise ValueError("OHLCV handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = interval
-
+        interval_seconds = to_float_interval(self.interval)
+        if interval_seconds is None:
+            raise ValueError(f"Invalid interval format: {self.interval}")
+        self.interval_seconds = interval_seconds
+        
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
         if not isinstance(bootstrap, dict):

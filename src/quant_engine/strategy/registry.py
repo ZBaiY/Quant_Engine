@@ -59,3 +59,19 @@ def build_strategy(name: str) -> StrategyBase:
             f"Available strategies: {list(STRATEGY_REGISTRY.keys())}"
         )
     return cls()
+
+from quant_engine.strategy.saved_strategies import *  # noqa: F403,F401
+from quant_engine.strategy.strategies import *  # noqa: F403,F401
+
+
+def get_strategy(name: str) -> Type[StrategyBase]:
+    """
+    Retrieve a registered Strategy class by name.
+    """
+    try:
+        return STRATEGY_REGISTRY[name]
+    except KeyError:
+        raise KeyError(
+            f"Unknown strategy '{name}'. "
+            f"Available strategies: {list(STRATEGY_REGISTRY.keys())}"
+        )

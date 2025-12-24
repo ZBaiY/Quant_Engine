@@ -5,7 +5,7 @@ from typing import Any, Deque, Optional, Iterable
 
 from quant_engine.utils.logger import get_logger, log_debug
 
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
@@ -45,6 +45,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     cache_cfg: dict[str, Any]
     expiry: str | None
     model_name: str
+    interval_seconds: float | None
 
     _snapshots: Deque[IVSurfaceSnapshot]
     _anchor_ts: float | None
@@ -65,6 +66,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("IV surface handler requires non-empty 'interval' (e.g. '5m')")
         self.interval = ri
+        ri_seconds = to_float_interval(self.interval)
+        if ri_seconds is None:
+            raise ValueError(f"Invalid interval format: {self.interval}")
+        self.interval_seconds = ri_seconds
 
         # optional model/expiry
         expiry = kwargs.get("expiry")

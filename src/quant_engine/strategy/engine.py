@@ -4,6 +4,7 @@ from typing import Any
 from collections.abc import Mapping
 from enum import Enum
 from dataclasses import dataclass
+from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
@@ -12,10 +13,10 @@ from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.features.extractor import FeatureExtractor
+from quant_engine.contracts.portfolio import PortfolioBase
 from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.utils.timer import advance_ts
-from quant_engine.runtime.tick import Tick
-
+from ingestion.contracts.tick import IngestionTick as Tick
 
 
 class StrategyEngine:
@@ -41,7 +42,7 @@ class StrategyEngine:
         decision,
         risk_manager,
         execution_engine,
-        portfolio_manager
+        portfolio_manager: PortfolioBase,
     ):
         self.spec = spec
         self.mode = spec.mode
@@ -58,6 +59,7 @@ class StrategyEngine:
         self.risk_manager = risk_manager
         self.execution_engine = execution_engine
         self.portfolio = portfolio_manager
+        self.engine_snapshot = EngineSnapshot(0, self.mode, {}, {}, None, None, [], None, portfolio_manager.state())
         log_debug(self._logger, "StrategyEngine initialized",
                   mode=self.spec.mode.value,
                   model_count=len(models))
@@ -226,7 +228,7 @@ class StrategyEngine:
     # -------------------------------------------------
 
 
-    def step(self, *, ts: float) -> dict[str, Any]:
+    def step(self, *, ts: float) -> EngineSnapshot:
         """
         Execute a single strategy step at an explicit timestamp.
 
@@ -289,8 +291,6 @@ class StrategyEngine:
             portfolio_state_dict = portfolio_state.to_dict()
         elif isinstance(portfolio_state, dict):
             portfolio_state_dict = portfolio_state
-        else:
-            portfolio_state_dict = dict(portfolio_state)
 
         context = {
             "timestamp": timestamp,
@@ -333,16 +333,20 @@ class StrategyEngine:
             self.portfolio.apply_fill(f)
 
         # -------------------------------------------------
-        # 8. Return current strategy snapshot
+        # 8. Return immutable engine snapshot (post-execution)
         # -------------------------------------------------
-        snapshot = {
-            "timestamp": timestamp,
-            "context": context,
-            "decision_score": decision_score,
-            "target_position": target_position,
-            "market_data": market_data,
-            "fills": fills,
-        }
+        snapshot = EngineSnapshot(
+                    timestamp=timestamp,
+                    mode=self.spec.mode,                 # engine-owned
+                    features=features,
+                    model_outputs=model_outputs,
+                    decision_score=decision_score,
+                    target_position=target_position,
+                    fills=fills,
+                    market_data=market_data,
+                    portfolio=self.portfolio.state(),    # post-fill
+                )
+        self.engine_snapshot = snapshot
         log_debug(self._logger, "StrategyEngine snapshot ready")
 
         return snapshot
