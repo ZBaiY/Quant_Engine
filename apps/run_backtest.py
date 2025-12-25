@@ -42,7 +42,7 @@ async def main() -> None:
     # -------------------------------------------------
     # In backtest we stream ticks into the runtime (口径2):
     # ingestion runs fast (no throttling) and pushes ticks into a priority queue.
-    tick_queue: asyncio.PriorityQueue[tuple[float, int, object]] = asyncio.PriorityQueue()
+    tick_queue: asyncio.PriorityQueue[tuple[int, int, object]] = asyncio.PriorityQueue()
     _seq = 0
 
     ingestion_tasks: list[asyncio.Task[None]] = []
@@ -50,8 +50,10 @@ async def main() -> None:
     async def emit_to_queue(tick: object) -> None:
         # Expect tick to have `.timestamp` (engine-time) attribute.
         nonlocal _seq
-        ts = float(getattr(tick, "timestamp"))
-        await tick_queue.put((ts, _seq, tick))
+        # Use integer microseconds to avoid float boundary issues
+        ts = getattr(tick, "timestamp")
+        ts_us = int(round(float(ts) * 1_000_000))
+        await tick_queue.put((ts_us, _seq, tick))
         _seq += 1
 
     # -------------------------
