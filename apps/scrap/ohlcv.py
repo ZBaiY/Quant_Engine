@@ -2,15 +2,169 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator, Literal, cast
-
-import datetime as _dt
 from pathlib import Path
 
+import datetime as _dt
 import pandas as pd
 import numpy as np
 import requests
+import argparse
+from tqdm import tqdm
 
-    
+_I64_MIN = np.iinfo("int64").min
+
+def _coerce_epoch_ms(x: Any) -> int:
+    """Coerce timestamp-like input into epoch milliseconds int."""
+    if x is None:
+        raise TypeError("timestamp cannot be None")
+
+    if isinstance(x, bool):
+        raise TypeError("timestamp cannot be bool")
+
+    if isinstance(x, int):
+        # Heuristic: if user passed seconds, upscale.
+        return x * 1000 if x < 10_000_000_000 else x
+
+    if isinstance(x, float):
+        # If float seconds, upscale; if float ms, round.
+        if x < 10_000_000_000:
+            return int(round(x * 1000))
+        return int(round(x))
+
+    if isinstance(x, (pd.Timestamp, _dt.datetime)):
+        ts = x
+        if isinstance(ts, _dt.datetime) and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        if isinstance(ts, pd.Timestamp):
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            else:
+                ts = ts.tz_convert("UTC")
+            return int(ts.value // 1_000_000)
+        return int(ts.timestamp() * 1000)
+
+    if isinstance(x, str):
+        ts = pd.to_datetime(x, utc=True)
+        return int(ts.value // 1_000_000)
+
+    raise TypeError(f"Unsupported timestamp type: {type(x).__name__}")
+
+# --------------------------------------------------------------------------------------
+# Parquet storage + backfill (chunked)
+# --------------------------------------------------------------------------------------
+
+def _as_int(x: Any) -> int:
+    """Coerce pandas/numpy scalars (and friends) to built-in int.
+
+    Pylance is conservative about `int(object)`; we narrow/cast explicitly.
+    """
+    # Fast paths
+    if isinstance(x, int) and not isinstance(x, bool):
+        return x
+    if isinstance(x, (str, bytes, bytearray)):
+        return int(x)
+
+    # numpy/pandas scalar -> python scalar
+    item = getattr(x, "item", None)
+    if callable(item):
+        try:
+            v = item()
+            # recurse once in case v is still a scalar
+            if v is not x:
+                return _as_int(v)
+        except Exception:
+            pass
+
+    # Last resort: runtime conversion; cast for type checker.
+    return int(cast("int | float | str | bytes | bytearray", x))
+
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+def _dt_series_to_epoch_ms(dt_utc: pd.Series) -> pd.Series:
+    """
+    dt_utc: Series[datetime64[ns, UTC]] (or anything pd.to_datetime can coerce)
+    returns: Series[int64] epoch-ms, NaT -> 0
+    """
+    s = pd.to_datetime(dt_utc, utc=True, errors="coerce")
+    ns = s.astype("int64")              # NaT -> int64 min
+    ms = ns // 1_000_000
+    ms = ms.where(ns != _I64_MIN, 0).astype("int64")
+    return ms
+def _to_epoch_ms_int(s: pd.Series) -> pd.Series:
+    """Coerce datetime/int/float/object timestamps to epoch-ms int64."""
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return (s.view("int64") // 1_000_000).astype("int64")
+
+    if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+        dt = pd.to_datetime(s, utc=True, errors="coerce")
+        if dt.notna().any():
+
+            return _dt_series_to_epoch_ms(dt)
+
+    x = pd.to_numeric(s, errors="coerce")
+    # seconds vs ms heuristic: < 1e12 => seconds
+    x = x.where(x.isna() | (x.abs() >= 1e12), x * 1000.0)
+    return x.fillna(0).astype("int64")
+
+def _interval_ms(interval: str) -> int:
+    n = int("".join(ch for ch in interval if ch.isdigit()))
+    u = "".join(ch for ch in interval if ch.isalpha())
+    if u == "m":
+        return n * 60_000
+    if u == "h":
+        return n * 3_600_000
+    if u == "d":
+        return n * 86_400_000
+    raise ValueError(f"unsupported interval: {interval}")
+
+def _normalize_ohlcv_df(df: pd.DataFrame, *, interval: str) -> pd.DataFrame:
+    """
+    Stable schema contract:
+      - data_ts: int64 epoch-ms == close_time_ms
+      - open_time: int64 epoch-ms
+      - close_time: datetime64[ns, UTC] (inspection)
+    """
+    out = df.copy()
+
+    if "open_time" in out.columns:
+        out["open_time"] = _to_epoch_ms_int(out["open_time"])
+
+    if "close_time" in out.columns:
+        s = out["close_time"]
+
+        # force close_time -> datetime64[ns, UTC] (works for tz-aware, naive, string/object)
+        s_utc = pd.to_datetime(s, utc=True, errors="coerce")
+        close_ms = _dt_series_to_epoch_ms(s_utc)
+        out["close_time"] = s_utc
+
+    else:
+        close_ms = pd.Series(0, index=out.index, dtype="int64")
+
+
+    out["data_ts"] = close_ms.astype("int64")
+
+    out = out.sort_values("data_ts").drop_duplicates(subset=["data_ts"], keep="last")
+
+    # optional alignment delta (debug only; drop before writing)
+    if "open_time" in out.columns:
+        ims = _interval_ms(interval)
+        out["_align_delta"] = (out["data_ts"] - out["open_time"]).astype("int64")
+
+    return out
+
+def concat_chunks(chunks: Iterable[pd.DataFrame], *, dedup: bool = True) -> pd.DataFrame:
+    """Utility: concat already-fetched chunks (keeps time semantics)."""
+    parts = [c for c in chunks if c is not None and not c.empty]
+    if not parts:
+        return pd.DataFrame()
+    df = pd.concat(parts, ignore_index=True)
+    if dedup and "data_ts" in df.columns:
+        df = df.drop_duplicates(subset=["data_ts"], keep="last")
+    if "data_ts" in df.columns:
+        df = df.sort_values("data_ts", kind="stable").reset_index(drop=True)
+    return df
+
 
 @dataclass(frozen=True)
 class BinanceOHLCVFetcherConfig:
@@ -26,6 +180,7 @@ class BinanceOHLCVCleanerConfig:
     dropna: bool = True
     drop_zero_price_bars: bool = True
     allow_empty: bool = True
+
 @dataclass(frozen=True)
 class BinanceOHLCVBackfillConfig:
     symbol: str
@@ -44,7 +199,6 @@ class BinanceOHLCVBackfillConfig:
     dropna: bool = True
     drop_zero_price_bars: bool = True
 
-
 @dataclass(frozen=True)
 class OHLCVParquetStoreConfig:
     """Filesystem layout for OHLCV parquet writes.
@@ -53,6 +207,7 @@ class OHLCVParquetStoreConfig:
     """
     root: str = "data"
     domain: str = "ohlcv"
+
 @dataclass(frozen=True)
 class OHLCVCleanReport:
     n_in: int
@@ -88,7 +243,7 @@ class OHLCVCleanReport:
 
 class BinanceOHLCVFetcher:
     """Fetch Binance klines and normalize to v4 time semantics.
-    
+
     Output schema (raw-normalized):
       - data_ts: int64 epoch ms (BAR CLOSE time)  <-- authoritative event time
       - open_time: int64 epoch ms (BAR OPEN time)
@@ -143,20 +298,7 @@ class BinanceOHLCVFetcher:
         if not payload:
             return pd.DataFrame()
 
-        cols = [
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "_close_time_ms",
-            "quote_asset_volume",
-            "number_of_trades",
-            "taker_buy_base_asset_volume",
-            "taker_buy_quote_asset_volume",
-            "ignore",
-        ]
+        cols = ["open_time","open","high","low","close","volume","_close_time_ms","quote_asset_volume","number_of_trades","taker_buy_base_asset_volume","taker_buy_quote_asset_volume","ignore",]
         df = pd.DataFrame(payload, columns=cols)
 
         # ---- enforce dtypes early (avoid CSV-era dtype drift) ----
@@ -164,26 +306,17 @@ class BinanceOHLCVFetcher:
         df["_close_time_ms"] = df["_close_time_ms"].astype("int64")
         df["number_of_trades"] = df["number_of_trades"].astype("int64")
 
-        for c in (
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "quote_asset_volume",
-            "taker_buy_base_asset_volume",
-            "taker_buy_quote_asset_volume",
-            "ignore",
-        ):
+        for c in ("open","high","low","close","volume","quote_asset_volume","taker_buy_base_asset_volume",
+                  "taker_buy_quote_asset_volume","ignore",):
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
         # ---- v4 time semantics ----
         df["data_ts"] = df["_close_time_ms"].astype("int64")
-        df["datetime"] = pd.to_datetime(df["_close_time_ms"], unit="ms", utc=True)
+        df["time"] = pd.to_datetime(df["_close_time_ms"], unit="ms", utc=True)
         df = df.drop(columns=["_close_time_ms"])
 
         # Order columns: time first.
-        front = ["data_ts", "open_time", "datetime"]
+        front = ["data_ts", "open_time", "time"]
         rest = [c for c in df.columns if c not in front]
         df = df[front + rest]
 
@@ -245,19 +378,6 @@ class BinanceOHLCVFetcher:
         return df
 
 
-def concat_chunks(chunks: Iterable[pd.DataFrame], *, dedup: bool = True) -> pd.DataFrame:
-    """Utility: concat already-fetched chunks (keeps time semantics)."""
-    parts = [c for c in chunks if c is not None and not c.empty]
-    if not parts:
-        return pd.DataFrame()
-    df = pd.concat(parts, ignore_index=True)
-    if dedup and "data_ts" in df.columns:
-        df = df.drop_duplicates(subset=["data_ts"], keep="last")
-    if "data_ts" in df.columns:
-        df = df.sort_values("data_ts", kind="stable").reset_index(drop=True)
-    return df
-
-
 class BinanceOHLCVCleaner:
     """Clean + validate normalized Binance OHLCV frames.
 
@@ -267,7 +387,7 @@ class BinanceOHLCVCleaner:
       - open, high, low, close, volume
 
     Optional:
-      - close_time (datetime-like; inspection only)
+      - time (datetime-like; inspection only)
       - aux columns
 
     Guarantees on output:
@@ -445,8 +565,6 @@ class OHLCVParquetStore:
             written.append(out)
         return written
 
-
-
 class BinanceOHLCVBackfiller:
     """Chunked OHLCV backfill: fetch -> (optional clean) -> write parquet.
 
@@ -513,158 +631,8 @@ class BinanceOHLCVBackfiller:
 
         return totals
 
-def _coerce_epoch_ms(x: Any) -> int:
-    """Coerce timestamp-like input into epoch milliseconds int."""
-    if x is None:
-        raise TypeError("timestamp cannot be None")
-
-    if isinstance(x, bool):
-        raise TypeError("timestamp cannot be bool")
-
-    if isinstance(x, int):
-        # Heuristic: if user passed seconds, upscale.
-        return x * 1000 if x < 10_000_000_000 else x
-
-    if isinstance(x, float):
-        # If float seconds, upscale; if float ms, round.
-        if x < 10_000_000_000:
-            return int(round(x * 1000))
-        return int(round(x))
-
-    if isinstance(x, (pd.Timestamp, _dt.datetime)):
-        ts = x
-        if isinstance(ts, _dt.datetime) and ts.tzinfo is None:
-            ts = ts.replace(tzinfo=_dt.timezone.utc)
-        if isinstance(ts, pd.Timestamp):
-            if ts.tzinfo is None:
-                ts = ts.tz_localize("UTC")
-            else:
-                ts = ts.tz_convert("UTC")
-            return int(ts.value // 1_000_000)
-        return int(ts.timestamp() * 1000)
-
-    if isinstance(x, str):
-        ts = pd.to_datetime(x, utc=True)
-        return int(ts.value // 1_000_000)
-
-    raise TypeError(f"Unsupported timestamp type: {type(x).__name__}")
-
-# --------------------------------------------------------------------------------------
-# Parquet storage + backfill (chunked)
-# --------------------------------------------------------------------------------------
-
-
-
-def _as_int(x: Any) -> int:
-    """Coerce pandas/numpy scalars (and friends) to built-in int.
-
-    Pylance is conservative about `int(object)`; we narrow/cast explicitly.
-    """
-    # Fast paths
-    if isinstance(x, int) and not isinstance(x, bool):
-        return x
-    if isinstance(x, (str, bytes, bytearray)):
-        return int(x)
-
-    # numpy/pandas scalar -> python scalar
-    item = getattr(x, "item", None)
-    if callable(item):
-        try:
-            v = item()
-            # recurse once in case v is still a scalar
-            if v is not x:
-                return _as_int(v)
-        except Exception:
-            pass
-
-    # Last resort: runtime conversion; cast for type checker.
-    return int(cast("int | float | str | bytes | bytearray", x))
-
-def _ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-_I64_MIN = np.iinfo("int64").min
-
-def _dt_series_to_epoch_ms(dt_utc: pd.Series) -> pd.Series:
-    """
-    dt_utc: Series[datetime64[ns, UTC]] (or anything pd.to_datetime can coerce)
-    returns: Series[int64] epoch-ms, NaT -> 0
-    """
-    s = pd.to_datetime(dt_utc, utc=True, errors="coerce")
-    ns = s.astype("int64")              # NaT -> int64 min
-    ms = ns // 1_000_000
-    ms = ms.where(ns != _I64_MIN, 0).astype("int64")
-    return ms
-def _to_epoch_ms_int(s: pd.Series) -> pd.Series:
-    """Coerce datetime/int/float/object timestamps to epoch-ms int64."""
-    if pd.api.types.is_datetime64_any_dtype(s):
-        return (s.view("int64") // 1_000_000).astype("int64")
-
-    if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
-        dt = pd.to_datetime(s, utc=True, errors="coerce")
-        if dt.notna().any():
-
-            return _dt_series_to_epoch_ms(dt)
-
-    x = pd.to_numeric(s, errors="coerce")
-    # seconds vs ms heuristic: < 1e12 => seconds
-    x = x.where(x.isna() | (x.abs() >= 1e12), x * 1000.0)
-    return x.fillna(0).astype("int64")
-
-def _to_utc_dt_from_ms(ms: pd.Series) -> pd.Series:
-    return pd.to_datetime(ms.astype("int64"), unit="ms", utc=True)
-
-def _interval_ms(interval: str) -> int:
-    n = int("".join(ch for ch in interval if ch.isdigit()))
-    u = "".join(ch for ch in interval if ch.isalpha())
-    if u == "m":
-        return n * 60_000
-    if u == "h":
-        return n * 3_600_000
-    if u == "d":
-        return n * 86_400_000
-    raise ValueError(f"unsupported interval: {interval}")
-
-def _normalize_ohlcv_df(df: pd.DataFrame, *, interval: str) -> pd.DataFrame:
-    """
-    Stable schema contract:
-      - data_ts: int64 epoch-ms == close_time_ms
-      - open_time: int64 epoch-ms
-      - close_time: datetime64[ns, UTC] (inspection)
-    """
-    out = df.copy()
-
-    if "open_time" in out.columns:
-        out["open_time"] = _to_epoch_ms_int(out["open_time"])
-
-    if "close_time" in out.columns:
-        s = out["close_time"]
-
-        # force close_time -> datetime64[ns, UTC] (works for tz-aware, naive, string/object)
-        s_utc = pd.to_datetime(s, utc=True, errors="coerce")
-        close_ms = _dt_series_to_epoch_ms(s_utc)
-
-        out["close_time"] = s_utc
-    else:
-        close_ms = pd.Series(0, index=out.index, dtype="int64")
-
-
-    out["data_ts"] = close_ms.astype("int64")
-
-    out = out.sort_values("data_ts").drop_duplicates(subset=["data_ts"], keep="last")
-
-    # optional alignment delta (debug only; drop before writing)
-    if "open_time" in out.columns:
-        ims = _interval_ms(interval)
-        out["_align_delta"] = (out["data_ts"] - out["open_time"]).astype("int64")
-
-    return out
-
 
 def main() -> None:
-    import argparse
-    from tqdm import tqdm
 
     parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
     parser.add_argument("--root", default="data", help="data root")
@@ -674,7 +642,8 @@ def main() -> None:
     parser.add_argument("--end", default=None, help="default: now (UTC)")
     args = parser.parse_args()
 
-    end = args.end or pd.Timestamp.utcnow().tz_localize("UTC").strftime("%Y-%m-%d %H:%M:%S+00:00")
+    end_ts = pd.Timestamp.utcnow()   # already UTC-aware in recent pandas
+    end = args.end or end_ts.strftime("%Y-%m-%d %H:%M:%S+00:00")
 
     store = OHLCVParquetStore(cfg=OHLCVParquetStoreConfig(
         root=args.root, domain="ohlcv"
