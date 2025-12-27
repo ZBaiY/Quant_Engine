@@ -111,7 +111,7 @@ async def main() -> None:
         try:
             from ingestion.sentiment.worker import SentimentWorker
             from ingestion.sentiment.source import SentimentRESTSource, SentimentStreamSource
-            from ingestion.sentiment.normalize import GenericSentimentNormalizer
+            from ingestion.sentiment.normalize import SentimentNormalizer
         except Exception as e:
             if "sentiment" in required_domains:
                 raise RuntimeError(
@@ -123,8 +123,8 @@ async def main() -> None:
             for src, sh in engine.sentiment_handlers.items():
                 # source = SentimentRESTSource(source=src, interval=sh.interval)
                 source = SentimentStreamSource()
-                normalizer = GenericSentimentNormalizer(symbol=src)
-                worker = SentimentWorker(source=source, normalizer=normalizer, symbol=src)
+                normalizer = SentimentNormalizer(symbol=src, provider=src)
+                worker = SentimentWorker(source=source, normalizer=normalizer)
                 ingestion_tasks.append(asyncio.create_task(worker.run(emit=make_emit(sh))))
 
     # Fail-fast if the strategy declares REQUIRED_DATA but app didn’t wire the domain

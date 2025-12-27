@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import time
+import re
+import datetime as dt
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,25 +40,83 @@ class SentimentFileLayout:
     # Provider folder under root, e.g. "news" or "twitter".
     provider: str
 
-    # File pattern under provider. Supports either:
+    # File pattern under provider. Supports:
     #   - YYYY-MM-DD.jsonl
+    #   - YYYY/MM/DD.jsonl
     #   - YYYY/MM/YYYY-MM-DD.jsonl
+    #   - YYYY/MM/DD/<anything>.jsonl  (optional extra nesting)
     pattern: str = "**/*.jsonl"
+
+
+_DATE_RE_YYYY_MM_DD = re.compile(r"^(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})$")
+_DATE_RE_YYYYMMDD = re.compile(r"^(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})$")
+_DATE_RE_DD = re.compile(r"^(?P<d>\d{2})$")
+
+
+def _infer_ymd_from_path(fp: Path) -> tuple[int, int, int] | None:
+    """Infer (year, month, day) from file path.
+
+    Supported:
+      - .../YYYY-MM-DD.jsonl
+      - .../YYYY/MM/YYYY-MM-DD.jsonl
+      - .../YYYY/MM/DD.jsonl
+      - .../YYYY/MM/DD/<name>.jsonl  (DD inferred from parent folder)
+      - .../YYYY/MM/DD.jsonl where stem is "01" and YYYY/MM from parents
+    """
+    stem = fp.stem
+
+    m = _DATE_RE_YYYY_MM_DD.match(stem)
+    if m:
+        return int(m.group("y")), int(m.group("m")), int(m.group("d"))
+
+    m = _DATE_RE_YYYYMMDD.match(stem)
+    if m:
+        return int(m.group("y")), int(m.group("m")), int(m.group("d"))
+
+    # If filename is DD (e.g. 01.jsonl), use parents as YYYY/MM
+    m = _DATE_RE_DD.match(stem)
+    if m:
+        try:
+            d = int(m.group("d"))
+            mm = int(fp.parent.name)
+            yy = int(fp.parent.parent.name)
+            # Validate date quickly
+            dt.date(yy, mm, d)
+            return yy, mm, d
+        except Exception:
+            return None
+
+    # If nested under YYYY/MM/DD/<name>.jsonl, infer from parent folders
+    try:
+        d = int(fp.parent.name)
+        mm = int(fp.parent.parent.name)
+        yy = int(fp.parent.parent.parent.name)
+        dt.date(yy, mm, d)
+        return yy, mm, d
+    except Exception:
+        return None
+
+
+def _file_sort_key(fp: Path) -> tuple[int, int, int, str]:
+    ymd = _infer_ymd_from_path(fp)
+    if ymd is None:
+        # push unknowns to the end but keep deterministic ordering
+        return (9999, 12, 31, str(fp))
+    y, m, d = ymd
+    return (y, m, d, str(fp))
 
 
 class SentimentFileSource(Source):
     """Sentiment source backed by local JSONL files.
 
-    Recommended layout:
-        <root>/sentiment/<provider>/
-            2025-01-01.jsonl
-            2025-01-02.jsonl
-            ...
+    Preferred:
+        <root>/sentiment/<provider>/YYYY/MM/DD.jsonl  (e.g. 2025/12/01.jsonl)
 
     Also allowed:
-        <root>/sentiment/<provider>/YYYY/MM/2025-01-01.jsonl
+        flat YYYY-MM-DD.jsonl and YYYY/MM/YYYY-MM-DD.jsonl
 
-    This Source yields one Raw record per JSONL line.
+    Note:
+        DD.jsonl is allowed when nested under YYYY/MM/.
     """
 
     def __init__(
@@ -75,20 +135,24 @@ class SentimentFileSource(Source):
             raise FileNotFoundError(f"Sentiment path does not exist: {self._path}")
 
     def __iter__(self) -> Iterator[Raw]:
-        files = sorted(self._path.glob(self._layout.pattern)) if self._path.exists() else []
+        files = sorted((fp for fp in self._path.glob(self._layout.pattern) if fp.is_file()), key=_file_sort_key) if self._path.exists() else []
         if self._strict and not files:
             raise FileNotFoundError(f"No sentiment jsonl files found under {self._path}")
 
         for fp in files:
-            if fp.is_dir():
-                continue
             with fp.open("r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
                     # Do not normalize; just parse JSON.
-                    yield json.loads(line)
+                    try:
+                        yield json.loads(line)
+                    except Exception:
+                        if self._strict:
+                            raise
+                        else:
+                            continue
 
 
 class SentimentRESTSource(Source):

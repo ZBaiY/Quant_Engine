@@ -10,10 +10,12 @@ from dataclasses import dataclass
 OHLCV_SOURCE: str = "BINANCE"
 TRADES_SOURCE: str = "BINANCE"
 OPTION_TRADES_SOURCE: str = "DERIBIT"
-SENTIMENT_SOURCE: str = "NEWS"
+SENTIMENT_SOURCE: str = "NEWS" # REDDIT, RSS, TWITTER, etc.
 
-# All event times are epoch milliseconds (ms-int)
-TimestampMS = int
+# All *event* times are epoch milliseconds (ms-int)
+# Canonical name across all domains: `data_ts`.
+# Arrival/ingestion time MUST NOT be stored in domain tables; it exists only on IngestionTick.
+DataTimestampMS = int
 
 class StorageContract(Protocol):
     """
@@ -45,9 +47,9 @@ class OHLCVContract(StorageContract):
         data/klines/{source}/{symbol}/{interval}/{year}.parquet
 
     Timestamp convention (anti-lookahead):
-      - `timestamp` is the bar CLOSE time in epoch-ms int.
+      - `data_ts` is the bar CLOSE time in epoch-ms int.
       - `close_time` is a tz-aware datetime column for human inspection only.
-      - runtime/engine MUST clock and align using `timestamp` only.
+      - runtime/engine MUST clock and align using `data_ts` only.
 
     Binance fields (raw): open_time(ms), close_time(ms), plus OHLCV + volumes.
     We keep `open_time` as epoch-ms int and store `close_time` as datetime.
@@ -59,7 +61,7 @@ class OHLCVContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",      # epoch ms int, bar CLOSE time (authoritative)
+            "data_ts",        # epoch ms int, bar CLOSE time (authoritative)
             "open_time",      # epoch ms int, bar OPEN time
             "close_time",     # tz-aware datetime, inspection only
             "open",
@@ -80,15 +82,15 @@ class OHLCVContract(StorageContract):
         )
 
     def validate_schema(self, schema: Mapping[str, Any]) -> None:
-        if "timestamp" not in schema:
-            raise ValueError("OHLCV requires `timestamp` column")
+        if "data_ts" not in schema:
+            raise ValueError("OHLCV requires `data_ts` column")
         if "open_time" not in schema:
             raise ValueError("OHLCV requires `open_time` column")
         if "close_time" not in schema:
             raise ValueError("OHLCV requires `close_time` column")
 
-        if not str(schema["timestamp"]).startswith("int"):
-            raise TypeError("timestamp must be int64 epoch ms")
+        if not str(schema["data_ts"]).startswith("int"):
+            raise TypeError("data_ts must be int64 epoch ms")
         if not str(schema["open_time"]).startswith("int"):
             raise TypeError("open_time must be int64 epoch ms")
 
@@ -98,8 +100,8 @@ class OHLCVContract(StorageContract):
         if not ("datetime" in close_time_dtype or "Timestamp" in close_time_dtype):
             raise TypeError("close_time must be datetime-like (contain 'datetime' or 'Timestamp')")
 
-        # Engine/runtime must NOT use close_time for clocking or alignment; use timestamp only.
-        # NOTE: timestamp is CLOSE time by contract.
+        # Engine/runtime must NOT use close_time for clocking or alignment; use data_ts only.
+        # NOTE: data_ts is CLOSE time by contract.
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,7 @@ class TradesContract(StorageContract):
 
     Semantics:
       - One row = an aggregated trade (aggTrades)
-      - `timestamp` is authoritative market execution time (epoch ms)
+      - `data_ts` is authoritative market execution time (epoch ms)
     """
 
     symbol: str
@@ -119,7 +121,7 @@ class TradesContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",        # int64 epoch ms, execution time (from T)
+            "data_ts",        # int64 epoch ms, execution time (from T)
             "price",            # float, from p
             "quantity",         # float, from q
             "is_buyer_maker",   # bool, from m
@@ -158,7 +160,7 @@ class SentimentRawContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",  # epoch ms
+            "data_ts",  # epoch ms
             "text",
             "source",     # publisher / feed id
         )
@@ -195,7 +197,7 @@ class OrderbookSnapshotContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",      # snapshot time, epoch ms
+            "data_ts",      # snapshot time, epoch ms
             "bids",           # list[(price, size)]
             "asks",           # list[(price, size)]
         )
@@ -228,7 +230,7 @@ class OptionChainContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",            # ingestion snapshot time (epoch ms)
+            "data_ts",            # ingestion snapshot time (epoch ms)
             "instrument_name",      # unique option identifier
             "expiry_ts",            # epoch ms
             "strike",               # float
@@ -264,7 +266,7 @@ class OptionTradesContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",          # execution time (epoch ms)
+            "data_ts",          # execution time (epoch ms)
             "instrument_name",
             "price",              # trade price
             "amount",             # contracts traded
@@ -316,7 +318,7 @@ class IVSurfaceContract(StorageContract):
     @property
     def required_columns(self) -> Sequence[str]:
         return (
-            "timestamp",      # surface evaluation time
+            "data_ts",      # surface evaluation time
             "expiry",         # epoch ms
             "moneyness",      # K / S or log-moneyness
             "iv",             # implied volatility

@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import asyncio
@@ -332,21 +330,80 @@ class BinanceAggTradesWebSocketSource(Source):
 
 @dataclass(frozen=True)
 class TradesFileLayout:
-    """Daily parquet layout:
+    """Trades parquet file layout, supporting both legacy and new formats:
 
-    root/
-      └── <symbol>/
-          ├── 2025-01-01.parquet
-          ├── 2025-01-02.parquet
-          └── ...
+    Legacy layout:
+        root/
+          └── <symbol>/
+              ├── 2025-01-01.parquet
+              ├── 2025-01-02.parquet
+              └── ...
 
-    Parquet must contain at least `data_ts` (epoch ms) or a fallback column.
+    New layout:
+        root/
+          └── <symbol>/
+              └── YYYY/
+                  └── MM/
+                      ├── DD.parquet
+                      ├── 2025-01-01.parquet
+                      └── trades_2025-01-01.parquet
+
+    The new layout allows daily files inside year/month folders, with flexible
+    naming including DD.parquet, YYYY-MM-DD.parquet, or trades_YYYY-MM-DD.parquet.
+
+    Parquet files must contain at least `data_ts` (epoch ms) or a fallback column.
     """
 
     root: Path
 
     def file_for(self, symbol: str, ymd: str) -> Path:
-        return self.root / symbol / f"{ymd}.parquet"
+        yyyy, mm, dd = ymd.split("-")
+        return self.root / symbol / yyyy / mm / f"{dd}.parquet"
+
+
+def _parse_ymd_from_path(fp: Path) -> str | None:
+    """Best-effort extract YYYY-MM-DD from a parquet file path."""
+    stem = fp.stem
+
+    # trades_YYYY-MM-DD.parquet or YYYY-MM-DD.parquet
+    if stem.startswith("trades_"):
+        stem2 = stem[len("trades_"):]
+    else:
+        stem2 = stem
+
+    # full date in filename
+    try:
+        _dt.datetime.strptime(stem2, "%Y-%m-%d")
+        return stem2
+    except Exception:
+        pass
+
+    # DD.parquet with parent folders YYYY/MM
+    try:
+        dd = int(stem2)
+        if 1 <= dd <= 31:
+            mm = int(fp.parent.name)
+            yyyy = int(fp.parent.parent.name)
+            if 1 <= mm <= 12:
+                return f"{yyyy:04d}-{mm:02d}-{dd:02d}"
+    except Exception:
+        pass
+
+    return None
+
+
+def _iter_trade_files(sym_dir: Path) -> list[Path]:
+    """Return all parquet files for a symbol directory, supporting legacy + new layouts."""
+    files = [p for p in sym_dir.rglob("*.parquet") if p.is_file()]
+    parsed: list[tuple[str, Path]] = []
+    for p in files:
+        ymd = _parse_ymd_from_path(p)
+        if ymd is None:
+            continue
+        parsed.append((ymd, p))
+
+    parsed.sort(key=lambda t: (t[0], str(t[1])))
+    return [p for _, p in parsed]
 
 
 class TradesFileSource(Source):
@@ -370,11 +427,11 @@ class TradesFileSource(Source):
         # resolve date range from ms bounds if provided; otherwise read all files
         sym_dir = self._layout.root / self._symbol
         if not sym_dir.exists():
-            return iter(())
+            return
 
-        files = sorted(sym_dir.glob("*.parquet"))
+        files = _iter_trade_files(sym_dir)
         if not files:
-            return iter(())
+            return
 
         # If bounds exist, limit to covering dates
         if self._start_ms is not None:
@@ -387,7 +444,9 @@ class TradesFileSource(Source):
             end_ymd = None
 
         for fp in files:
-            ymd = fp.stem
+            ymd = _parse_ymd_from_path(fp)
+            if ymd is None:
+                continue
             if start_ymd is not None and ymd < start_ymd:
                 continue
             if end_ymd is not None and ymd > end_ymd:

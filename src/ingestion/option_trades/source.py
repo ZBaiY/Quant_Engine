@@ -156,17 +156,53 @@ class DeribitOptionTradesRESTSource:
             yield t
 
 
-def _parse_ymd_from_name(name: str) -> _dt.date | None:
-    # trades_YYYY-MM-DD.parquet
-    if not name.startswith("trades_"):
-        return None
-    core = name[len("trades_") :]
-    if core.endswith(".parquet"):
-        core = core[: -len(".parquet")]
-    try:
-        return _dt.date.fromisoformat(core)
-    except Exception:
-        return None
+
+def _infer_date_from_path(p: Path) -> _dt.date | None:
+    """Infer a YYYY-MM-DD date for partitioned parquet files.
+
+    Supported:
+      - trades_YYYY-MM-DD.parquet
+      - DD.parquet (date inferred from parent YYYY/MM[/DD] folders)
+      - Any nesting depth under the currency base dir.
+    """
+    name = p.name
+
+    # 1) explicit full-date filename
+    if name.startswith("trades_"):
+        core = name[len("trades_") :]
+        if core.endswith(".parquet"):
+            core = core[: -len(".parquet")]
+        try:
+            return _dt.date.fromisoformat(core)
+        except Exception:
+            return None
+
+    # 2) day-only filename: DD.parquet
+    if name.endswith(".parquet"):
+        core = name[: -len(".parquet")]
+        if core.isdigit() and 1 <= len(core) <= 2:
+            day = int(core)
+            # infer year/month from parents (expect .../YYYY/MM[/DD]/<file>)
+            parts = list(p.parts)
+            year = month = None
+            for i in range(len(parts) - 1, -1, -1):
+                s = parts[i]
+                if year is None and len(s) == 4 and s.isdigit():
+                    year = int(s)
+                    # month should be the next component (closer to filename)
+                    if i + 1 < len(parts):
+                        m = parts[i + 1]
+                        if len(m) == 2 and m.isdigit():
+                            month = int(m)
+                    break
+            if year is None or month is None:
+                return None
+            try:
+                return _dt.date(year, month, day)
+            except Exception:
+                return None
+
+    return None
 
 
 @dataclass(frozen=True)
@@ -174,7 +210,11 @@ class DeribitOptionTradesParquetSource:
     """Local parquet-backed Deribit option trades source.
 
     Expected layout:
-      <root>/option_trades/DERIBIT/<currency>/YYYY/MM/trades_YYYY-MM-DD.parquet
+      <root>/option_trades/DERIBIT/<currency>/YYYY/MM/(DD/)?<file>
+
+    Supported filenames:
+      - trades_YYYY-MM-DD.parquet
+      - DD.parquet
 
     Semantics:
       - IO-only: reads parquet and yields row dicts.
@@ -219,8 +259,8 @@ class DeribitOptionTradesParquetSource:
         e = self._coerce_date(self.end_date)
 
         files: list[tuple[_dt.date, Path]] = []
-        for p in base.rglob("trades_*.parquet"):
-            d = _parse_ymd_from_name(p.name)
+        for p in base.rglob("*.parquet"):
+            d = _infer_date_from_path(p)
             if d is None:
                 continue
             if s is not None and d < s:
@@ -232,7 +272,7 @@ class DeribitOptionTradesParquetSource:
         files.sort(key=lambda t: t[0])
         return [p for _, p in files]
 
-    def _iter_df_rows(self, df: pd.DataFrame) -> Iterable[dict[str, Any]]:
+    def _iter_df_rows(self, df: pd.DataFrame, *, descending: bool = False) -> Iterable[dict[str, Any]]:
         if df is None or df.empty:
             return
 
@@ -243,9 +283,9 @@ class DeribitOptionTradesParquetSource:
 
         if "timestamp" in df.columns:
             if "trade_seq" in df.columns:
-                df = df.sort_values(["timestamp", "trade_seq"], kind="mergesort")
+                df = df.sort_values(["timestamp", "trade_seq"], kind="mergesort", ascending=not descending)
             else:
-                df = df.sort_values(["timestamp"], kind="mergesort")
+                df = df.sort_values(["timestamp"], kind="mergesort", ascending=not descending)
 
         # yield dicts (pure-python)
         for row in df.to_dict(orient="records"):
@@ -253,18 +293,19 @@ class DeribitOptionTradesParquetSource:
             yield {str(k): v for k, v in row.items()}
 
     def __iter__(self):
-        """Iterate trade dicts in the requested order."""
-        all_rows: list[dict[str, Any]] = []
-        for fp in self.iter_files():
+        """Iterate trade dicts in the requested order.
+
+        Ordering guarantees:
+          - `order="asc"`: deterministic event-time order across the selected files.
+          - `order="desc"`: deterministic reverse event-time order.
+
+        Note: We stream file-by-file to avoid materializing the full dataset in memory.
+        """
+        fps = list(self.iter_files())
+        if self.order == "desc":
+            fps.reverse()
+
+        for fp in fps:
             df = pd.read_parquet(fp, columns=self.columns)
-            for row in self._iter_df_rows(df):
-                all_rows.append(row)
-
-        def _key(t: dict[str, Any]) -> tuple[int, int]:
-            ts = int(t.get("timestamp", 0) or 0)
-            seq = int(t.get("trade_seq", 0) or 0)
-            return (ts, seq)
-
-        all_rows.sort(key=_key, reverse=(self.order == "desc"))
-        for r in all_rows:
-            yield r
+            for row in self._iter_df_rows(df, descending=(self.order == "desc")):
+                yield row

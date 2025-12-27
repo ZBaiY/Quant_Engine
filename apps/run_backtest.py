@@ -14,7 +14,7 @@ from ingestion.option_chain.source import OptionChainFileSource
 from ingestion.option_chain.normalize import GenericOptionChainNormalizer
 from ingestion.sentiment.worker import SentimentWorker
 from ingestion.sentiment.source import SentimentFileSource
-from ingestion.sentiment.normalize import GenericSentimentNormalizer
+from ingestion.sentiment.normalize import SentimentNormalizer
 
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
@@ -114,13 +114,13 @@ async def main() -> None:
     for src, handler in engine.sentiment_handlers.items():
         source = SentimentFileSource(
             root=Path("data/sentiment"),
-            source=src,
+            provider=src,
         )
-        normalizer = GenericSentimentNormalizer(symbol=src)
+        normalizer = SentimentNormalizer(symbol=src, provider=src)
         worker = SentimentWorker(
             source=source,
             normalizer=normalizer,
-            symbol=src,
+            # provider=src,
             poll_interval=None,  # backtest: do not throttle
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
