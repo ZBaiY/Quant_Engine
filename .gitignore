@@ -117,6 +117,7 @@ data/**/*.npy
 !data/**/__init__.py
 !data/.gitkeep
 !data/*.md
+!data/structure_design.txt
 # --------------------------------------
 # Jupyter
 # --------------------------------------

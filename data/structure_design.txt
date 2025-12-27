@@ -1,0 +1,62 @@
+data/cleaned(raw)
+│
+├── klines/
+│   ├── BTCUSDT/
+│   │   ├── 1m/
+│   │   │   ├── 2023.parquet
+│   │   │   ├── 2024.parquet
+│   │   │   └── 2025.parquet
+│   │   ├── 15m/
+│   │   │   ├── 2023.parquet
+│   │   │   ├── 2024.parquet
+│   │   │   └── 2025.parquet
+│   │   └── 1h/
+│   │       ├── 2023.parquet
+│   │       ├── 2024.parquet
+│   │       └── 2025.parquet
+│   │
+│   ├── ETHUSDT/
+│   │   ├── 15m/
+│   │   │   ├── 2023.parquet
+│   │   │   └── 2024.parquet
+│   │   └── ...
+│
+│
+├── trades/
+│   ├── BTCUSDT/
+│   │   ├── 2025/
+│   │   │   ├── 01/
+│   │   │   │   ├── 01.parquet
+│   │   │   │   ├── 02.parquet
+│   │   │   │   └── ...
+│   │   │   └── ...
+│
+├── option_trades/
+│   ├── DERIBIT/
+│   │   ├── BTC/
+│   │   │   ├── 2025/
+│   │   │   │   ├── 01/
+│   │   │   │   │   ├── 01.parquet
+│   │   │   │   │   ├── 02.parquet
+│   │   │   │   │   └── ...
+│   │   │   │   └── ...
+│   │   │   └── ...
+│   │   └── ...
+│   └── ...
+│
+└── sentiment/
+    ├── news/
+    │   ├── 2025/
+    │   │   ├── 01/
+    │   │   │   ├── 01.jsonl
+    │   │   │   ├── 02.jsonl
+    │   │   │   └── ...
+    │   │   └── ...
+    ├── reddit/
+    │   └── ...
+
+# Partitioning conventions:
+# - klines: yearly parquet per (symbol, interval)
+# - trades (aggTrades): month folder, daily parquet files (01.parquet, 02.parquet, ...)
+# - option_trades (Deribit): month folder, daily parquet files (01.parquet, 02.parquet, ...)
+# - sentiment (news/rss): month folder, daily jsonl files (01.jsonl, 02.jsonl, ...)
