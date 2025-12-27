@@ -5,6 +5,9 @@
 Thumbs.db
 ehthumbs.db
 
+# notebook experimental 
+*.ipynb 
+
 # Node.js dependencies
 node_modules/
 

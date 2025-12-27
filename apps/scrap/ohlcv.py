@@ -7,8 +7,10 @@ import datetime as _dt
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import requests
 
+    
 
 @dataclass(frozen=True)
 class BinanceOHLCVFetcherConfig:
@@ -19,22 +21,11 @@ class BinanceOHLCVFetcherConfig:
 
 @dataclass(frozen=True)
 class BinanceOHLCVCleanerConfig:
-    """Cleaner config.
-
-    This cleaner is intentionally conservative:
-      - no resampling
-      - no gap filling
-      - no outlier logic
-
-    It enforces contracts + produces a report.
-    """
-
     interval: str
     strict: bool = True
     dropna: bool = True
     drop_zero_price_bars: bool = True
     allow_empty: bool = True
-
 @dataclass(frozen=True)
 class BinanceOHLCVBackfillConfig:
     symbol: str
@@ -55,45 +46,55 @@ class BinanceOHLCVBackfillConfig:
 
 
 @dataclass(frozen=True)
+class OHLCVParquetStoreConfig:
+    """Filesystem layout for OHLCV parquet writes.
+    Intended directory tree (per your design):
+      <root>/<stage>/ohlcv/<symbol>/<interval>/<YYYY>.parquet
+    """
+    root: str = "data"
+    domain: str = "ohlcv"
+@dataclass(frozen=True)
 class OHLCVCleanReport:
     n_in: int
     n_out: int
     dup_dropped: int
     rows_dropped_na: int
+    glitch_bars_dropped: int
     zero_price_bars_dropped: int
     gaps: int
     gap_sizes_ms: list[int]
     first_data_ts: int | None
     last_data_ts: int | None
 
-
     def summary(self) -> str:
         lines = [
-            f"OHLCV Clean Report:",
+            "OHLCV Clean Report:",
             f"  Input rows: {self.n_in}",
             f"  Output rows: {self.n_out}",
             f"  Duplicates dropped: {self.dup_dropped}",
             f"  Rows dropped (NA): {self.rows_dropped_na}",
+            f"  Glitch bars dropped: {self.glitch_bars_dropped}",
             f"  Zero-price bars dropped: {self.zero_price_bars_dropped}",
             f"  Gaps detected: {self.gaps}",
         ]
         if self.gaps > 0:
-            lines.append(f"    Gap sizes (ms): {self.gap_sizes_ms[:10]}{'...' if len(self.gap_sizes_ms) > 10 else ''}")
+            lines.append(
+                f"    Gap sizes (ms): {self.gap_sizes_ms[:10]}{'...' if len(self.gap_sizes_ms) > 10 else ''}"
+            )
         lines.append(f"  First data_ts: {self.first_data_ts}")
         lines.append(f"  Last data_ts: {self.last_data_ts}")
         return "\n".join(lines)
-
+    
 
 class BinanceOHLCVFetcher:
     """Fetch Binance klines and normalize to v4 time semantics.
-
+    
     Output schema (raw-normalized):
       - data_ts: int64 epoch ms (BAR CLOSE time)  <-- authoritative event time
       - open_time: int64 epoch ms (BAR OPEN time)
       - close_time: datetime64[ns, UTC] (inspection only)
       - core: open, high, low, close, volume
       - aux: quote_asset_volume, number_of_trades, taker_buy_*, ignore
-
     Notes:
       - This fetcher is intentionally *pure I/O + normalization*.
       - Cleaning (dedup rules, gap repair, resample, outliers) belongs to a separate cleaner.
@@ -178,11 +179,11 @@ class BinanceOHLCVFetcher:
 
         # ---- v4 time semantics ----
         df["data_ts"] = df["_close_time_ms"].astype("int64")
-        df["close_time"] = pd.to_datetime(df["_close_time_ms"], unit="ms", utc=True)
+        df["datetime"] = pd.to_datetime(df["_close_time_ms"], unit="ms", utc=True)
         df = df.drop(columns=["_close_time_ms"])
 
         # Order columns: time first.
-        front = ["data_ts", "open_time", "close_time"]
+        front = ["data_ts", "open_time", "datetime"]
         rest = [c for c in df.columns if c not in front]
         df = df[front + rest]
 
@@ -291,6 +292,7 @@ class BinanceOHLCVCleaner:
                     n_out=0,
                     dup_dropped=0,
                     rows_dropped_na=0,
+                    glitch_bars_dropped=0,
                     zero_price_bars_dropped=0,
                     gaps=0,
                     gap_sizes_ms=[],
@@ -305,75 +307,70 @@ class BinanceOHLCVCleaner:
             raise ValueError(f"Missing required columns: {missing}")
 
         n_in = int(len(df))
-        x = df.copy()
 
-        # --- dtypes ---
-        x["data_ts"] = pd.to_numeric(x["data_ts"], errors="coerce").astype("Int64")
-        x["open_time"] = pd.to_numeric(x["open_time"], errors="coerce").astype("Int64")
+        # ---- schema normalization FIRST (prevents parquet drift) ----
+        x = _normalize_ohlcv_df(df, interval=self._cfg.interval)
 
+        # ---- numeric coercion ----
         for c in self._CORE_NUM:
             x[c] = pd.to_numeric(x[c], errors="coerce")
-
         if "number_of_trades" in x.columns:
             x["number_of_trades"] = pd.to_numeric(x["number_of_trades"], errors="coerce")
 
-        if "close_time" in x.columns and not pd.api.types.is_datetime64_any_dtype(x["close_time"]):
-            # Accept either datetime-like strings or ms-int.
-            try:
-                if pd.api.types.is_integer_dtype(x["close_time"]):
-                    x["close_time"] = pd.to_datetime(x["close_time"], unit="ms", utc=True)
-                else:
-                    x["close_time"] = pd.to_datetime(x["close_time"], utc=True)
-            except Exception:
-                # keep as-is (inspection-only); strict mode may fail later if user expects it.
-                pass
-
-        # --- NA drop ---
+        # ---- NA drop ----
         rows_dropped_na = 0
         if self._cfg.dropna:
             before = len(x)
             x = x.dropna(subset=["data_ts", "open_time", *self._CORE_NUM])
             rows_dropped_na = before - len(x)
 
-        # --- zero-price bar drop (Binance maintenance/glitch signature) ---
+        # ---- Binance maintenance/glitch bars (drop) ----
+        glitch_dropped = 0
+        if len(x) > 0:
+            glitch_mask = pd.Series(False, index=x.index)
+            # OHLC all <=0 is invalid; common in outages/maintenance.
+            glitch_mask |= (x[["open", "high", "low", "close"]] <= 0).all(axis=1)
+            # even stricter signature: OHLCV all == 0
+            glitch_mask |= (x[["open", "high", "low", "close", "volume"]] == 0).all(axis=1)
+
+            glitch_dropped = int(glitch_mask.sum())
+            if glitch_dropped:
+                x = x.loc[~glitch_mask].copy()
+
+        # ---- zero-price bar drop (after glitch drop; do not double-count) ----
         zero_price_bars_dropped = 0
-        if self._cfg.drop_zero_price_bars:
+        if self._cfg.drop_zero_price_bars and len(x) > 0:
             before = len(x)
-            price_cols = ["open", "high", "low", "close"]
-            is_zero_bar = (x[price_cols] == 0).all(axis=1)
+            is_zero_bar = (x[["open", "high", "low", "close"]] == 0).all(axis=1)
             x = x.loc[~is_zero_bar].copy()
             zero_price_bars_dropped = before - len(x)
 
-        # Convert Int64 (nullable) -> int64
+        # ---- enforce int64 for timestamps ----
         try:
             x["data_ts"] = x["data_ts"].astype("int64")
             x["open_time"] = x["open_time"].astype("int64")
         except Exception as e:
             raise TypeError("data_ts/open_time must be coercible to int64") from e
 
-        # --- dedup + sort ---
+        # ---- dedup + sort ----
         x = x.sort_values("data_ts", kind="stable")
         before = len(x)
         x = x.drop_duplicates(subset=["data_ts"], keep="last")
         dup_dropped = before - len(x)
         x = x.reset_index(drop=True)
 
-        # --- gap detection (based on close-time cadence) ---
+        # ---- gap detection (close-time cadence) ----
         gap_sizes: list[int] = []
         gaps = 0
         if len(x) >= 2:
             dt = x["data_ts"].diff().iloc[1:]
-            bad = dt[dt != self._step]
-            # treat negative/zero as gap as well (ordering bugs)
-            bad = bad[bad.notna()]
+            bad = dt[(dt.notna()) & (dt != self._step)]
             gaps = int(len(bad))
             gap_sizes = [int(v) for v in bad.to_list()]
 
         if self._cfg.strict:
-            # Binance invariant: data_ts increases by step.
             if gaps != 0:
                 raise ValueError(f"Detected {gaps} cadence gaps (ms diffs != {self._step}): {gap_sizes[:10]}")
-            # Basic OHLC sanity.
             if (x["high"] < x[["open", "close"]].max(axis=1)).any() or (x["low"] > x[["open", "close"]].min(axis=1)).any():
                 raise ValueError("OHLC invariant violated: high/low inconsistent with open/close")
             if (x[["open", "high", "low", "close"]] <= 0).any().any():
@@ -385,6 +382,7 @@ class BinanceOHLCVCleaner:
             n_out=n_out,
             dup_dropped=int(dup_dropped),
             rows_dropped_na=int(rows_dropped_na),
+            glitch_bars_dropped=int(glitch_dropped),
             zero_price_bars_dropped=int(zero_price_bars_dropped),
             gaps=int(gaps),
             gap_sizes_ms=gap_sizes,
@@ -393,60 +391,31 @@ class BinanceOHLCVCleaner:
         )
         return x, rep
 
-
-
-
-@dataclass(frozen=True)
-class OHLCVParquetStoreConfig:
-    """Filesystem layout for chunked parquet writes.
-
-    Layout (day):
-      <root>/<stage>/OHLCV/BINANCE/<symbol>/<interval>/<YYYY>/<MM>/<DD>.parquet
-
-    Layout (year):
-      <root>/<stage>/OHLCV/BINANCE/<symbol>/<interval>/<YYYY>.parquet
-
-    Notes:
-      - day layout is the safe default for streaming/chunk writes.
-      - year layout is convenient for reads, but appending requires read+rewrite (expensive).
-    """
-
-    root: str = "data"
-    domain: str = "OHLCV"
-    source: str = "BINANCE"
-    layout: Literal["day", "year"] = "day"
-
-
 class OHLCVParquetStore:
     def __init__(self, *, cfg: OHLCVParquetStoreConfig | None = None):
         self._cfg = cfg or OHLCVParquetStoreConfig()
 
     def _base_dir(self, *, stage: Literal["raw", "cleaned"], symbol: str, interval: str) -> Path:
-        return Path(self._cfg.root) / stage / self._cfg.domain / self._cfg.source / symbol / interval
+        return Path(self._cfg.root) / stage / self._cfg.domain / symbol / interval
 
-    def _path_for(self, *, stage: Literal["raw", "cleaned"], symbol: str, interval: str, year: int, month: int | None = None, day: int | None = None) -> Path:
-        base = self._base_dir(stage=stage, symbol=symbol, interval=interval)
-        if self._cfg.layout == "year":
-            return base / f"{year:04d}.parquet"
-        if month is None or day is None:
-            raise ValueError("month/day required for day layout")
-        return base / f"{year:04d}" / f"{month:02d}" / f"{day:02d}.parquet"
+    def _year_path(self, *, stage: Literal["raw", "cleaned"], symbol: str, interval: str, year: int) -> Path:
+        return self._base_dir(stage=stage, symbol=symbol, interval=interval) / f"{year:04d}.parquet"
 
-    def _append_dedup_write(self, *, df: pd.DataFrame, path: Path, dedup_key: str = "data_ts") -> None:
-        """Append by read+concat+dedup+rewrite.
-
-        This is cheap for day files and expensive for year files.
-        """
+    def _merge_write_year(self, *, new_df: pd.DataFrame, path: Path, interval: str) -> None:
         _ensure_dir(path.parent)
-        if path.exists():
-            old = pd.read_parquet(path)
-            merged = pd.concat([old, df], ignore_index=True)
-        else:
-            merged = df
 
-        if dedup_key in merged.columns:
-            merged = merged.drop_duplicates(subset=[dedup_key], keep="last")
-            merged = merged.sort_values(dedup_key, kind="stable").reset_index(drop=True)
+        new_df = _normalize_ohlcv_df(new_df, interval=interval)
+        if path.exists():
+            old_df = pd.read_parquet(path)
+            old_df = _normalize_ohlcv_df(old_df, interval=interval)
+            merged = pd.concat([old_df, new_df], ignore_index=True)
+        else:
+            merged = new_df
+
+        merged = merged.sort_values("data_ts", kind="stable").drop_duplicates(subset=["data_ts"], keep="last")
+
+        if "_align_delta" in merged.columns:
+            merged = merged.drop(columns=["_align_delta"])
 
         merged.to_parquet(path, index=False)
 
@@ -458,10 +427,6 @@ class OHLCVParquetStore:
         symbol: str,
         interval: str,
     ) -> list[Path]:
-        """Write a (possibly cross-day) chunk to parquet according to layout.
-
-        Returns the list of written file paths.
-        """
         if df is None or df.empty:
             return []
         if "data_ts" not in df.columns:
@@ -470,35 +435,15 @@ class OHLCVParquetStore:
         ts = pd.to_datetime(df["data_ts"], unit="ms", utc=True)
         x = df.copy()
         x["_year"] = ts.dt.year.astype("int32")
-        x["_month"] = ts.dt.month.astype("int16")
-        x["_day"] = ts.dt.day.astype("int16")
 
         written: list[Path] = []
-
-        if self._cfg.layout == "year":
-            for y, sub in x.groupby("_year", sort=True):
-                out = self._path_for(stage=stage, symbol=symbol, interval=interval, year=_as_int(y))
-                sub2 = sub.drop(columns=["_year", "_month", "_day"], errors="ignore")
-                self._append_dedup_write(df=sub2, path=out)
-                written.append(out)
-            return written
-
-        # day layout
-        for (y, m, d), sub in x.groupby(["_year", "_month", "_day"], sort=True):
-            out = self._path_for(
-                stage=stage,
-                symbol=symbol,
-                interval=interval,
-                year=_as_int(y),
-                month=_as_int(m),
-                day=_as_int(d),
-            )
-            sub2 = sub.drop(columns=["_year", "_month", "_day"], errors="ignore")
-            self._append_dedup_write(df=sub2, path=out)
+        for y, sub in x.groupby("_year", sort=True):
+            year = _as_int(y)
+            out = self._year_path(stage=stage, symbol=symbol, interval=interval, year=year)
+            sub2 = sub.drop(columns=["_year"], errors="ignore")
+            self._merge_write_year(new_df=sub2, path=out, interval=interval)
             written.append(out)
-
         return written
-
 
 
 
@@ -539,6 +484,7 @@ class BinanceOHLCVBackfiller:
             "dup_dropped_in_cleaner": 0,
             "written_raw_files": 0,
             "written_cleaned_files": 0,
+            "glitch_bars_dropped": 0,
         }
 
         for chunk in self._fetcher.iter_range(
@@ -561,43 +507,11 @@ class BinanceOHLCVBackfiller:
                 totals["rows_dropped_na"] += int(rep.rows_dropped_na)
                 totals["zero_price_bars_dropped"] += int(rep.zero_price_bars_dropped)
                 totals["dup_dropped_in_cleaner"] += int(rep.dup_dropped)
-
+                totals["glitch_bars_dropped"] += int(rep.glitch_bars_dropped)
                 written = self._store.write_chunk(cleaned, stage="cleaned", symbol=cfg.symbol, interval=cfg.interval)
                 totals["written_cleaned_files"] += len(written)
 
         return totals
-    
-
-
-def _interval_ms(interval: str) -> int:
-    """Binance interval string -> milliseconds."""
-    if not interval or not isinstance(interval, str):
-        raise TypeError("interval must be a non-empty string")
-
-    unit = interval[-1]
-    try:
-        n = int(interval[:-1])
-    except Exception as e:
-        raise ValueError(f"Invalid interval: {interval!r}") from e
-
-    if n <= 0:
-        raise ValueError(f"Invalid interval: {interval!r}")
-
-    if unit == "m":
-        return n * 60_000
-    if unit == "h":
-        return n * 3_600_000
-    if unit == "d":
-        return n * 86_400_000
-    if unit == "w":
-        return n * 7 * 86_400_000
-
-    # Binance also supports "M" (month) but it is not fixed-length in ms.
-    if unit == "M":
-        raise ValueError("Monthly interval 'M' is not supported for ms conversion")
-
-    raise ValueError(f"Unsupported interval unit: {unit!r}")
-
 
 def _coerce_epoch_ms(x: Any) -> int:
     """Coerce timestamp-like input into epoch milliseconds int."""
@@ -668,3 +582,126 @@ def _as_int(x: Any) -> int:
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
+
+
+_I64_MIN = np.iinfo("int64").min
+
+def _dt_series_to_epoch_ms(dt_utc: pd.Series) -> pd.Series:
+    """
+    dt_utc: Series[datetime64[ns, UTC]] (or anything pd.to_datetime can coerce)
+    returns: Series[int64] epoch-ms, NaT -> 0
+    """
+    s = pd.to_datetime(dt_utc, utc=True, errors="coerce")
+    ns = s.astype("int64")              # NaT -> int64 min
+    ms = ns // 1_000_000
+    ms = ms.where(ns != _I64_MIN, 0).astype("int64")
+    return ms
+def _to_epoch_ms_int(s: pd.Series) -> pd.Series:
+    """Coerce datetime/int/float/object timestamps to epoch-ms int64."""
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return (s.view("int64") // 1_000_000).astype("int64")
+
+    if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+        dt = pd.to_datetime(s, utc=True, errors="coerce")
+        if dt.notna().any():
+
+            return _dt_series_to_epoch_ms(dt)
+
+    x = pd.to_numeric(s, errors="coerce")
+    # seconds vs ms heuristic: < 1e12 => seconds
+    x = x.where(x.isna() | (x.abs() >= 1e12), x * 1000.0)
+    return x.fillna(0).astype("int64")
+
+def _to_utc_dt_from_ms(ms: pd.Series) -> pd.Series:
+    return pd.to_datetime(ms.astype("int64"), unit="ms", utc=True)
+
+def _interval_ms(interval: str) -> int:
+    n = int("".join(ch for ch in interval if ch.isdigit()))
+    u = "".join(ch for ch in interval if ch.isalpha())
+    if u == "m":
+        return n * 60_000
+    if u == "h":
+        return n * 3_600_000
+    if u == "d":
+        return n * 86_400_000
+    raise ValueError(f"unsupported interval: {interval}")
+
+def _normalize_ohlcv_df(df: pd.DataFrame, *, interval: str) -> pd.DataFrame:
+    """
+    Stable schema contract:
+      - data_ts: int64 epoch-ms == close_time_ms
+      - open_time: int64 epoch-ms
+      - close_time: datetime64[ns, UTC] (inspection)
+    """
+    out = df.copy()
+
+    if "open_time" in out.columns:
+        out["open_time"] = _to_epoch_ms_int(out["open_time"])
+
+    if "close_time" in out.columns:
+        s = out["close_time"]
+
+        # force close_time -> datetime64[ns, UTC] (works for tz-aware, naive, string/object)
+        s_utc = pd.to_datetime(s, utc=True, errors="coerce")
+        close_ms = _dt_series_to_epoch_ms(s_utc)
+
+        out["close_time"] = s_utc
+    else:
+        close_ms = pd.Series(0, index=out.index, dtype="int64")
+
+
+    out["data_ts"] = close_ms.astype("int64")
+
+    out = out.sort_values("data_ts").drop_duplicates(subset=["data_ts"], keep="last")
+
+    # optional alignment delta (debug only; drop before writing)
+    if "open_time" in out.columns:
+        ims = _interval_ms(interval)
+        out["_align_delta"] = (out["data_ts"] - out["open_time"]).astype("int64")
+
+    return out
+
+
+def main() -> None:
+    import argparse
+    from tqdm import tqdm
+
+    parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
+    parser.add_argument("--root", default="data", help="data root")
+    parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--interval", default="15m")
+    parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
+    parser.add_argument("--end", default=None, help="default: now (UTC)")
+    args = parser.parse_args()
+
+    end = args.end or pd.Timestamp.utcnow().tz_localize("UTC").strftime("%Y-%m-%d %H:%M:%S+00:00")
+
+    store = OHLCVParquetStore(cfg=OHLCVParquetStoreConfig(
+        root=args.root, domain="ohlcv"
+    ))
+    bf = BinanceOHLCVBackfiller(store=store)
+
+    start_year = pd.Timestamp(args.start).year
+    end_year = pd.Timestamp(end).year
+
+    for y in tqdm(range(start_year, end_year + 1), desc=f"backfill {args.symbol} {args.interval}"):
+        y0 = pd.Timestamp(f"{y}-01-01 00:00:00+00:00")
+        y1 = pd.Timestamp(f"{y+1}-01-01 00:00:00+00:00")
+        s = max(pd.Timestamp(args.start), y0)
+        e = min(pd.Timestamp(end), y1)
+        if s >= e:
+            continue
+
+        bf.run(cfg=BinanceOHLCVBackfillConfig(
+            symbol=args.symbol,
+            interval=args.interval,
+            start_ms=s.strftime("%Y-%m-%d %H:%M:%S+00:00"),
+            end_ms=e.strftime("%Y-%m-%d %H:%M:%S+00:00"),
+            limit=1000,
+            write_raw=False,
+            write_cleaned=True,
+            strict=False,
+        ))
+
+if __name__ == "__main__":
+    main()
