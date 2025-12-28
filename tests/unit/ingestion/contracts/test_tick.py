@@ -15,7 +15,7 @@ def test_to_interval_ms_rejects_bad(bad):
         _to_interval_ms(bad)  # type: ignore[arg-type]
 
 def test_ingestion_tick_has_required_fields():
-    t = IngestionTick(timestamp=1700000000000, data_ts=1700000000123, symbol="BTCUSDT", source="test", payload={})
+    t = IngestionTick(timestamp=1700000000000, data_ts=1700000000123, symbol="BTCUSDT", domain="ohlcv", payload={})
     assert t.timestamp == 1700000000000
     assert t.data_ts == 1700000000123
     assert t.symbol == "BTCUSDT"

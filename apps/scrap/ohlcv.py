@@ -119,37 +119,15 @@ def _interval_ms(interval: str) -> int:
     raise ValueError(f"unsupported interval: {interval}")
 
 def _normalize_ohlcv_df(df: pd.DataFrame, *, interval: str) -> pd.DataFrame:
-    """
-    Stable schema contract:
-      - data_ts: int64 epoch-ms == close_time_ms
-      - open_time: int64 epoch-ms
-      - close_time: datetime64[ns, UTC] (inspection)
-    """
     out = df.copy()
+    step = _interval_ms(interval)
 
-    if "open_time" in out.columns:
-        out["open_time"] = _to_epoch_ms_int(out["open_time"])
+    out["open_time"] = _to_epoch_ms_int(out["open_time"]).astype("int64")
+    out["data_ts"] = (out["open_time"] + step - 1).astype("int64")
+    out["time"] = pd.to_datetime(out["data_ts"], unit="ms", utc=True)
 
-    if "time" in out.columns:
-        s = out["time"]
-
-        # force close_time -> datetime64[ns, UTC] (works for tz-aware, naive, string/object)
-        s_utc = pd.to_datetime(s, utc=True, errors="coerce")
-        close_ms = _dt_series_to_epoch_ms(s_utc)
-        out["time"] = s_utc
-    else:
-        close_ms = pd.Series(0, index=out.index, dtype="int64")
-
-
-    out["data_ts"] = close_ms.astype("int64")
-
-    out = out.sort_values("data_ts").drop_duplicates(subset=["data_ts"], keep="last")
-
-    # optional alignment delta (debug only; drop before writing)
-    if "open_time" in out.columns:
-        ims = _interval_ms(interval)
-        out["_align_delta"] = (out["data_ts"] - out["open_time"]).astype("int64")
-
+    out = out.sort_values("data_ts", kind="stable").drop_duplicates(subset=["data_ts"], keep="last").reset_index(drop=True)
+    out["_align_delta"] = (out["data_ts"] - out["open_time"]).astype("int64")  # should be step-1
     return out
 
 def concat_chunks(chunks: Iterable[pd.DataFrame], *, dedup: bool = True) -> pd.DataFrame:
@@ -297,12 +275,10 @@ class BinanceOHLCVFetcher:
         if not payload:
             return pd.DataFrame()
 
-        cols = ["open_time","open","high","low","close","volume","_close_time_ms","quote_asset_volume","number_of_trades","taker_buy_base_asset_volume","taker_buy_quote_asset_volume","ignore",]
+        cols = ["open_time","open","high","low","close","volume","close_time","quote_asset_volume","number_of_trades","taker_buy_base_asset_volume","taker_buy_quote_asset_volume","ignore",]
         df = pd.DataFrame(payload, columns=cols)
 
         # ---- enforce dtypes early (avoid CSV-era dtype drift) ----
-        df["open_time"] = df["open_time"].astype("int64")
-        df["_close_time_ms"] = df["_close_time_ms"].astype("int64")
         df["number_of_trades"] = df["number_of_trades"].astype("int64")
 
         for c in ("open","high","low","close","volume","quote_asset_volume","taker_buy_base_asset_volume",
@@ -310,10 +286,16 @@ class BinanceOHLCVFetcher:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
         # ---- v4 time semantics ----
-        df["data_ts"] = df["_close_time_ms"].astype("int64")
-        df["time"] = pd.to_datetime(df["_close_time_ms"], unit="ms", utc=True)
-        df = df.drop(columns=["_close_time_ms"])
-
+        step = _interval_ms(interval)
+        df["close_time"] = df["close_time"].astype("int64")
+        df["open_time"] = df["open_time"].astype("int64")
+        df["close_time"] = df["close_time"].astype("int64")
+        #### ------------
+        # closetime may not be aligned -- binance glitch happens more on 2021; we recompute canonical data_ts
+        #### ------------
+        # canonical close (engine semantics)
+        df["data_ts"] = (df["open_time"] + step - 1).astype("int64")
+        df["time"] = pd.to_datetime(df["data_ts"], unit="ms", utc=True)
         # Order columns: time first.
         front = ["data_ts", "open_time", "time"]
         rest = [c for c in df.columns if c not in front]
@@ -631,7 +613,8 @@ class BinanceOHLCVBackfiller:
 
 
 def main() -> None:
-    for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT"]:
+    for symbol in ["ETHUSDT","DOGEUSDT","ADAUSDT","SOLUSDT","XTZUSDT"]:
+    # for symbol in ["BTCUSDT"]:
         for interval in ["1d", "4h", "1h", "15m"]:
             print(f"Backfilling {symbol}...{interval}")
 
