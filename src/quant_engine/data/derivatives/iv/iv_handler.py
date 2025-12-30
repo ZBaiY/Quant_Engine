@@ -21,7 +21,6 @@ from quant_engine.data.derivatives.iv.surface import (
     _get_int,
     _get_str,
     _first_float,
-    Any,
 )
 
 class IVSurfaceDataHandler(RealTimeDataHandler):

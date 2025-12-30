@@ -19,9 +19,12 @@ import requests
 import argparse
 from tqdm import tqdm
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
 
 _I64_MIN = np.iinfo("int64").min
 POLL_INTERVAL = 60_000*5  # ms
+DATA_ROOT = data_root_from_file(__file__, levels_up=2)
 
 # ======================================================================================
 # time helpers
@@ -201,7 +204,7 @@ class TradesParquetStoreConfig:
     Layout:
       <root>/<stage>/trades/<symbol>/<YYYY>/<MM>/<DD>.parquet
     """
-    root: str = "data"
+    root: str = str(DATA_ROOT)
     domain: str = "trades"
 
 
@@ -654,7 +657,7 @@ def _iter_grid_samples(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trades backfill (Binance aggTrades)")
-    parser.add_argument("--root", default="data", help="data root")
+    parser.add_argument("--root", default=str(DATA_ROOT), help="data root")
     parser.add_argument("--symbols", default="BTCUSDT", help="comma-separated, e.g. BTCUSDT,ETHUSDT")
     parser.add_argument("--start", default="2025-01-01 00:00:00+00:00")
     parser.add_argument("--end", default=None, help="default: now (UTC)")
@@ -675,7 +678,8 @@ def main() -> None:
     start_ts = pd.to_datetime(args.start, utc=True)
     end_ts2 = pd.to_datetime(end_str, utc=True)
 
-    store = TradesParquetStore(cfg=TradesParquetStoreConfig(root=args.root, domain="trades"))
+    root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")
+    store = TradesParquetStore(cfg=TradesParquetStoreConfig(root=str(root), domain="trades"))
     bf = BinanceTradesBackfiller(store=store)
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]

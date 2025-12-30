@@ -12,6 +12,10 @@ import requests
 
 from ingestion.contracts.source import Raw, Source
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+
 
 """Raw payload keys expected (ingestion boundary):
 
@@ -445,7 +449,11 @@ class TradesFileSource(Source):
         end_ms: int | None = None,
         layout: TradesFileLayout | None = None,
     ):
-        self._layout = layout or TradesFileLayout(Path(root))
+        if layout is None:
+            self._layout = TradesFileLayout(resolve_under_root(DATA_ROOT, root, strip_prefix="data"))
+        else:
+            base = resolve_under_root(DATA_ROOT, layout.root, strip_prefix="data")
+            self._layout = TradesFileLayout(base)
         self._symbol = symbol
         self._start_ms = _coerce_ms(start_ms) if start_ms is not None else None
         self._end_ms = _coerce_ms(end_ms) if end_ms is not None else None

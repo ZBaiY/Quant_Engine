@@ -10,6 +10,10 @@ import requests
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 from ingestion.contracts.source import Source, AsyncSource, Raw
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+
 def _now_ms() -> int:
     return int(time.time() * 1000.0)
 
@@ -29,7 +33,7 @@ class OptionChainFileSource(Source):
     """
 
     def __init__(self, *, root: str | Path, asset: str, interval: str | None = None):
-        self._root = Path(root)
+        self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._asset = str(asset)
         self._path = self._root / self._asset
         if interval is not None:
@@ -78,7 +82,7 @@ class DeribitOptionChainRESTSource(Source):
         poll_interval_ms: int | None = None,
         base_url: str = "https://www.deribit.com",
         timeout: float = 10.0,
-        root: str | Path = "data/raw/option_chain",
+        root: str | Path = DATA_ROOT / "raw" / "option_chain",
         kind: str = "option",
         expired: bool = False,
         max_retries: int = 5,
@@ -92,7 +96,7 @@ class DeribitOptionChainRESTSource(Source):
         self.interval = interval if interval is not None else "1m"
         self._kind = str(kind)
         self._expired = bool(expired)
-        self._root = Path(root)
+        self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._root.mkdir(parents=True, exist_ok=True)
         self._max_retries = int(max_retries)
         self._backoff_s = float(backoff_s)

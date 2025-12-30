@@ -20,11 +20,13 @@ from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.registry import get_strategy
 from quant_engine.utils.logger import get_logger
+from quant_engine.utils.paths import data_root_from_file
 
 
 logger = get_logger(__name__)
 START_TS = 1622505600  # 2021-06-01 00:00:00 UTC
 END_TS = 1622592000    # 2021-06-02 00:00:00 UTC
+DATA_ROOT = data_root_from_file(__file__, levels_up=1)
 
 
 async def main() -> None:
@@ -61,7 +63,7 @@ async def main() -> None:
     # -------------------------
     for symbol, handler in engine.ohlcv_handlers.items():
         source = OHLCVFileSource(
-            root=Path("data/klines"),
+            root=DATA_ROOT / "raw" / "klines",
             symbol=symbol,
             interval=handler.interval,
         )
@@ -79,7 +81,7 @@ async def main() -> None:
     # -------------------------
     for symbol, handler in engine.orderbook_handlers.items():
         source = OrderbookFileSource(
-            root=Path("data/orderbook"),
+            root=DATA_ROOT / "raw" / "orderbook",
             symbol=symbol,
         )
         normalizer = BinanceOrderbookNormalizer(symbol=symbol)
@@ -96,7 +98,7 @@ async def main() -> None:
     # -------------------------
     for asset, handler in engine.option_chain_handlers.items():
         source = OptionChainFileSource(
-            root=Path("data/raw/option_chain"),
+            root=DATA_ROOT / "raw" / "option_chain",
             asset=asset,
             interval="1m",
         )
@@ -114,7 +116,7 @@ async def main() -> None:
     # -------------------------
     for src, handler in engine.sentiment_handlers.items():
         source = SentimentFileSource(
-            root=Path("data/sentiment"),
+            root=DATA_ROOT / "raw" / "sentiment",
             provider=src,
         )
         normalizer = SentimentNormalizer(symbol=src, provider=src)

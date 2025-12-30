@@ -9,11 +9,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
 
 Order = Literal["asc", "desc"]
 
 WWW = "https://www.deribit.com"
 HIST = "https://history.deribit.com"
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 
 
 def _coerce_epoch_ms(x: Any) -> int:
@@ -280,7 +283,7 @@ class DeribitOptionTradesParquetSource:
     columns: list[str] | None = None
 
     def _base_dir(self) -> Path:
-        r = Path(self.root)
+        r = resolve_under_root(DATA_ROOT, self.root, strip_prefix="data")
         return (r / "option_trades" / self.exchange / str(self.currency)).resolve()
 
     def _coerce_date(self, x: str | _dt.date | None) -> _dt.date | None:

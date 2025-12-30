@@ -11,7 +11,11 @@ import requests
 import argparse
 from tqdm import tqdm
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
 _I64_MIN = np.iinfo("int64").min
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=2)
 
 def _coerce_epoch_ms(x: Any) -> int:
     """Coerce timestamp-like input into epoch milliseconds int."""
@@ -182,7 +186,7 @@ class OHLCVParquetStoreConfig:
     Intended directory tree (per your design):
       <root>/<stage>/ohlcv/<symbol>/<interval>/<YYYY>.parquet
     """
-    root: str = "data"
+    root: str = str(DATA_ROOT)
     domain: str = "ohlcv"
 
 @dataclass(frozen=True)
@@ -619,7 +623,7 @@ def main() -> None:
             print(f"Backfilling {symbol}...{interval}")
 
             parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
-            parser.add_argument("--root", default="data", help="data root")
+            parser.add_argument("--root", default=str(DATA_ROOT), help="data root")
             parser.add_argument("--symbol", default=symbol)
             parser.add_argument("--interval", default=interval)
             parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
@@ -629,8 +633,9 @@ def main() -> None:
             end_ts = pd.Timestamp.utcnow()   # already UTC-aware in recent pandas
             end = args.end or end_ts.strftime("%Y-%m-%d %H:%M:%S+00:00")
 
+            root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")
             store = OHLCVParquetStore(cfg=OHLCVParquetStoreConfig(
-                root=args.root, domain="ohlcv"
+                root=str(root), domain="ohlcv"
             ))
             bf = BinanceOHLCVBackfiller(store=store)
 

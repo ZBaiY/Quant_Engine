@@ -4,6 +4,10 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from quant_engine.utils.paths import artifacts_root_from_file, resolve_under_root
+
+ARTIFACTS_ROOT = artifacts_root_from_file(__file__, levels_up=3)
+
 
 # ---------------------------------------------------------------------
 # Base class: artifact-grade log sink
@@ -61,9 +65,10 @@ class DecisionFileHandler(ArtifactFileHandler):
     """
     category = "decision_trace"
 
-    def __init__(self, run_id: str, base_dir: str = "artifacts/runs"):
+    def __init__(self, run_id: str, base_dir: str = str(ARTIFACTS_ROOT / "runs")):
+        base = resolve_under_root(ARTIFACTS_ROOT, base_dir, strip_prefix="artifacts")
         path = (
-            Path(base_dir)
+            base
             / run_id
             / "decisions"
             / "decisions.jsonl"
@@ -77,9 +82,10 @@ class ExecutionFileHandler(ArtifactFileHandler):
     """
     category = "execution_discrepancy"
 
-    def __init__(self, run_id: str, base_dir: str = "artifacts/runs"):
+    def __init__(self, run_id: str, base_dir: str = str(ARTIFACTS_ROOT / "runs")):
+        base = resolve_under_root(ARTIFACTS_ROOT, base_dir, strip_prefix="artifacts")
         path = (
-            Path(base_dir)
+            base
             / run_id
             / "execution"
             / "execution.jsonl"
@@ -93,9 +99,10 @@ class DataRepairFileHandler(ArtifactFileHandler):
     """
     category = "data_integrity"
 
-    def __init__(self, run_id: str, base_dir: str = "artifacts/runs"):
+    def __init__(self, run_id: str, base_dir: str = str(ARTIFACTS_ROOT / "runs")):
+        base = resolve_under_root(ARTIFACTS_ROOT, base_dir, strip_prefix="artifacts")
         path = (
-            Path(base_dir)
+            base
             / run_id
             / "data_repairs"
             / "repairs.jsonl"
@@ -114,7 +121,7 @@ def attach_artifact_handlers(
     decisions: bool = True,
     execution: bool = True,
     data_repairs: bool = False,
-    base_dir: str = "artifacts/runs",
+    base_dir: str = str(ARTIFACTS_ROOT / "runs"),
 ) -> None:
     """
     Attach artifact handlers to a logger at runtime.

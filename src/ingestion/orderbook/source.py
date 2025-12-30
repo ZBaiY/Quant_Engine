@@ -6,6 +6,10 @@ from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _to_interval_ms
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+
 class OrderbookFileSource(Source):
     """
     Orderbook source backed by local parquet files.
@@ -19,7 +23,7 @@ class OrderbookFileSource(Source):
     """
 
     def __init__(self, *, root: str | Path, symbol: str):
-        self._root = Path(root)
+        self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = symbol
 
         self._path = self._root / symbol

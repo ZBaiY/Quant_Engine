@@ -12,6 +12,10 @@ from typing import Any
 from ingestion.contracts.source import AsyncSource, Raw, Source
 from ingestion.contracts.tick import _to_interval_ms
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+
 
 # -----------------------------------------------------------------------------
 # Sentiment Sources
@@ -127,7 +131,11 @@ class SentimentFileSource(Source):
         pattern: str = "**/*.jsonl",
         strict: bool = True,
     ) -> None:
-        self._layout = SentimentFileLayout(root=Path(root), provider=str(provider), pattern=str(pattern))
+        self._layout = SentimentFileLayout(
+            root=resolve_under_root(DATA_ROOT, root, strip_prefix="data"),
+            provider=str(provider),
+            pattern=str(pattern),
+        )
         self._strict = bool(strict)
 
         self._path = self._layout.root / self._layout.provider

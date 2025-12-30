@@ -9,6 +9,10 @@ import requests
 
 from ingestion.contracts.source import Source, AsyncSource, Raw
 
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+
 """Raw payload keys expected (ingestion boundary):
 
 OHLCV sources should yield dict-like rows that are *exchange-typed* but already
@@ -218,7 +222,7 @@ class OHLCVFileSource(Source):
     """
 
     def __init__(self, *, root: str | Path, **kwargs):
-        self._root = Path(root)
+        self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = kwargs.get("symbol")
         self._interval = kwargs.get("interval")
         assert self._symbol is not None and isinstance(self._symbol, str), "symbol must be provided as a string"

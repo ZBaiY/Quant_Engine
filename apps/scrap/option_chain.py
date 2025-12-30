@@ -7,6 +7,9 @@ from pathlib import Path
 
 from ingestion.contracts.tick import _to_interval_ms
 from ingestion.option_chain.source import DeribitOptionChainRESTSource
+from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+
+DATA_ROOT = data_root_from_file(__file__, levels_up=2)
 
 
 def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float) -> None:
@@ -29,16 +32,16 @@ def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deribit option-chain live snapshot scraper")
-    parser.add_argument("--assets", default="BTC", help="comma-separated, e.g. BTC,ETH")
+    parser.add_argument("--assets", default="BTC, ETH", help="comma-separated, e.g. BTC,ETH")
     parser.add_argument("--intervals", default="1m,5m,1h", help="comma-separated, e.g. 1m,5m,1h")
-    parser.add_argument("--root", default="data/raw/option_chain", help="output root")
+    parser.add_argument("--root", default=str(DATA_ROOT / "raw" / "option_chain"), help="output root")
     parser.add_argument("--timeout_s", type=float, default=10.0)
     args = parser.parse_args()
 
     assets = [a.strip().upper() for a in str(args.assets).split(",") if a.strip()]
     intervals = [i.strip() for i in str(args.intervals).split(",") if i.strip()]
 
-    root = Path(args.root)
+    root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")
     root.mkdir(parents=True, exist_ok=True)
 
     threads: list[threading.Thread] = []
