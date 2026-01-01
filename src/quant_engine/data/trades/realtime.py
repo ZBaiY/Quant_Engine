@@ -231,8 +231,8 @@ class TradesDataHandler(RealTimeDataHandler):
         if prev_anchor is None:
             self._anchor_ts = int(anchor_ts)
         try:
-        for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
+            for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
+                self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
         finally:
             if prev_anchor is None:
                 self._anchor_ts = prev_anchor
