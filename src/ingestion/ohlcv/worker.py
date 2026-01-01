@@ -6,32 +6,22 @@ import logging
 import time
 from typing import Callable, Awaitable, Any
 
-
-
 from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms
 from ingestion.contracts.worker import IngestWorker
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource, OHLCVRESTSource, OHLCVWebSocketSource
+from quant_engine.utils.logger import get_logger, log_info, log_warn, log_debug
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "ohlcv"
 
-def _log(logger: logging.Logger, level: int, event: str, **ctx: Any) -> None:
-    # Best-effort JSON safety without importing quant_engine.safe_jsonable
-    safe: dict[str, Any] = {}
-    for k, v in ctx.items():
-        try:
-            key = str(k)
-        except Exception:
-            key = repr(k)
-        if v is None or isinstance(v, (str, int, float, bool)):
-            safe[key] = v
-        else:
-            try:
-                safe[key] = repr(v)
-            except Exception:
-                safe[key] = "<unrepr>"
-    logger.log(level, event, extra={"context": safe})
+def _as_primitive(x: Any) -> str | int | float | bool | None:
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+    try:
+        return str(x)
+    except Exception:
+        return "<unrepr>"
 
 class OHLCVWorker(IngestWorker):
     """
@@ -56,7 +46,7 @@ class OHLCVWorker(IngestWorker):
         self._source = source
         self._symbol = symbol
         self._interval = interval
-        self._logger = logger or logging.getLogger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
+        self._logger = logger or get_logger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
         # Semantic bar interval length (ms-int). Used for metadata / validation.
@@ -83,9 +73,8 @@ class OHLCVWorker(IngestWorker):
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
     async def run(self, emit: Callable[[IngestionTick], Awaitable[None] | None]) -> None:
-        _log(
+        log_info(
             self._logger,
-            logging.INFO,
             "ingestion.worker_start",
             worker=self.__class__.__name__,
             source_type=type(self._source).__name__,
@@ -104,9 +93,8 @@ class OHLCVWorker(IngestWorker):
                     await r  # type: ignore[misc]
             except Exception as exc:
                 self._error_logged = True
-                _log(
+                log_warn(
                     self._logger,
-                    logging.WARNING,
                     "ingestion.emit_error",
                     worker=self.__class__.__name__,
                     symbol=self._symbol,
@@ -125,9 +113,8 @@ class OHLCVWorker(IngestWorker):
                     now = time.monotonic()
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.INFO,
                             "ingestion.source_fetch_success",
                             worker=type(self).__name__,
                             symbol=self._symbol,
@@ -149,9 +136,8 @@ class OHLCVWorker(IngestWorker):
                     now = time.monotonic()
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.INFO,
                             "ingestion.source_fetch_success",
                             worker=type(self).__name__,
                             symbol=self._symbol,
@@ -174,9 +160,8 @@ class OHLCVWorker(IngestWorker):
             raise
         except Exception as exc:
             if not self._error_logged:
-                _log(
+                log_warn(
                     self._logger,
-                    logging.WARNING,
                     "ingestion.source_fetch_error",
                     worker=type(self).__name__,
                     symbol=self._symbol,
@@ -190,9 +175,8 @@ class OHLCVWorker(IngestWorker):
             stop_reason = "error"
             raise
         finally:
-            _log(
+            log_info(
                 self._logger,
-                logging.INFO,
                 "ingestion.worker_stop",
                 worker=type(self).__name__,
                 symbol=self._symbol,
@@ -210,14 +194,13 @@ class OHLCVWorker(IngestWorker):
         except ValueError as exc:
             self._error_logged = True
             raw_ts = _extract_raw_ts(raw)
-            _log(
+            log_warn(
                 self._logger,
-                logging.WARNING,
                 "ingestion.normalize_drop",
                 worker=type(self).__name__,
                 symbol=self._symbol,
                 domain=_DOMAIN,
-                raw_ts=raw_ts,
+                raw_ts=_as_primitive(raw_ts),
                 raw_type=type(raw).__name__,
                 err_type=type(exc).__name__,
                 err=str(exc),

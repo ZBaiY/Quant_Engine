@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import pandas as pd
-
-from ingestion.contracts.tick import _coerce_epoch_ms
+from ingestion.contracts.normalize import Normalizer
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms, normalize_tick
 
 
 def _now_ms() -> int:
@@ -35,7 +35,7 @@ def _cp_from_instrument_name(name: str) -> str | None:
     return None
 
 
-class DeribitOptionChainNormalizer:
+class DeribitOptionChainNormalizer(Normalizer):
     """Normalize Deribit option instruments into the OptionChainDataHandler v2 payload.
 
     Output payload:
@@ -45,10 +45,17 @@ class DeribitOptionChainNormalizer:
     def __init__(self, *, symbol: str):
         self.symbol = str(symbol)
 
-    def normalize(self, raw: Any) -> dict[str, Any]:
+    def normalize(self, *, raw: Mapping[str, Any]) -> IngestionTick:
         data_ts, df = self._coerce_raw(raw)
         if df is None or df.empty:
-            return {"data_ts": int(data_ts), "frame": pd.DataFrame()}
+            payload = {"data_ts": int(data_ts), "frame": pd.DataFrame()}
+            return normalize_tick(
+                timestamp=int(data_ts),
+                data_ts=int(data_ts),
+                domain="option_chain",
+                symbol=self.symbol,
+                payload=payload,
+            )
 
         x = df.copy()
 
@@ -93,7 +100,14 @@ class DeribitOptionChainNormalizer:
 
         frame = frame.sort_values(["expiry_ts", "strike", "cp", "instrument_name"], kind="stable").reset_index(drop=True)
 
-        return {"data_ts": int(data_ts), "frame": frame}
+        payload = {"data_ts": int(data_ts), "frame": frame}
+        return normalize_tick(
+            timestamp=int(data_ts),
+            data_ts=int(data_ts),
+            domain="option_chain",
+            symbol=self.symbol,
+            payload=payload,
+        )
 
     def _coerce_raw(self, raw: Any) -> tuple[int, pd.DataFrame]:
         if isinstance(raw, pd.DataFrame):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import numpy as np
@@ -11,6 +11,7 @@ from quant_engine.data.contracts.snapshot import (
     merge_market_spec,
     classify_gap,
 )
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import OHLCVDataCache
@@ -163,11 +164,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, bar: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """
-        Ingest a single OHLCV payload (event-time fact).
+        Ingest a single OHLCV tick (event-time fact).
 
-        Payload contract:
+        Payload contract (tick.payload):
           - Represents data that has already occurred (event-time).
           - Must be domain-typed (OHLCV semantics), not raw exchange messages.
           - Must contain a resolvable event-time:
@@ -178,7 +179,10 @@ class OHLCVDataHandler(RealTimeDataHandler):
           - Ingest is append-only and unconditional.
         """
         # Payload boundary: from this point on, data is treated as an immutable event-time fact.
-        df = _coerce_ohlcv_to_df(bar)
+        payload = dict(tick.payload)
+        if "data_ts" not in payload:
+            payload["data_ts"] = int(tick.data_ts)
+        df = _coerce_ohlcv_to_df(payload)
         if df is None or df.empty:
             log_debug(
                 self._logger,
@@ -293,7 +297,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
             self._anchor_ts = int(anchor_ts)
         try:
             for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-                self.on_new_tick(row)
+                self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, interval_ms=self.interval_ms))
         finally:
             if prev_anchor is None:
                 self._anchor_ts = prev_anchor
@@ -324,6 +328,27 @@ def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
         df = df.rename(columns={"ts": "data_ts"})
 
     return df
+
+
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, interval_ms: int | None) -> IngestionTick:
+    data_ts = _infer_data_ts(payload, interval_ms=interval_ms)
+    return IngestionTick(
+        timestamp=int(data_ts),
+        data_ts=int(data_ts),
+        domain="ohlcv",
+        symbol=symbol,
+        payload=payload,
+    )
+
+
+def _infer_data_ts(payload: Mapping[str, Any], *, interval_ms: int | None) -> int:
+    if "data_ts" in payload:
+        return _coerce_epoch_ms(payload.get("data_ts"))
+    if "close_time" in payload:
+        return _coerce_epoch_ms(payload.get("close_time"))
+    if "open_time" in payload and interval_ms is not None:
+        return _coerce_epoch_ms(payload.get("open_time")) + int(interval_ms)
+    raise ValueError("OHLCV payload missing data_ts/close_time/open_time for backfill")
 
 
 def _resolve_market(

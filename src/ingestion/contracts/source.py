@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, Iterable, AsyncIterable, Mapping, Any
+from typing import Awaitable, Protocol, Iterable, AsyncIterable, Mapping, Any, Sequence
 
 
 Raw = Mapping[str, Any]
@@ -31,7 +31,7 @@ class Source(Protocol):
         - import quant_engine.*
     """
 
-    def __iter__(self) -> Iterable[Raw]:
+    def __iter__(self) -> Sequence[Raw] | Awaitable[Sequence[Raw]]:
         ...
 
 
@@ -44,5 +44,5 @@ class AsyncSource(Protocol):
     exchange adapter, vendor SDK, etc.
     """
 
-    def __aiter__(self) -> AsyncIterable[Raw]:
+    def __aiter__(self) -> Sequence[Raw] | Awaitable[Sequence[Raw]]:
         ...

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -12,6 +12,7 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 
 from .cache import TradesDataCache
 from .snapshot import TradesSnapshot
@@ -122,16 +123,20 @@ class TradesDataHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, trade: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """
         Ingest trade payload(s).
 
         Accepted inputs:
-          - dict (single trade)
-          - list[dict] / iterable
-          - DataFrame
+          - dict (single trade) in tick.payload
+          - list[dict] / iterable in tick.payload
+          - DataFrame in tick.payload
         """
-        df = _coerce_trades_to_df(trade)
+        payload = tick.payload
+        if isinstance(payload, Mapping):
+            payload = dict(payload)
+            payload.setdefault("data_ts", int(tick.data_ts))
+        df = _coerce_trades_to_df(payload)
         if df is None or df.empty:
             return
 
@@ -226,8 +231,8 @@ class TradesDataHandler(RealTimeDataHandler):
         if prev_anchor is None:
             self._anchor_ts = int(anchor_ts)
         try:
-            for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-                self.on_new_tick(row)
+        for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
         finally:
             if prev_anchor is None:
                 self._anchor_ts = prev_anchor
@@ -253,6 +258,25 @@ def _coerce_trades_to_df(x: Any) -> pd.DataFrame | None:
         return None
 
     return df
+
+
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+    data_ts = _infer_data_ts(payload)
+    return IngestionTick(
+        timestamp=int(data_ts),
+        data_ts=int(data_ts),
+        domain="trade",
+        symbol=symbol,
+        payload=payload,
+    )
+
+
+def _infer_data_ts(payload: Mapping[str, Any]) -> int:
+    if "data_ts" in payload:
+        return _coerce_epoch_ms(payload.get("data_ts"))
+    if "timestamp" in payload:
+        return _coerce_epoch_ms(payload.get("timestamp"))
+    raise ValueError("Trade payload missing data_ts/timestamp for backfill")
 
 
 def _resolve_market(

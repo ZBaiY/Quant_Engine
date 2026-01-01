@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
 
+from ingestion.contracts.tick import IngestionTick
+
 # Contract layer must be lightweight.
 # Runtime uses millisecond timestamps as int (epoch ms).
 # If callers want pandas timestamps, keep it as type-only to avoid runtime dependency.
@@ -10,41 +12,6 @@ if TYPE_CHECKING:  # pragma: no cover
     TimestampLike = int | pd.Timestamp
 else:
     TimestampLike = int
-
-def to_interval_ms(interval: str | None) -> int | None:
-    """Parse common interval strings into milliseconds.
-
-    Examples: "100ms", "1s", "15m", "1h", "1d".
-    """
-    if interval is None:
-        return None
-
-    unit_multipliers_ms = {
-        "ms": 1,
-        "s": 1_000,
-        "m": 60_000,
-        "h": 3_600_000,
-        "d": 86_400_000,
-    }
-
-    s = interval.strip().lower()
-    try:
-        if s.endswith("ms"):
-            value = int(s[:-2])
-            return value * unit_multipliers_ms["ms"]
-        unit = s[-1]
-        value = int(s[:-1])
-        return value * unit_multipliers_ms[unit]
-    except (ValueError, KeyError):
-        return None  # Unknown format
-
-def to_float_interval(interval: str | None) -> float | None:
-    """Legacy helper: parse interval into seconds as float.
-
-    Prefer `to_interval_ms()` for runtime arithmetic with epoch-ms timestamps.
-    """
-    ms = to_interval_ms(interval)
-    return None if ms is None else (ms / 1000.0)
 
 @runtime_checkable
 class DataHandlerProto(Protocol):
@@ -95,6 +62,42 @@ class RealTimeDataHandler(DataHandlerProto, Protocol):
     """
     bootstrap_cfg: dict[str, Any]
 
-    def on_new_tick(self, bar: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """Push one new tick/bar into the runtime cache (live or replay)."""
         ...
+
+
+def to_interval_ms(interval: str | None) -> int | None:
+    """Parse common interval strings into milliseconds.
+
+    Examples: "100ms", "1s", "15m", "1h", "1d".
+    """
+    if interval is None:
+        return None
+
+    unit_multipliers_ms = {
+        "ms": 1,
+        "s": 1_000,
+        "m": 60_000,
+        "h": 3_600_000,
+        "d": 86_400_000,
+    }
+
+    s = interval.strip().lower()
+    try:
+        if s.endswith("ms"):
+            value = int(s[:-2])
+            return value * unit_multipliers_ms["ms"]
+        unit = s[-1]
+        value = int(s[:-1])
+        return value * unit_multipliers_ms[unit]
+    except (ValueError, KeyError):
+        return None  # Unknown format
+
+def to_float_interval(interval: str | None) -> float | None:
+    """Legacy helper: parse interval into seconds as float.
+
+    Prefer `to_interval_ms()` for runtime arithmetic with epoch-ms timestamps.
+    """
+    ms = to_interval_ms(interval)
+    return None if ms is None else (ms / 1000.0)

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import AsyncIterable, Iterator, AsyncIterator, Iterable
+from datetime import datetime, timezone
+from typing import AsyncIterable, Iterator, AsyncIterator, Iterable, Callable
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
-from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
+from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms, _coerce_epoch_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
@@ -23,9 +24,18 @@ class OrderbookFileSource(Source):
               └── ...
     """
 
-    def __init__(self, *, root: str | Path, symbol: str):
+    def __init__(
+        self,
+        *,
+        root: str | Path,
+        symbol: str,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = symbol
+        self._start_ts = int(start_ts) if start_ts is not None else None
+        self._end_ts = int(end_ts) if end_ts is not None else None
 
         self._path = self._root / symbol
         if not self._path.exists():
@@ -38,11 +48,42 @@ class OrderbookFileSource(Source):
             raise RuntimeError("pandas is required for OrderbookFileSource parquet loading") from e
 
         files = sorted(self._path.glob("snapshot_*.parquet"))
+        if self._start_ts is not None or self._end_ts is not None:
+            start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
+            end_date = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).date()
+            pruned: list[Path] = []
+            for fp in files:
+                stem = fp.stem
+                if not stem.startswith("snapshot_"):
+                    continue
+                try:
+                    d = datetime.strptime(stem.replace("snapshot_", ""), "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if start_date <= d <= end_date:
+                    pruned.append(fp)
+            files = pruned
         if not files:
             raise FileNotFoundError(f"No orderbook parquet files found under {self._path}")
 
         for fp in files:
             df = pd.read_parquet(fp)
+            if self._start_ts is not None or self._end_ts is not None:
+                ts_col = None
+                if "data_ts" in df.columns:
+                    ts_col = "data_ts"
+                elif "ts" in df.columns:
+                    ts_col = "ts"
+                elif "timestamp" in df.columns:
+                    ts_col = "timestamp"
+                if ts_col is not None:
+                    ts = df[ts_col].map(_coerce_epoch_ms)
+                    if self._start_ts is not None:
+                        df = df[ts >= int(self._start_ts)]
+                    if self._end_ts is not None:
+                        df = df[ts <= int(self._end_ts)]
+                    if df.empty:
+                        continue
             for _, row in df.iterrows():
                 yield row.to_dict()
 
@@ -55,8 +96,8 @@ class OrderbookRESTSource(Source):
     def __init__(
         self,
         *,
-        fetch_fn,
-        backfill_fn=None,
+        fetch_fn: Callable[[], Iterable[Raw]],
+        backfill_fn: Callable[..., Iterable[Raw]] | None = None,
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any, Mapping, cast
 
+from ingestion.contracts.normalize import Normalizer
 from ingestion.contracts.tick import Domain, IngestionTick, normalize_tick
 from ingestion.contracts.market import annotate_payload_market
 
@@ -111,7 +112,7 @@ def _parse_deribit_instrument(name: str) -> dict[str, Any]:
     }
 
 
-class DeribitOptionTradesNormalizer:
+class DeribitOptionTradesNormalizer(Normalizer):
     """Normalize Deribit option trades into `IngestionTick`.
 
     Input: a single trade mapping (as returned by Deribit HTTP APIs or your parquet).
@@ -160,7 +161,7 @@ class DeribitOptionTradesNormalizer:
         self.session = session
         self.timezone_name = timezone_name
 
-    def normalize(self, raw: Mapping[str, Any], *, arrival_ts: Any | None = None) -> IngestionTick:
+    def normalize(self, *, raw: Mapping[str, Any], arrival_ts: Any | None = None) -> IngestionTick:
         r: dict[str, Any] = {str(k): v for k, v in raw.items()}
 
         # --- event time (required) ---

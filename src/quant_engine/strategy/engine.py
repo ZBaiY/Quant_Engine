@@ -206,7 +206,7 @@ class StrategyEngine:
 
         for h in handlers.values():
             if hasattr(h, "on_new_tick"):
-                h.on_new_tick(payload)
+                h.on_new_tick(tick)
 
     def align_to(self, ts: int) -> None:
         """

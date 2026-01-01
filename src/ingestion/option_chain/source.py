@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterable, AsyncIterator, Iterator
+from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping
 import pandas as pd
 
 import logging
@@ -12,15 +12,15 @@ import threading
 import requests
 import pyarrow as pa
 import pyarrow.parquet as pq
-from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 from ingestion.contracts.source import Source, AsyncSource, Raw
-from ingestion.contracts.tick import _guard_interval_ms
+from ingestion.contracts.tick import _coerce_epoch_ms, _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = logging.getLogger(__name__)
 
+records: list[Mapping[str, Any]] = []
 
 class OptionChainWriteError(RuntimeError):
     """Raised for non-recoverable option-chain parquet write failures."""
@@ -43,9 +43,19 @@ class OptionChainFileSource(Source):
         data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
     """
 
-    def __init__(self, *, root: str | Path, asset: str, interval: str | None = None):
+    def __init__(
+        self,
+        *,
+        root: str | Path,
+        asset: str,
+        interval: str | None = None,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._asset = str(asset)
+        self._start_ts = int(start_ts) if start_ts is not None else None
+        self._end_ts = int(end_ts) if end_ts is not None else None
         self._path = self._root / self._asset
         if interval is not None:
             self._path = self._path / str(interval)
@@ -58,7 +68,28 @@ class OptionChainFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OptionChainFileSource parquet loading") from e
 
-        files = sorted(self._path.rglob("*.parquet"))
+        if self._start_ts is not None or self._end_ts is not None:
+            start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
+            end_date = datetime.fromtimestamp((self._end_ts or _now_ms()) / 1000.0, tz=timezone.utc).date()
+            files: list[Path] = []
+            for year_dir in sorted(self._path.glob("[0-9][0-9][0-9][0-9]")):
+                if not year_dir.is_dir():
+                    continue
+                try:
+                    year = int(year_dir.name)
+                except Exception:
+                    continue
+                if year < start_date.year or year > end_date.year:
+                    continue
+                for fp in sorted(year_dir.glob("*.parquet")):
+                    try:
+                        d = datetime.strptime(fp.stem, "%Y_%m_%d").date()
+                    except Exception:
+                        continue
+                    if start_date <= d <= end_date:
+                        files.append(fp)
+        else:
+            files = sorted(self._path.rglob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No option chain parquet files found under {self._path}")
 
@@ -69,12 +100,21 @@ class OptionChainFileSource(Source):
             if "data_ts" not in df.columns:
                 raise ValueError(f"Parquet file {fp} missing data_ts column")
 
+            df["data_ts"] = df["data_ts"].map(_coerce_epoch_ms)
+            if self._start_ts is not None:
+                df = df[df["data_ts"] >= int(self._start_ts)]
+            if self._end_ts is not None:
+                df = df[df["data_ts"] <= int(self._end_ts)]
+            if df.empty:
+                continue
             df = df.sort_values(["data_ts"], kind="stable")
+            df["data_ts"] = df["data_ts"].astype("int64", copy=False)
             for ts, sub in df.groupby("data_ts", sort=True):
                 snap = sub.reset_index(drop=True)
                 # Source contract: yield a Mapping[str, Any]
                 assert isinstance(ts, (int, float)), f"data_ts must be int/float, got {type(ts)!r}"
-                yield {"data_ts": int(ts), "frame": snap}
+                records = snap.to_dict(orient="records")
+                yield {"data_ts": int(ts), "records": records}
 
 
 class DeribitOptionChainRESTSource(Source):
@@ -126,7 +166,7 @@ class DeribitOptionChainRESTSource(Source):
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         elif interval is not None:
-            pms = to_interval_ms(interval)
+            pms = _to_interval_ms(interval)
             assert pms is not None, f"cannot parse interval: {interval!r}"
             self._poll_interval_ms = int(pms)
             _guard_interval_ms(interval, self._poll_interval_ms)
@@ -152,11 +192,13 @@ class DeribitOptionChainRESTSource(Source):
                     try:
                         rows = self._fetch()
                         df = pd.DataFrame(rows or [])
+                        records: list[dict[str, Any]] = []
                         if not df.empty:
                             df["data_ts"] = int(data_ts)
                             self._write_raw_snapshot(df=df, data_ts=int(data_ts))
+                            records = [{str(k): v for k, v in rec.items()} for rec in df.to_dict(orient="records")]
                         # Source contract: yield a Mapping[str, Any]
-                        yield {"data_ts": int(data_ts), "frame": df}
+                        yield {"data_ts": int(data_ts), "records": records}
                         break
                     except Exception as exc:
                         _LOG.warning(

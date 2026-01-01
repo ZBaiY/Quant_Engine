@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ingestion.contracts.source import AsyncSource, Raw, Source
-from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
+from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms, _coerce_epoch_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
@@ -131,6 +131,8 @@ class SentimentFileSource(Source):
         provider: str,
         pattern: str = "**/*.jsonl",
         strict: bool = True,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
     ) -> None:
         self._layout = SentimentFileLayout(
             root=resolve_under_root(DATA_ROOT, root, strip_prefix="data"),
@@ -138,6 +140,8 @@ class SentimentFileSource(Source):
             pattern=str(pattern),
         )
         self._strict = bool(strict)
+        self._start_ts = int(start_ts) if start_ts is not None else None
+        self._end_ts = int(end_ts) if end_ts is not None else None
 
         self._path = self._layout.root / self._layout.provider
         if self._strict and not self._path.exists():
@@ -145,6 +149,18 @@ class SentimentFileSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         files = sorted((fp for fp in self._path.glob(self._layout.pattern) if fp.is_file()), key=_file_sort_key) if self._path.exists() else []
+        if self._start_ts is not None or self._end_ts is not None:
+            start_date = dt.datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=dt.timezone.utc).date()
+            end_date = dt.datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=dt.timezone.utc).date()
+            pruned: list[Path] = []
+            for fp in files:
+                ymd = _infer_ymd_from_path(fp)
+                if ymd is None:
+                    continue
+                d = dt.date(ymd[0], ymd[1], ymd[2])
+                if start_date <= d <= end_date:
+                    pruned.append(fp)
+            files = pruned
         if self._strict and not files:
             raise FileNotFoundError(f"No sentiment jsonl files found under {self._path}")
 
@@ -156,7 +172,17 @@ class SentimentFileSource(Source):
                         continue
                     # Do not normalize; just parse JSON.
                     try:
-                        yield json.loads(line)
+                        rec = json.loads(line)
+                        if self._start_ts is not None or self._end_ts is not None:
+                            ts_any = rec.get("timestamp") or rec.get("published_at") or rec.get("ts")
+                            if ts_any is None:
+                                continue
+                            ts = _coerce_epoch_ms(ts_any)
+                            if self._start_ts is not None and ts < int(self._start_ts):
+                                continue
+                            if self._end_ts is not None and ts > int(self._end_ts):
+                                continue
+                        yield rec
                     except Exception:
                         if self._strict:
                             raise

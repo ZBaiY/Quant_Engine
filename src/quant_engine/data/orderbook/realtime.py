@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from pyparsing import Iterable, deque
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
@@ -12,6 +12,7 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 
 from quant_engine.data.orderbook.cache import OrderbookCache
 from quant_engine.data.orderbook.snapshot import OrderbookSnapshot
@@ -135,11 +136,11 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, payload: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """
-        Ingest a single orderbook payload (event-time fact).
+        Ingest a single orderbook tick (event-time fact).
 
-        Payload contract:
+        Payload contract (tick.payload):
           - Represents an already-occurred orderbook event (event-time).
           - May be:
               * OrderbookSnapshot
@@ -150,6 +151,9 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
           - Append-only.
           - No visibility decisions (handled by align_to).
         """
+        payload = dict(tick.payload)
+        if "data_ts" not in payload and "ts" not in payload:
+            payload["data_ts"] = int(tick.data_ts)
         snap = _coerce_snapshot(
             self.symbol,
             payload,
@@ -213,7 +217,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         if self.cache.get_at_or_before(start_ts) is not None:
             return
         for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-            self.on_new_tick(row)
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
 
     def run_mock(self, df, delay: float = 0.0):
         """v4-compliant simulated orderbook stream."""
@@ -242,7 +246,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 ),
             )
 
-            self.on_new_tick(snapshot)
+            self.on_new_tick(_tick_from_payload(raw, symbol=self.symbol))
             window = self.window(snapshot.data_ts)
             yield snapshot, window
 
@@ -301,6 +305,25 @@ def _coerce_snapshot(
             market=market,
         )
     return None
+
+
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+    data_ts = _infer_data_ts(payload)
+    return IngestionTick(
+        timestamp=int(data_ts),
+        data_ts=int(data_ts),
+        domain="orderbook",
+        symbol=symbol,
+        payload=payload,
+    )
+
+
+def _infer_data_ts(payload: Mapping[str, Any]) -> int:
+    if "data_ts" in payload:
+        return _coerce_epoch_ms(payload.get("data_ts"))
+    if "ts" in payload:
+        return _coerce_epoch_ms(payload.get("ts"))
+    raise ValueError("Orderbook payload missing data_ts/ts for backfill")
 
 
 def _resolve_market(

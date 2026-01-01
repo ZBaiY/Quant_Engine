@@ -375,7 +375,7 @@ class OHLCVFileSource(Source):
                   └── ...
     """
 
-    def __init__(self, *, root: str | Path, **kwargs):
+    def __init__(self, *, root: str | Path, start_ts: int | None = None, end_ts: int | None = None, **kwargs):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = kwargs.get("symbol")
         self._interval = kwargs.get("interval")
@@ -384,6 +384,8 @@ class OHLCVFileSource(Source):
         self.interval_ms = self._interval_milliseconds(self._interval)
         self._interval_ms = self.interval_ms  # backward-compatible alias
         self._path = self._root / self._symbol / self._interval
+        self._start_ts = int(start_ts) if start_ts is not None else None
+        self._end_ts = int(end_ts) if end_ts is not None else None
         if not self._path.exists():
             raise FileNotFoundError(f"OHLCV path does not exist: {self._path}")
 
@@ -436,7 +438,16 @@ class OHLCVFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OHLCVFileSource parquet loading") from e
 
-        files = sorted(self._path.glob("*.parquet"))
+        if self._start_ts is not None or self._end_ts is not None:
+            start_year = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).year
+            end_year = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).year
+            files = [
+                self._path / f"{year}.parquet"
+                for year in range(int(start_year), int(end_year) + 1)
+                if (self._path / f'{year}.parquet').exists()
+            ]
+        else:
+            files = sorted(self._path.glob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No parquet files found under {self._path}")
 
@@ -465,6 +476,12 @@ class OHLCVFileSource(Source):
             else:
                 df["data_ts"] = df["data_ts"].map(self._coerce_ts)
 
+            if self._start_ts is not None:
+                df = df[df["data_ts"] >= int(self._start_ts)]
+            if self._end_ts is not None:
+                df = df[df["data_ts"] <= int(self._end_ts)]
+            if df.empty:
+                continue
             df = df.sort_values("data_ts", kind="mergesort")
             df["data_ts"] = df["data_ts"].astype("int64", copy=False)
 
@@ -490,8 +507,8 @@ class OHLCVRESTSource(Source):
     def __init__(
         self,
         *,
-        fetch_fn,
-        backfill_fn=None,
+        fetch_fn: Callable[[], Iterable[Raw]],
+        backfill_fn: Callable[..., Iterable[Raw]] | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         stop_event: threading.Event | None = None,

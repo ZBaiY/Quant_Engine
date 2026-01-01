@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Callable, Awaitable, Any
 
-from ingestion.contracts.tick import IngestionTick, normalize_tick
+from ingestion.contracts.tick import IngestionTick
 from ingestion.contracts.worker import IngestWorker
 from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.option_chain.source import (
@@ -14,26 +14,18 @@ from ingestion.option_chain.source import (
     OptionChainFileSource,
     OptionChainStreamSource,
 )
+from quant_engine.utils.logger import get_logger, log_info, log_warn, log_debug
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "option_chain"
 
-def _log(logger: logging.Logger, level: int, event: str, **ctx: Any) -> None:
-    # Best-effort JSON safety without importing quant_engine.safe_jsonable
-    safe: dict[str, Any] = {}
-    for k, v in ctx.items():
-        try:
-            key = str(k)
-        except Exception:
-            key = repr(k)
-        if v is None or isinstance(v, (str, int, float, bool)):
-            safe[key] = v
-        else:
-            try:
-                safe[key] = repr(v)
-            except Exception:
-                safe[key] = "<unrepr>"
-    logger.log(level, event, extra={"context": safe})
+def _as_primitive(x: Any) -> str | int | float | bool | None:
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+    try:
+        return str(x)
+    except Exception:
+        return "<unrepr>"
 
 class OptionChainWorker(IngestWorker):
     """
@@ -55,7 +47,7 @@ class OptionChainWorker(IngestWorker):
         self._normalizer = normalizer
         self._source = source
         self._symbol = symbol
-        self._logger = logger or logging.getLogger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
+        self._logger = logger or get_logger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
         if poll_interval_ms is not None:
@@ -68,9 +60,8 @@ class OptionChainWorker(IngestWorker):
             raise ValueError("poll_interval_ms must be >= 0")
 
     async def run(self, emit: Callable[[IngestionTick], Awaitable[None] | None]) -> None:
-        _log(
+        log_info(
             self._logger,
-            logging.INFO,
             "ingestion.worker_start",
             worker=self.__class__.__name__,
             source_type=type(self._source).__name__,
@@ -88,9 +79,8 @@ class OptionChainWorker(IngestWorker):
                     await r  # type: ignore[misc]
             except Exception as exc:
                 self._error_logged = True
-                _log(
+                log_warn(
                     self._logger,
-                    logging.WARNING,
                     "ingestion.emit_error",
                     worker=self.__class__.__name__,
                     symbol=self._symbol,
@@ -109,9 +99,8 @@ class OptionChainWorker(IngestWorker):
                     now = time.monotonic()
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.DEBUG,
                             "ingestion.source_fetch_success",
                             worker=self.__class__.__name__,
                             symbol=self._symbol,
@@ -133,9 +122,8 @@ class OptionChainWorker(IngestWorker):
                     now = time.monotonic()
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.DEBUG,
                             "ingestion.source_fetch_success",
                             worker=self.__class__.__name__,
                             symbol=self._symbol,
@@ -157,9 +145,8 @@ class OptionChainWorker(IngestWorker):
             raise
         except Exception as exc:
             if not self._error_logged:
-                _log(
+                log_warn(
                     self._logger,
-                    logging.WARNING,
                     "ingestion.source_fetch_error",
                     worker=self.__class__.__name__,
                     symbol=self._symbol,
@@ -173,9 +160,8 @@ class OptionChainWorker(IngestWorker):
             stop_reason = "error"
             raise
         finally:
-            _log(
+            log_info(
                 self._logger,
-                logging.INFO,
                 "ingestion.worker_stop",
                 worker=self.__class__.__name__,
                 symbol=self._symbol,
@@ -185,23 +171,12 @@ class OptionChainWorker(IngestWorker):
 
     def _normalize(self, raw: dict) -> IngestionTick:
         try:
-            payload = self._normalizer.normalize(raw)
-            data_ts = payload.get("data_ts")
-            if data_ts is None:
-                raise ValueError("Option chain payload missing data_ts")
-            return normalize_tick(
-                timestamp=int(data_ts),
-                data_ts=int(data_ts),
-                domain="option_chain",
-                symbol=self._symbol,
-                payload=payload,
-            )
+            return self._normalizer.normalize(raw=raw)
         except Exception as exc:
             self._error_logged = True
             raw_ts = _extract_raw_ts(raw)
-            _log(
+            log_warn(
                 self._logger,
-                logging.WARNING,
                 "ingestion.normalize_drop",
                 worker=self.__class__.__name__,
                 symbol=self._symbol,
@@ -210,7 +185,7 @@ class OptionChainWorker(IngestWorker):
                 err_type=type(exc).__name__,
                 err=str(exc),
                 raw_type=type(raw).__name__,
-                raw_ts=raw_ts,
+                raw_ts=_as_primitive(raw_ts),
             )
             raise
 

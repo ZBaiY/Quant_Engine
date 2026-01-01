@@ -22,6 +22,7 @@ from quant_engine.data.derivatives.iv.surface import (
     _get_str,
     _first_float,
 )
+from ingestion.contracts.tick import IngestionTick
 
 class IVSurfaceDataHandler(RealTimeDataHandler):
     """Runtime IV surface handler (derived layer, mode-agnostic).
@@ -159,7 +160,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     # Derived update (called by engine/driver when appropriate)
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, bar: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """
         Ingest a derived-tick trigger for IV surface generation.
 
@@ -170,7 +171,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
           - Snapshot derivation pulls from chain_handler.get_snapshot(ts).
           - Visibility is enforced exclusively via align_to(ts).
         """
-        ts = _coerce_ts(bar)
+        ts = _coerce_ts(tick.data_ts)
         if ts is None:
             return
         snap = self._derive_from_chain(ts)
@@ -302,6 +303,5 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                     break
         out.reverse()
         return out
-
 
 

@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 from quant_engine.utils.logger import get_logger, init_logging
 
-init_logging()
+def _make_run_id() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _set_current_run(run_id: str) -> None:
+    runs_dir = Path("artifacts") / "runs"
+    target = runs_dir / run_id
+    current = runs_dir / "_current"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        if current.exists() or current.is_symlink():
+            current.unlink()
+        current.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        (runs_dir / "CURRENT").write_text(run_id, encoding="utf-8")
+
+
+_RUN_ID = _make_run_id()
+init_logging(run_id=_RUN_ID)
+_set_current_run(_RUN_ID)
 
 from ingestion.ohlcv.worker import OHLCVWorker
 from ingestion.ohlcv.source import OHLCVFileSource

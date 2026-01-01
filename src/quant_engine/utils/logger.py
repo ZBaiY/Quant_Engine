@@ -64,7 +64,7 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
         root_handlers.append("console")
 
     if bool(file_cfg.get("enabled", False)):
-        path_template = str(file_cfg.get("path", "artifacts/logs/{mode}-{run_id}.jsonl"))
+        path_template = str(file_cfg.get("path", "artifacts/runs/{run_id}/logs/{mode}.jsonl"))
         path = Path(path_template.format(
             run_id=run_id or "run",
             mode=mode or "default",

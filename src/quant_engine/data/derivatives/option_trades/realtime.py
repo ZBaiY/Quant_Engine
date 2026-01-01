@@ -12,6 +12,7 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 
 from .cache import OptionTradesBucketedCache
 from .snapshot import OptionTradeEvent
@@ -159,13 +160,13 @@ class OptionTradesDataHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, payload: Any) -> None:
+    def on_new_tick(self, tick: IngestionTick) -> None:
         """Ingest one or many option trade payloads.
 
         Accepted payloads:
-          - Mapping[str, Any] (single trade)
-          - Sequence[Mapping[str, Any]] (batch)
-          - pandas.DataFrame (batch)
+          - Mapping[str, Any] (single trade) in tick.payload
+          - Sequence[Mapping[str, Any]] (batch) in tick.payload
+          - pandas.DataFrame (batch) in tick.payload
 
         Required keys per trade (Deribit-like):
           - timestamp (epoch ms)
@@ -174,6 +175,10 @@ class OptionTradesDataHandler(RealTimeDataHandler):
           - trade_id, trade_seq, tick_direction
           - iv, index_price, mark_price, contracts
         """
+        payload = tick.payload
+        if isinstance(payload, Mapping):
+            payload = dict(payload)
+            payload.setdefault("data_ts", int(tick.data_ts))
         rows = _coerce_to_rows(payload)
         if not rows:
             return
@@ -367,7 +372,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         if self.cache.get_at_or_before(start_ts) is not None:
             return
         for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-            self.on_new_tick(row)
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
 
 
 def _coerce_to_rows(x: Any) -> list[dict[str, Any]]:
@@ -403,6 +408,25 @@ def _coerce_to_rows(x: Any) -> list[dict[str, Any]]:
         return []
     recs = df.to_dict(orient="records")
     return [{str(k): v for k, v in r.items()} for r in recs]
+
+
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+    data_ts = _infer_data_ts(payload)
+    return IngestionTick(
+        timestamp=int(data_ts),
+        data_ts=int(data_ts),
+        domain="option_trades",
+        symbol=symbol,
+        payload=payload,
+    )
+
+
+def _infer_data_ts(payload: Mapping[str, Any]) -> int:
+    if "data_ts" in payload:
+        return _coerce_epoch_ms(payload.get("data_ts"))
+    if "timestamp" in payload:
+        return _coerce_epoch_ms(payload.get("timestamp"))
+    raise ValueError("Option trade payload missing data_ts/timestamp for backfill")
 
 
 def _resolve_market(

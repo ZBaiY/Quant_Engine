@@ -3,7 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping, get_args, cast
 
-from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.tick import IngestionTick, Domain, normalize_tick
+from ingestion.contracts.normalize import Normalizer
 from ingestion.contracts.market import annotate_payload_market
 
 
@@ -97,7 +98,7 @@ def _coerce_aggtrade_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-class BinanceAggTradesNormalizer:
+class BinanceAggTradesNormalizer(Normalizer):
     """Normalize Binance aggTrades (REST/WS) into `IngestionTick`.
 
     Time semantics (project convention):
@@ -136,7 +137,7 @@ class BinanceAggTradesNormalizer:
         self.session = session
         self.timezone_name = timezone_name
 
-    def normalize(self, raw: Mapping[str, Any]) -> IngestionTick:
+    def normalize(self, *, raw: Mapping[str, Any]) -> IngestionTick:
         payload = _coerce_aggtrade_mapping(raw)
 
         # --- event time (trade time) ---
@@ -187,11 +188,11 @@ class BinanceAggTradesNormalizer:
             timezone_name=self.timezone_name,
         )
 
-        return IngestionTick(
-            domain=self.domain,
-            symbol=self.symbol,
+        return normalize_tick(
             timestamp=arrival_ts,
             data_ts=event_ts,
+            domain=self.domain,
+            symbol=self.symbol,
             payload=out_payload,
         )
 

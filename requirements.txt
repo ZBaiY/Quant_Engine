@@ -20,3 +20,7 @@ websockets     # exchange WebSocket streaming
 
 # --- dev ---
 pytest
+pytest-asyncio
+pytest-cov
+ruff
+mypy

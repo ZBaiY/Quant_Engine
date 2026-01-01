@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Dict, List, Tuple
 
-from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms
+from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms, normalize_tick
 from ingestion.contracts.market import annotate_payload_market
 from ingestion.contracts.normalize import Normalizer
 
@@ -99,10 +99,10 @@ class BinanceOrderbookNormalizer(Normalizer):
             timezone_name=self.timezone_name,
         )
 
-        return IngestionTick(
-            domain=self.domain,
-            symbol=self.symbol,
+        return normalize_tick(
             timestamp=event_ts,
             data_ts=data_ts,
+            domain=self.domain,
+            symbol=self.symbol,
             payload=payload,
         )

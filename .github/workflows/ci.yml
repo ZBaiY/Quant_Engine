@@ -51,10 +51,10 @@ jobs:
   #       run: ./scripts/test_unit.sh
 
   #     以后你想加 integration，可以改成：
-  #     - name: Run all tests (unit + integration)
-  #       env:
-  #         PYTHONPATH: src
-  #       run: ./scripts/test_all.sh
+      - name: Run all tests (unit + integration)
+        env:
+          PYTHONPATH: src
+        run: ./scripts/test_all.sh
 
   # 可选：类型检查（等你愿意严格一点时再打开）
   # typecheck:

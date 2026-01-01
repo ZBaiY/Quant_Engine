@@ -6,6 +6,7 @@ import pandas as pd
 import time
 
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.contracts.snapshot import (
     MarketSpec,
@@ -189,10 +190,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, payload: Any) -> None:
-        """Ingest one snapshot payload.
+    def on_new_tick(self, tick: IngestionTick) -> None:
+        """Ingest one snapshot tick.
 
-        Accepted payloads:
+        Accepted payloads (tick.payload):
           - OptionChainSnapshot
           - Mapping[str, Any] with keys {data_ts, records} (and optional metadata)
           - Mapping[str, Any] representing a *single record* (will be treated as a one-record snapshot)
@@ -202,6 +203,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
           - schema_version is defaulted to 2 in snapshot builder.
           - fetched IV fields (iv/mark_iv/bid_iv/ask_iv) are moved into record["aux"] as *_fetch.
         """
+        payload = dict(tick.payload)
+        if "data_ts" not in payload:
+            payload["data_ts"] = int(tick.data_ts)
         snap = _build_snapshot_from_payload(payload, symbol=self.symbol, market=self.market)
         if snap is None:
             return
@@ -377,7 +381,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if self.cache.get_at_or_before(start_ts) is not None:
             return
         for snap_payload in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-            self.on_new_tick(snap_payload)
+            self.on_new_tick(_tick_from_payload(snap_payload, symbol=self.symbol))
 
 
 # ----------------------------------------------------------------------
@@ -387,6 +391,24 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+    data_ts = _infer_data_ts(payload)
+    return IngestionTick(
+        timestamp=int(data_ts),
+        data_ts=int(data_ts),
+        domain="option_chain",
+        symbol=symbol,
+        payload=payload,
+    )
+
+
+def _infer_data_ts(payload: Mapping[str, Any]) -> int:
+    ts_any = payload.get("data_ts") or payload.get("timestamp")
+    if ts_any is None:
+        raise ValueError("Option chain payload missing data_ts/timestamp for backfill")
+    return _coerce_epoch_ms(ts_any)
 
 
 def _build_snapshot_from_payload(payload: Any, *, symbol: str, market: MarketSpec) -> OptionChainSnapshot | None:

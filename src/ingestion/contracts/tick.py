@@ -8,6 +8,7 @@ Domain = Literal[
     "orderbook",
     "trade",
     "option_chain",
+    "option_trades",
     "iv_surface",
     "sentiment",
 ]

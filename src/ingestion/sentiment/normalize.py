@@ -43,7 +43,7 @@ class SentimentNormalizer(Normalizer):
     # Domain is a Literal type; cast keeps pylance happy.
     domain: Domain = cast(Domain, "sentiment")
 
-    def normalize(self, raw: Mapping[str, Any], *, arrival_ts: Any | None = None) -> IngestionTick:
+    def normalize(self, *, raw: Mapping[str, Any], arrival_ts: Any | None = None) -> IngestionTick:
         r: dict[str, Any] = {str(k): v for k, v in raw.items()}
 
         # --- event-time (publish) ---

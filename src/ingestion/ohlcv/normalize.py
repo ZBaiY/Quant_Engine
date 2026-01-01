@@ -4,7 +4,7 @@ from typing import Any, Mapping
 
 import time
 
-from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.tick import Domain, IngestionTick, normalize_tick
 from ingestion.contracts.market import annotate_payload_market
 from ingestion.contracts.normalize import Normalizer
 
@@ -184,11 +184,11 @@ class BinanceOHLCVNormalizer(Normalizer):
             timezone_name=self.timezone_name,
         )
 
-        return IngestionTick(
-            domain=self.domain,
-            symbol=self.symbol,
+        return normalize_tick(
             timestamp=arrival_ts,
             data_ts=event_ts,
+            domain=self.domain,
+            symbol=self.symbol,
             payload=out_payload,
         )
 

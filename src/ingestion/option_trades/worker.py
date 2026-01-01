@@ -7,41 +7,34 @@ import inspect
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, Iterable, Sequence
 
 from ingestion.contracts.tick import IngestionTick
+from ingestion.contracts.source import Raw
 from ingestion.contracts.worker import IngestWorker
 from ingestion.option_trades.normalize import DeribitOptionTradesNormalizer
 from ingestion.option_trades.source import (
     DeribitOptionTradesParquetSource,
     DeribitOptionTradesRESTSource,
 )
+from quant_engine.utils.logger import get_logger, log_info, log_warn, log_debug
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "option_trades"
 
-def _log(logger: logging.Logger, level: int, event: str, **ctx: Any) -> None:
-    # Best-effort JSON safety without importing quant_engine.safe_jsonable
-    safe: dict[str, Any] = {}
-    for k, v in ctx.items():
-        try:
-            key = str(k)
-        except Exception:
-            key = repr(k)
-        if v is None or isinstance(v, (str, int, float, bool)):
-            safe[key] = v
-        else:
-            try:
-                safe[key] = repr(v)
-            except Exception:
-                safe[key] = "<unrepr>"
-    logger.log(level, event, extra={"context": safe})
+def _as_primitive(x: Any) -> str | int | float | bool | None:
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+    try:
+        return str(x)
+    except Exception:
+        return "<unrepr>"
 
-EmitFn = Callable[[IngestionTick], None] | Callable[[IngestionTick], Awaitable[None]]
+EmitFn = Callable[[IngestionTick], Awaitable[None] | None]
 
 
 class _FetchLike(Protocol):
-    def fetch(self) -> Any:  # may return iterable, or awaitable of iterable
+    def fetch(self) -> Iterable[Raw] | Awaitable[Iterable[Raw]]:
         ...
 
 
@@ -60,7 +53,7 @@ class OptionTradesWorker(IngestWorker):
     """
 
     normalizer: DeribitOptionTradesNormalizer
-    source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | _FetchLike | Any
+    source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | _FetchLike
 
     symbol: str
     poll_interval_s: float | None = None
@@ -69,7 +62,7 @@ class OptionTradesWorker(IngestWorker):
         self,
         *,
         normalizer: DeribitOptionTradesNormalizer,
-        source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | Any,
+        source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | _FetchLike,
         symbol: str,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
@@ -78,7 +71,7 @@ class OptionTradesWorker(IngestWorker):
         self.normalizer = normalizer
         self.source = source
         self.symbol = str(symbol)
-        self._logger = logger or logging.getLogger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
+        self._logger = logger or get_logger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
 
@@ -90,13 +83,12 @@ class OptionTradesWorker(IngestWorker):
     def _normalize(self, raw: Any) -> IngestionTick:
         # Normalizer is the only place allowed to interpret source schema.
         try:
-            return self.normalizer.normalize(raw)
+            return self.normalizer.normalize(raw=raw)
         except Exception as exc:
             self._error_logged = True
             raw_ts = _extract_raw_ts(raw)
-            _log(
+            log_warn(
                 self._logger,
-                logging.WARNING,
                 "ingestion.normalize_drop",
                 worker=self.__class__.__name__,
                 symbol=self.symbol,
@@ -105,7 +97,7 @@ class OptionTradesWorker(IngestWorker):
                 err_type=type(exc).__name__,
                 err=str(exc),
                 raw_type=type(raw).__name__,
-                raw_ts=raw_ts,
+                raw_ts=_as_primitive(raw_ts),
             )
             raise
 
@@ -116,9 +108,8 @@ class OptionTradesWorker(IngestWorker):
                 await res  # type: ignore[func-returns-value]
         except Exception as exc:
             self._error_logged = True
-            _log(
+            log_warn(
                 self._logger,
-                logging.WARNING,
                 "ingestion.emit_error",
                 worker=self.__class__.__name__,
                 symbol=self.symbol,
@@ -130,9 +121,8 @@ class OptionTradesWorker(IngestWorker):
             raise
 
     async def run(self, emit: EmitFn) -> None:
-        _log(
+        log_info(
             self._logger,
-            logging.INFO,
             "ingestion.worker_start",
             worker=self.__class__.__name__,
             source_type=type(self.source).__name__,
@@ -152,9 +142,8 @@ class OptionTradesWorker(IngestWorker):
                     now = time.monotonic()
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.DEBUG,
                             "ingestion.source_fetch_success",
                             worker=self.__class__.__name__,
                             symbol=self.symbol,
@@ -179,9 +168,8 @@ class OptionTradesWorker(IngestWorker):
                         if inspect.isawaitable(batch):
                             batch = await batch
                     except Exception as exc:
-                        _log(
+                        log_warn(
                             self._logger,
-                            logging.WARNING,
                             "ingestion.source_fetch_error",
                             worker=self.__class__.__name__,
                             symbol=self.symbol,
@@ -195,13 +183,21 @@ class OptionTradesWorker(IngestWorker):
                         self._error_logged = True
                         stop_reason = "error"
                         raise
+                    if batch is None:
+                        items: list[Raw] = []
+                    elif isinstance(batch, Sequence):
+                        # could be list/tuple; keep as-is
+                        items = list(batch) if not isinstance(batch, list) else batch
+                    elif isinstance(batch, Iterable):
+                        items = list(batch)
+                    else:
+                        raise TypeError(f"fetch() must return Iterable[Raw] (or awaitable), got {type(batch)!r}")
 
-                    rows = len(batch or [])
+                    rows = len(items)
                     self._poll_seq += 1
                     if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        _log(
+                        log_debug(
                             self._logger,
-                            logging.DEBUG,
                             "ingestion.source_fetch_success",
                             worker=self.__class__.__name__,
                             symbol=self.symbol,
@@ -228,9 +224,8 @@ class OptionTradesWorker(IngestWorker):
                 now = time.monotonic()
                 self._poll_seq += 1
                 if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                    _log(
+                    log_debug(
                         self._logger,
-                        logging.DEBUG,
                         "ingestion.source_fetch_success",
                         worker=self.__class__.__name__,
                         symbol=self.symbol,
@@ -248,9 +243,8 @@ class OptionTradesWorker(IngestWorker):
             raise
         except Exception as exc:
             if not self._error_logged:
-                _log(
+                log_warn(
                     self._logger,
-                    logging.WARNING,
                     "ingestion.source_fetch_error",
                     worker=self.__class__.__name__,
                     symbol=self.symbol,
@@ -264,9 +258,8 @@ class OptionTradesWorker(IngestWorker):
             stop_reason = "error"
             raise
         finally:
-            _log(
+            log_info(
                 self._logger,
-                logging.INFO,
                 "ingestion.worker_stop",
                 worker=self.__class__.__name__,
                 symbol=self.symbol,

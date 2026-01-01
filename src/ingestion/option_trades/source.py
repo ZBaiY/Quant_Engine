@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ingestion.contracts.source import Source
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 
@@ -55,7 +56,7 @@ def _now_ms(*, host: str = WWW) -> int:
 
 
 @dataclass(frozen=True)
-class DeribitOptionTradesRESTSource:
+class DeribitOptionTradesRESTSource(Source):
     """Deribit option trades source using the history host.
 
     Endpoint:
@@ -250,7 +251,7 @@ def _infer_date_from_path(p: Path) -> _dt.date | None:
 
 
 @dataclass(frozen=True)
-class DeribitOptionTradesParquetSource:
+class DeribitOptionTradesParquetSource(Source):
     """Local parquet-backed Deribit option trades source.
 
     Expected layout:
