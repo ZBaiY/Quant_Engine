@@ -1,0 +1,94 @@
+ENGINEERING MANUAL: TESTING LAYERS
+
+Purpose
+This manual explains what each test layer is for and where new work should be tested.
+It is aligned with the Iron Laws:
+  Strategy = static spec only
+  Loader   = wiring only
+  Engine   = runtime semantics (no tasks/IO)
+  Driver   = time pusher (no strategy logic)
+
+Timestamp invariants (apply to all layers)
+- All runtime timestamps are epoch milliseconds (int).
+- No local time; use UTC only.
+- Missing domain data is tolerated (ExampleStrategy declares extra domains on purpose).
+
+Test Layers
+
+Unit
+Purpose: protect pure logic and small invariants.
+Must NOT: touch filesystem/network, instantiate StrategyEngine/Driver/Strategy.build(), or use real handlers.
+Typical assertions: ensure_epoch_ms, monotonicity/lookahead guards, interval parsing, schema subset checks.
+Where: tests/unit/
+
+Contract (component protocol)
+Purpose: validate a single component’s protocol semantics in isolation.
+Must NOT: wire Driver/Engine/Strategy.build(), or require real IO.
+Typical assertions: handler snapshot alignment, feature channel inputs/outputs, tick normalization rules, stable schema.
+Where: tests/contract/ (or tests/unit/ when strictly local and IO-free)
+
+Runtime
+Purpose: enforce driver/engine lifecycle ordering and runtime invariants.
+Must NOT: depend on live IO; keep deterministic.
+Typical assertions: PRELOAD→WARMUP→INGEST→STEP→FINISH ordering, ms-int time, no lookahead, monotonic snapshots.
+Where: tests/runtime/
+
+Integration
+Purpose: real wiring path end-to-end (ExampleStrategy, real handlers/models/decision/risk/execution).
+Must NOT: require large datasets or network; skip when local data is missing.
+Typical assertions: engine builds, handlers wired, missing-domain data tolerated, snapshots produced.
+Where: tests/integration/
+
+Local
+Purpose: developer-machine replay with real/large datasets and long windows.
+Must NOT: run in CI; can be skipped by default.
+Typical assertions: no data drops, stable replay semantics, performance sanity.
+Where: tests/local/
+
+Decision Rules
+- Pure logic → unit
+- Single component protocol semantics → contract
+- Cross-layer semantics / wiring / time alignment → runtime or integration
+- Real-data replay → local
+
+Where to test new work
+
+New data handler capability
+- Unit: guard any pure logic (timestamp conversion, schema validation).
+- Contract: handler protocol (align_to/get_snapshot/window) with in-memory state only.
+- Runtime: only if lifecycle/driver gating changes are required.
+- Integration: if it changes ExampleStrategy wiring or expected handler availability.
+
+New feature / indicator / transform
+- Unit: pure math helpers (if any).
+- Contract: feature channel initialize/update/output with in-memory snapshots only.
+- Runtime: only if it changes timing semantics or requires new domain alignment.
+
+New model / decision / risk rule
+- Unit: any pure scoring helpers.
+- Contract: required features and deterministic behavior on small contexts.
+- Integration: if it changes ExampleStrategy behavior or wiring (registry/config).
+
+New ingestion source / worker / normalizer
+- Unit: parsing helpers (interval parsing, normalization edge cases).
+- Contract: normalizer output shape and timestamp fields using in-memory rows.
+- Runtime/Integration: only when it changes driver gating or end-to-end wiring.
+- Local: replay with real data if it affects ingestion reliability.
+
+Runtime lifecycle / driver gating changes
+- Unit: guardrails that are pure (ensure_epoch_ms, assert_no_lookahead).
+- Runtime: lifecycle ordering, drain rules, ms-int timestamps, no lookahead.
+- Integration: only if the change touches ExampleStrategy wiring or handler behavior.
+
+Worked Examples
+
+Example 1: New DataHandler domain (e.g., trades aggregation)
+- Unit: tests/unit/test_interval_ms.py and guards for timestamp normalization.
+- Contract: tests/contract/test_trades_handler_protocol.py (align_to + get_snapshot).
+- Runtime: tests/runtime/ for lifecycle ordering only if the driver gating changes.
+- Integration: tests/integration/ExampleStrategy if it declares the new domain.
+
+Example 2: New Feature + Model change
+- Unit: pure helper functions only (if any).
+- Contract: tests/contract/feature_channel_<name>.py verifying initialize/update/output.
+- Integration: ExampleStrategy build path if the model is used by registry config.
