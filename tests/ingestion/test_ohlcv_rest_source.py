@@ -106,8 +106,8 @@ def test_binance_rest_source_emits_only_closed_bar(
     monkeypatch.setattr(requests, "get", fake_get)
     monkeypatch.setattr(stop_event, "wait", fake_wait)
     monkeypatch.setattr(ohlcv_source, "DATA_ROOT", tmp_path)
-    monkeypatch.setattr(ohlcv_source, "_RAW_KLINES_ROOT", tmp_path / "raw" / "klines")
-    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m", root=tmp_path / "raw" / "klines", stop_event=stop_event)
+    monkeypatch.setattr(ohlcv_source, "_RAW_OHLCV_ROOT", tmp_path / "raw" / "ohlcv")
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m", root=tmp_path / "raw" / "ohlcv", stop_event=stop_event)
     monkeypatch.setattr(src, "_write_raw_snapshot", lambda *_args, **_kwargs: None)
 
     rows = list(src)
@@ -137,9 +137,9 @@ def test_binance_rest_source_skips_open_bar(
     monkeypatch.setattr(stop_event, "wait", fake_wait)
     monkeypatch.setattr(ohlcv_source, "_now_ms", lambda: 4_000)
     monkeypatch.setattr(ohlcv_source, "DATA_ROOT", tmp_path)
-    monkeypatch.setattr(ohlcv_source, "_RAW_KLINES_ROOT", tmp_path / "raw" / "klines")
+    monkeypatch.setattr(ohlcv_source, "_RAW_OHLCV_ROOT", tmp_path / "raw" / "ohlcv")
 
-    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m", root=tmp_path / "raw" / "klines", stop_event=stop_event)
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m", root=tmp_path / "raw" / "ohlcv", stop_event=stop_event)
     monkeypatch.setattr(src, "_write_raw_snapshot", lambda *_args, **_kwargs: None)
 
     rows = list(src)
@@ -167,12 +167,12 @@ def test_binance_rest_source_now_1600_filters_open_bar(
     monkeypatch.setattr(stop_event, "wait", lambda _seconds: True)
     monkeypatch.setattr(requests, "get", fake_get)
     monkeypatch.setattr(ohlcv_source, "DATA_ROOT", tmp_path)
-    monkeypatch.setattr(ohlcv_source, "_RAW_KLINES_ROOT", tmp_path / "raw" / "klines")
+    monkeypatch.setattr(ohlcv_source, "_RAW_OHLCV_ROOT", tmp_path / "raw" / "ohlcv")
 
     src = BinanceKlinesRESTSource(
         symbol="BTCUSDT",
         interval="1m",
-        root=tmp_path / "raw" / "klines",  # avoid resolve_under_root failure
+        root=tmp_path / "raw" / "ohlcv",  # avoid resolve_under_root failure
         stop_event=stop_event,
     )
     monkeypatch.setattr(src, "_write_raw_snapshot", lambda *_args, **_kwargs: None)

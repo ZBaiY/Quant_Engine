@@ -17,7 +17,7 @@ from ingestion.contracts.tick import _guard_interval_ms
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
-_RAW_KLINES_ROOT = DATA_ROOT / "raw" / "klines"
+_RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
 
 
 class OHLCVWriteError(RuntimeError):
@@ -159,7 +159,7 @@ class BinanceKlinesRESTSource(Source):
         poll_interval_ms: int | None = None,
         base_url: str = "https://api.binance.com",
         timeout: float = 10.0,
-        root: str | Path = _RAW_KLINES_ROOT,
+        root: str | Path = _RAW_OHLCV_ROOT,
         stop_event: threading.Event | None = None,
     ):
         self._symbol = symbol

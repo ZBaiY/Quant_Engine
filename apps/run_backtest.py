@@ -139,7 +139,7 @@ async def main() -> None:
     # -------------------------
     for symbol, handler in engine.ohlcv_handlers.items():
         has_local_data = _has_ohlcv_data(
-            DATA_ROOT / "raw" / "klines",
+            DATA_ROOT / "raw" / "ohlcv",
             symbol=symbol,
             interval=handler.interval,
         )
@@ -149,11 +149,11 @@ async def main() -> None:
                 "ingestion.worker.skipped_no_data",
                 domain="ohlcv",
                 symbol=symbol,
-                root=str(DATA_ROOT / "raw" / "klines"),
+                root=str(DATA_ROOT / "raw" / "ohlcv"),
             )
             continue
         source = OHLCVFileSource(
-            root=DATA_ROOT / "raw" / "klines",
+            root=DATA_ROOT / "raw" / "ohlcv",
             symbol=symbol,
             interval=handler.interval,
             start_ts=START_TS,
