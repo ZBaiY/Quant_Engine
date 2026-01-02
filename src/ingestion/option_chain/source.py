@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping
 import pandas as pd
 
-import logging
 import os
 import threading
 import requests
@@ -16,9 +15,10 @@ from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _coerce_epoch_ms, _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+from quant_engine.utils.logger import get_logger, log_warn
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
-_LOG = logging.getLogger(__name__)
+_LOG = get_logger(__name__)
 
 records: list[Mapping[str, Any]] = []
 
@@ -210,9 +210,11 @@ class DeribitOptionChainRESTSource(Source):
                         yield {"data_ts": int(data_ts), "records": records}
                         break
                     except Exception as exc:
-                        _LOG.warning(
+                        log_warn(
+                            _LOG,
                             "option_chain.fetch_or_write_error",
-                            extra={"context": {"err_type": type(exc).__name__, "err": str(exc)}},
+                            err_type=type(exc).__name__,
+                            err=str(exc),
                         )
                         if isinstance(exc, OptionChainWriteError):
                             raise

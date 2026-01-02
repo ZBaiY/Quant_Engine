@@ -631,7 +631,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
-    for symbol in ["ETHUSDT","DOGEUSDT","ADAUSDT","SOLUSDT","XTZUSDT"]:
+    for symbol in ["BTCUSDT", "ETHUSDT","DOGEUSDT","ADAUSDT","SOLUSDT","XTZUSDT"]:
     # for symbol in ["BTCUSDT"]:
         for interval in ["1d", "4h", "1h", "15m"]:
             if stop_event.is_set():
@@ -642,7 +642,7 @@ def main() -> None:
             parser.add_argument("--root", default=str(DATA_ROOT), help="data root")
             parser.add_argument("--symbol", default=symbol)
             parser.add_argument("--interval", default=interval)
-            parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
+            parser.add_argument("--start", default="2025-01-01 00:00:00+00:00")
             parser.add_argument("--end", default=None, help="default: now (UTC)")
             args = parser.parse_args()
 

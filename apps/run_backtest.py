@@ -90,6 +90,8 @@ async def main() -> None:
             root=DATA_ROOT / "raw" / "klines",
             symbol=symbol,
             interval=handler.interval,
+            start_ts=START_TS,
+            end_ts=END_TS,
         )
         normalizer = BinanceOHLCVNormalizer(symbol=symbol)
         worker = OHLCVWorker(
@@ -107,6 +109,8 @@ async def main() -> None:
         source = OrderbookFileSource(
             root=DATA_ROOT / "raw" / "orderbook",
             symbol=symbol,
+            start_ts=START_TS,
+            end_ts=END_TS,
         )
         normalizer = BinanceOrderbookNormalizer(symbol=symbol)
         worker = OrderbookWorker(
@@ -125,6 +129,8 @@ async def main() -> None:
             root=DATA_ROOT / "raw" / "option_chain",
             asset=asset,
             interval="1m",
+            start_ts=START_TS,
+            end_ts=END_TS,
         )
         normalizer = DeribitOptionChainNormalizer(symbol=asset)
         worker = OptionChainWorker(
@@ -142,6 +148,8 @@ async def main() -> None:
         source = SentimentFileSource(
             root=DATA_ROOT / "raw" / "sentiment",
             provider=src,
+            start_ts=START_TS,
+            end_ts=END_TS,
         )
         normalizer = SentimentNormalizer(symbol=src, provider=src)
         worker = SentimentWorker(

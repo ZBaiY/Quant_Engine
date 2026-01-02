@@ -27,11 +27,13 @@ class _StopReplay(Exception):
 def _to_ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
-START_MS_OH = _to_ms(datetime(2023, 12, 1, 22, 0, 0, tzinfo=timezone.utc))
-END_MS_OH = _to_ms(datetime(2024, 2, 28, 3, 0, 0, tzinfo=timezone.utc))
+# START_MS_OH = _to_ms(datetime(2023, 12, 1, 22, 0, 0, tzinfo=timezone.utc))
+# END_MS_OH = _to_ms(datetime(2024, 2, 28, 3, 0, 0, tzinfo=timezone.utc))
 
 START_MS = _to_ms(datetime(2025, 12, 29, 22, 0, 0, tzinfo=timezone.utc))
 END_MS = _to_ms(datetime(2025, 12, 30, 3, 0, 0, tzinfo=timezone.utc))
+START_MS_OH = _to_ms(datetime(2025, 12, 29, 22, 0, 0, tzinfo=timezone.utc))
+END_MS_OH = _to_ms(datetime(2025, 12, 30, 3, 0, 0, tzinfo=timezone.utc))
 
 
 @pytest.mark.local
