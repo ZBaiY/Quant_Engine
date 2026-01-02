@@ -24,7 +24,7 @@ from quant_engine.data.trades.realtime import TradesDataHandler
 from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.contracts.portfolio import PortfolioBase
-from quant_engine.utils.logger import get_logger, log_debug, log_warn
+from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.guards import (
     assert_monotonic,
@@ -87,10 +87,30 @@ class StrategyEngine:
                   mode=self.spec.mode.value,
                   model_count=len(models))
         self._warn_schema_mismatches()
+        counts = {
+            "ohlcv": len(self.ohlcv_handlers),
+            "orderbook": len(self.orderbook_handlers),
+            "option_chain": len(self.option_chain_handlers),
+            "iv_surface": len(self.iv_surface_handlers),
+            "sentiment": len(self.sentiment_handlers),
+            "trades": len(self.trades_handlers),
+            "option_trades": len(self.option_trades_handlers),
+        }
+        domains_present = [k for k, v in counts.items() if v]
+        log_debug(
+            self._logger,
+            "engine.handlers.bound",
+            mode=self.spec.mode.value,
+            symbol=self.symbol,
+            domains_present=domains_present,
+            counts_per_domain=counts,
+        )
         self._guardrails_enabled = bool(guardrails)
         self._last_step_ts: int | None = None
         self._last_tick_ts_by_key: dict[str, int] = {}
         self._snapshot_schema_keys: dict[str, set[str]] = {}
+        self._unhandled_domains_logged: set[str] = set()
+        self._empty_snapshot_logged: set[str] = set()
 
     def _warn_schema_mismatches(self) -> None:
         if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
@@ -176,6 +196,8 @@ class StrategyEngine:
         Relay ingestion of a single Tick from the Driver.
         StrategyEngine does not interpret time or ordering.
         """
+        domain = getattr(tick, "domain", None)
+        symbol = getattr(tick, "symbol", None)
         if self._guardrails_enabled:
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
@@ -184,6 +206,15 @@ class StrategyEngine:
                 assert_monotonic(ts, last, label=f"ingest:{key}")
                 self._last_tick_ts_by_key[key] = int(ts)
             except Exception as exc:
+                log_error(
+                    self._logger,
+                    "ingest.guard.failed",
+                    domain=domain,
+                    symbol=symbol,
+                    tick_data_ts=getattr(tick, "data_ts", None),
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
                 raise FatalError(f"ingest_tick guard failed: {exc}") from exc
         domain = tick.domain
         payload = tick.payload
@@ -202,6 +233,15 @@ class StrategyEngine:
 
         handlers = domain_handlers.get(domain)
         if not handlers:
+            key = f"{domain}:{symbol}"
+            if key not in self._unhandled_domains_logged:
+                self._unhandled_domains_logged.add(key)
+                log_debug(
+                    self._logger,
+                    "ingest.domain.unhandled",
+                    domain=domain,
+                    symbol=symbol,
+                )
             return
 
         for h in handlers.values():
@@ -258,6 +298,8 @@ class StrategyEngine:
             return
         if not isinstance(snap, Mapping):
             return
+        if not snap:
+            return
         cols = {str(k) for k in snap.keys()}
         expected = self._snapshot_schema_keys.get(label)
         if expected is None:
@@ -280,9 +322,19 @@ class StrategyEngine:
                     domain_map[str(sym)] = h.get_snapshot(ts)
                 except TypeError:
                     domain_map[str(sym)] = h.get_snapshot()
+                snap = domain_map[str(sym)]
                 label = f"{domain}:{sym}"
-                self._check_snapshot_schema(label, domain_map[str(sym)])
-                snap_ts = self._extract_snapshot_ts(domain_map[str(sym)])
+                if snap is None or (isinstance(snap, Mapping) and not snap):
+                    if label not in self._empty_snapshot_logged:
+                        self._empty_snapshot_logged.add(label)
+                        log_debug(
+                            self._logger,
+                            "market.snapshot.empty",
+                            label=label,
+                            ts=ts,
+                        )
+                self._check_snapshot_schema(label, snap)
+                snap_ts = self._extract_snapshot_ts(snap)
                 if snap_ts is not None:
                     assert_no_lookahead(ts, snap_ts, label=label)
             if domain_map:
@@ -309,10 +361,13 @@ class StrategyEngine:
                 "(per-domain window dict)"
             )
 
-        log_debug(
+        engine_interval_ms = getattr(self.spec, "interval_ms", None)
+        log_info(
             self._logger,
-            "StrategyEngine preload_data started",
+            "engine.preload.start",
+            anchor_ts=anchor_ts,
             required_windows=required_windows,
+            engine_interval_ms=engine_interval_ms,
         )
 
         domain_handlers = {
@@ -334,13 +389,16 @@ class StrategyEngine:
                 )
             handlers = domain_handlers.get(domain)
             if not handlers:
+                log_warn(
+                    self._logger,
+                    "engine.preload.domain.missing_handlers",
+                    domain=domain,
+                )
                 continue
 
             # Expand preload window to cover FeatureExtractor warmup steps.
             # If engine interval is coarser than a handler's interval, each warmup step
             # may advance multiple handler bars/snapshots.
-            engine_interval_ms = getattr(self.spec, "interval_ms", None)
-
             domain_interval_ms: int | None = None
             for hh in handlers.values():
                 v = getattr(hh, "interval_ms", None)
@@ -358,14 +416,23 @@ class StrategyEngine:
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
                     assert isinstance(h, RealTimeDataHandler)
+                    log_debug(
+                        self._logger,
+                        "engine.preload.bootstrap",
+                        domain=domain,
+                        symbol=getattr(h, "symbol", None),
+                        lookback=int(window),
+                        expanded_window=int(expanded_window),
+                        handler_interval_ms=domain_interval_ms,
+                    )
                     h.bootstrap(anchor_ts=anchor_ts, lookback=expanded_window)
 
         self._preload_done = True
         self._anchor_ts = anchor_ts
-        log_debug(
+        log_info(
             self._logger,
-            "StrategyEngine preload_data completed",
-            required_windows=required_windows,
+            "engine.preload.done",
+            anchor_ts=anchor_ts,
         )
 
     # -------------------------------------------------
@@ -401,15 +468,25 @@ class StrategyEngine:
                             candidates.append(int(ts))
 
             if not candidates:
+                log_error(
+                    self._logger,
+                    "engine.warmup.no_anchor",
+                )
                 raise RuntimeError("Cannot infer anchor_ts for warmup")
 
             anchor_ts = min(candidates)
+            log_debug(
+                self._logger,
+                "engine.warmup.infer_anchor",
+                candidates_count=len(candidates),
+                chosen_anchor_ts=anchor_ts,
+            )
 
         self._anchor_ts = anchor_ts
 
-        log_debug(
+        log_info(
             self._logger,
-            "StrategyEngine warmup_features started",
+            "engine.warmup.start",
             anchor_ts=anchor_ts,
         )
 
@@ -424,9 +501,9 @@ class StrategyEngine:
 
         self._warmup_done = True
 
-        log_debug(
+        log_info(
             self._logger,
-            "StrategyEngine warmup_features completed",
+            "engine.warmup.done",
             anchor_ts=anchor_ts,
         )
 

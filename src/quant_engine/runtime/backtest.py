@@ -9,8 +9,11 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.utils.guards import ensure_epoch_ms
+from quant_engine.utils.logger import log_debug, log_info
 
 DRAIN_YIELD_EVERY = 2048
+STEP_LOG_EVERY = 100
 
 class BacktestDriver(BaseDriver):
     """Deterministic backtest driver with optional driver-gated ingestion ("口径2")."""
@@ -24,6 +27,7 @@ class BacktestDriver(BaseDriver):
         end_ts: int,
         tick_queue: asyncio.PriorityQueue[Any] | None = None,
         drain_yield_every: int = DRAIN_YIELD_EVERY,
+        step_log_every: int = STEP_LOG_EVERY,
         stop_event: threading.Event | None = None,
     ):
         super().__init__(engine=engine, spec=spec, stop_event=stop_event)
@@ -33,6 +37,7 @@ class BacktestDriver(BaseDriver):
         self._next_tick: Any | None = None
         self._snapshots: list[EngineSnapshot] = []
         self._drain_yield_every = int(drain_yield_every)
+        self._step_log_every = int(step_log_every)
 
     async def iter_timestamps(self) -> AsyncIterator[int]:
         current = self.start_ts
@@ -44,9 +49,9 @@ class BacktestDriver(BaseDriver):
 
     def _extract_tick_timestamp(self, item: Any) -> int:
         if hasattr(item, "timestamp"):
-            return int(getattr(item, "timestamp"))
+            return ensure_epoch_ms(getattr(item, "timestamp"))
         if isinstance(item, dict) and "timestamp" in item:
-            return int(item["timestamp"])
+            return ensure_epoch_ms(item["timestamp"])
         raise TypeError(f"Tick is missing 'timestamp': {type(item)!r}")
 
     async def drain_ticks(self, *, until_timestamp: int) -> AsyncIterator[Any]:
@@ -78,10 +83,10 @@ class BacktestDriver(BaseDriver):
             # normalize queue item shapes
             if isinstance(raw, tuple) and len(raw) == 2:
                 ts, item = raw
-                ts = int(ts)
+                ts = ensure_epoch_ms(ts)
             elif isinstance(raw, tuple) and len(raw) == 3:
                 ts, _seq, item = raw
-                ts = int(ts)
+                ts = ensure_epoch_ms(ts)
             else:
                 item = raw
                 ts = self._extract_tick_timestamp(item)
@@ -100,14 +105,17 @@ class BacktestDriver(BaseDriver):
             # -------- preload --------
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.PRELOAD)
+            log_info(self._logger, "driver.phase.preload", timestamp=self.start_ts)
             self.engine.preload_data(anchor_ts=self.start_ts)
 
             # -------- warmup --------
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.WARMUP)
+            log_info(self._logger, "driver.phase.warmup", timestamp=self.start_ts)
             self.engine.warmup_features(anchor_ts=self.start_ts)
 
             # -------- main loop --------
+            step_count = 0
             async for ts in self.iter_timestamps():
                 if self.stop_event.is_set():
                     break
@@ -117,14 +125,18 @@ class BacktestDriver(BaseDriver):
                 if getattr(self, "guard", None) is not None:
                     self.guard.enter(RuntimePhase.INGEST)
 
+                # Align handlers before ingest to satisfy handler contracts.
+                self.engine.align_to(timestamp)
+
+                drained_ticks = 0
                 async for tick in self.drain_ticks(until_timestamp=timestamp):
                     self.engine.ingest_tick(tick)
+                    drained_ticks += 1
 
                 # ---- step ----
                 if getattr(self, "guard", None) is not None:
                     self.guard.enter(RuntimePhase.STEP)
 
-                self.engine.align_to(timestamp)
                 result = self.engine.step(ts=timestamp)
 
                 await asyncio.sleep(0)  # let ingestion tasks run
@@ -133,10 +145,20 @@ class BacktestDriver(BaseDriver):
                     self._snapshots.append(result)
                 elif isinstance(result, dict):
                     self._snapshots.append(self.engine.engine_snapshot)
+                step_count += 1
+                if self._step_log_every > 0 and (step_count % self._step_log_every) == 0:
+                    log_debug(
+                        self._logger,
+                        "driver.step",
+                        timestamp=timestamp,
+                        drained_ticks_count=drained_ticks,
+                        snapshots_len=len(self._snapshots),
+                    )
 
             # -------- finish --------
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.FINISH)
+            log_info(self._logger, "driver.phase.finish", timestamp=self.end_ts)
         except asyncio.CancelledError:
             self._shutdown_components()
             raise
