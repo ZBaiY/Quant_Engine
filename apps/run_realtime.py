@@ -124,7 +124,7 @@ def _build_realtime_ingestion_plan(
     if engine.option_chain_handlers:
         try:
             from ingestion.option_chain.worker import OptionChainWorker
-                    from ingestion.option_chain.source import OptionChainStreamSource
+            from ingestion.option_chain.source import OptionChainStreamSource
             from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
         except Exception as e:
             if "option_chain" in required_domains:
@@ -168,7 +168,7 @@ def _build_realtime_ingestion_plan(
     if engine.sentiment_handlers:
         try:
             from ingestion.sentiment.worker import SentimentWorker
-                    from ingestion.sentiment.source import SentimentStreamSource
+            from ingestion.sentiment.source import SentimentStreamSource
             from ingestion.sentiment.normalize import SentimentNormalizer
         except Exception as e:
             if "sentiment" in required_domains:

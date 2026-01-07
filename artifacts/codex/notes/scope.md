@@ -1,9 +1,9 @@
 # Scope
 
-Goal: enforce worker-owned backfill persistence to `raw/`, and isolate runtime from direct Source calls. Keep runtime semantics unchanged and preserve determinism.
+Goal: enforce worker-owned backfill persistence to `raw/`, with FileSources remaining read-only, and isolate runtime from direct Source calls. Keep runtime semantics unchanged and preserve determinism.
 
 In-scope modules and functions (minimal touch):
-- Ingestion file sources (raw persistence):
+- Ingestion source modules (raw writer helpers):
   - `src/ingestion/ohlcv/source.py`, `src/ingestion/orderbook/source.py`, `src/ingestion/trades/source.py`
   - `src/ingestion/option_chain/source.py`, `src/ingestion/option_trades/source.py`, `src/ingestion/sentiment/source.py`
 - Ingestion workers (backfill path):

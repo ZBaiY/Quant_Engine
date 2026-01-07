@@ -46,8 +46,9 @@ Runtime bootstrap/backfill contracts:
   - REALTIME/MOCK: triggers external backfill and rechecks before proceeding.
 - Backfill (REALTIME/MOCK only): external-only fetch anchored to driver-provided `target_ts`.
   - Runtime wires backfill workers via `handler.set_external_source(worker, emit=...)`; handlers do not call source methods.
-  - Ingestion worker owns `fetch_source` (external) + `raw_sink` (FileSource) and performs fetch → persist(raw) → emit tick.
-  - Raw persistence must use FileSource writers; no direct filesystem writes in runtime/handlers.
+  - Ingestion worker owns `fetch_source` (external) and performs fetch → persist(raw) → emit tick.
+  - Raw persistence uses ingestion source module helpers (e.g., `_write_raw_snapshot`) under `data/raw/...`; FileSource is read-only.
+  - No direct filesystem writes in runtime/handlers.
   - Per-step gap check runs in `engine.align_to(ts)` before any step logic.
   - Gap detection uses `last_timestamp()` vs `target_ts - interval_ms`.
   - Cold-start backfill uses handler lookback to compute `[start_ts, target_ts]`.

@@ -85,7 +85,7 @@ async def main() -> None:
     _seq = 0
 
     ingestion_tasks: list[asyncio.Task[None]] = []
-
+    
     async def emit_to_queue(tick: object) -> None:
         # Expect tick to have `.timestamp` (engine-time) attribute.
         nonlocal _seq

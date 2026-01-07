@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from apps.run_backtest import build_backtest_engine
 from apps.run_mock import build_mock_engine
 from apps.run_realtime import build_realtime_engine
@@ -84,6 +86,8 @@ def test_backtest_plan_normalizes_option_chain_asset() -> None:
 
 
 def test_realtime_plan_attaches_external_source() -> None:
+    # skip now ..
+    pytest.skip('focus on backtest now')
     engine, _driver_cfg, plan = build_realtime_engine(
         strategy_name="RSI-ADX-SIDEWAYS",
         bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'},

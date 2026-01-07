@@ -478,12 +478,13 @@ class TradesParquetStore:
 
         written: list[Path] = []
         for ts, sub in x.groupby("data_ts", sort=True):
+            ts_int = _as_int(ts)
             out = write_raw_snapshot_append_only(
                 root=Path(self._cfg.root),
                 domain=self._cfg.domain,
                 asset=symbol,
                 interval="trades",
-                data_ts=int(ts),
+                data_ts=int(ts_int),
                 df=sub,
                 sort_cols=["data_ts", "agg_trade_id"] if "agg_trade_id" in sub.columns else ["data_ts"],
                 stage=stage,

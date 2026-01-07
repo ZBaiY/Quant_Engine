@@ -5,3 +5,4 @@
 3. Sentiment provider: should provider directories be keyed by data source (e.g., "news", "reddit") rather than symbol? If so, where should this be specified in strategy config?
 4. Trades / option_trades / iv_surface: should backtest ingestion plan include these domains? If yes, should we add cleaned fixtures and explicit FileSource wiring for option_trades/iv_surface?
 5. Raw schema ownership: do we need explicit schema versioning for raw orderbook/trades writes to prevent drift across backfill payloads?
+6. Raw root override: should worker backfill persistence allow a configurable data root override, or is DATA_ROOT-only acceptable?

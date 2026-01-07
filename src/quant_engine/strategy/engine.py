@@ -596,7 +596,7 @@ class StrategyEngine:
                 # ceil(engine / domain)
                 step_mul = (engine_interval_ms + domain_interval_ms - 1) // domain_interval_ms
 
-            expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul) + 1
+            expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul)
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
                     # Bootstrap is local-only. External backfill is handled separately.

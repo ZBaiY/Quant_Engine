@@ -19,7 +19,9 @@ Ingestion components:
   - `OHLCVWorker`, `OrderbookWorker`, `OptionChainWorker`, `SentimentWorker`.
   - Convert raw records to `IngestionTick` via normalizers and emit into runtime queue.
 - Backfill workers (realtime/mock):
-  - Worker owns `fetch_source` (external REST/WS) + `raw_sink` (FileSource) and performs fetch → persist(raw) → emit tick.
+  - Worker owns `fetch_source` (external REST/WS) and performs fetch → persist(raw) → emit tick.
+  - Raw persistence uses ingestion source module helpers (e.g., `_write_raw_snapshot`) under `data/raw/...`.
+  - FileSource remains read-only; no persistence in FileSource.
   - Handlers call `worker.backfill(..., emit=handler.on_new_tick)`; runtime never calls Source methods directly.
 
 Runtime boundary:

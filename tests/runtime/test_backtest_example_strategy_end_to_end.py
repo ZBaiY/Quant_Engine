@@ -66,6 +66,8 @@ def _has_sentiment_data(path: Path) -> bool:
         return False
     return any(path.glob("*.jsonl")) or any(path.rglob("*.jsonl"))
 
+START_TS = 1766966400000  # 2025-12-29 00:00:00 UTC (epoch ms)
+END_TS = 1767052800000    # 2025-12-30 00:00:00 UTC (epoch ms)
 
 @pytest.mark.integration
 @pytest.mark.local
@@ -89,16 +91,16 @@ async def test_backtest_example_strategy_end_to_end() -> None:
     ]
     if missing_ohlcv:
         pytest.skip(f"Missing local OHLCV data for symbols: {missing_ohlcv}")
+    # start_ts_candidates = [
+    #     _earliest_ohlcv_ts_ms(ohlcv_root / sym / str(ohlcv_intervals[sym]))
+    #     for sym in ohlcv_symbols
+    # ]
+    # start_ts_candidates = [ts for ts in start_ts_candidates if ts is not None]
+    
+    # if not start_ts_candidates:
+    #     pytest.skip("Unable to determine OHLCV start_ts from local data")
 
-    start_ts_candidates = [
-        _earliest_ohlcv_ts_ms(ohlcv_root / sym / str(ohlcv_intervals[sym]))
-        for sym in ohlcv_symbols
-    ]
-    start_ts_candidates = [ts for ts in start_ts_candidates if ts is not None]
-    if not start_ts_candidates:
-        pytest.skip("Unable to determine OHLCV start_ts from local data")
-
-    start_ts = min(start_ts_candidates)
+    start_ts = START_TS
     end_ts = start_ts + 2 * int(engine.spec.interval_ms)
 
     tick_queue: asyncio.PriorityQueue[tuple[int, int, object]] = asyncio.PriorityQueue(maxsize=1024)
@@ -274,7 +276,6 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         end_ts=end_ts,
         tick_queue=tick_queue,
     )
-
     try:
         await driver.run()
     finally:

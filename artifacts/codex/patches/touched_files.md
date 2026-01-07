@@ -3,29 +3,29 @@
 - src/quant_engine/utils/cleaned_path_resolver.py
   - Add `resolve_raw_paths()` and shared stage resolver so raw mirrors cleaned layout.
 - src/ingestion/ohlcv/source.py
-  - Raw write helper + yearly raw layout; `OHLCVFileSource.persist()`/`close()` for raw sink.
+  - Raw write helper + yearly raw layout; FileSource remains read-only.
 - src/ingestion/option_chain/source.py
-  - Raw writer helper + schema alignment; `OptionChainFileSource.persist()`/`close()` for raw sink.
+  - Raw writer helper + schema alignment; FileSource remains read-only.
 - src/ingestion/orderbook/source.py
-  - Parquet append writer with locks; `OrderbookFileSource.persist()`/`close()` for raw sink.
+  - Parquet append writer with locks; FileSource remains read-only.
 - src/ingestion/trades/source.py
-  - Parquet append writer; `TradesFileSource.persist()`/`close()` for raw sink.
+  - Parquet append writer; FileSource remains read-only.
 - src/ingestion/option_trades/source.py
-  - Parquet append writer; `DeribitOptionTradesParquetSource.persist()`/`close()` and date parsing for `YYYY_MM_DD`.
+  - Parquet append writer; date parsing for `YYYY_MM_DD`; FileSource remains read-only.
 - src/ingestion/sentiment/source.py
-  - JSONL append writer; `SentimentFileSource.persist()` for raw sink.
+  - JSONL append writer helper; FileSource remains read-only.
 - src/ingestion/ohlcv/worker.py
-  - Worker-owned backfill (fetch → persist raw → emit tick) with optional fetch_source/raw_sink.
+  - Worker-owned backfill (fetch → persist raw → emit tick) using source writer helpers.
 - src/ingestion/orderbook/worker.py
-  - Worker-owned backfill with raw persistence + emit.
+  - Worker-owned backfill with raw persistence + emit via source helpers.
 - src/ingestion/trades/worker.py
-  - Worker-owned backfill with raw persistence + emit.
+  - Worker-owned backfill with raw persistence + emit via source helpers.
 - src/ingestion/option_chain/worker.py
   - Worker-owned backfill with raw persistence + emit; ensures data_ts present.
 - src/ingestion/option_trades/worker.py
-  - Worker-owned backfill with raw persistence + emit.
+  - Worker-owned backfill with raw persistence + emit via source helpers.
 - src/ingestion/sentiment/worker.py
-  - Worker-owned backfill with raw persistence + emit.
+  - Worker-owned backfill with raw persistence + emit via source helpers.
 - src/quant_engine/data/ohlcv/realtime.py
   - Backfill delegates to worker (no Source calls).
 - src/quant_engine/data/orderbook/realtime.py
@@ -41,8 +41,8 @@
 - src/quant_engine/data/derivatives/iv/iv_handler.py
   - Accepts worker/emit wiring but skips external backfill.
 - apps/run_realtime.py
-  - Wire workers with fetch_source + raw_sink; attach worker backfill to handlers.
+  - Wire workers with fetch_source; attach worker backfill to handlers.
 - tests/runtime/test_backfill_gap_check.py
-  - Use worker backfill with raw sink; assert raw persistence.
+  - Use worker backfill (no raw sink); assert raw persistence.
 - tests/runtime/test_runtime_source_isolation.py
   - Grep runtime modules to ensure no ingestion.*.source usage.
