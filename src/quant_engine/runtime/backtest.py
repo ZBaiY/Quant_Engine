@@ -9,6 +9,7 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.contracts.engine import StrategyEngineProto
+from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.logger import log_debug, log_info
@@ -22,7 +23,7 @@ class BacktestDriver(BaseDriver):
     def __init__(
         self,
         *,
-        engine: StrategyEngineProto,
+        engine: StrategyEngine,
         spec: EngineSpec,
         start_ts: int,
         end_ts: int,
@@ -49,21 +50,20 @@ class BacktestDriver(BaseDriver):
             await asyncio.sleep(0)  # cooperative scheduling point
 
     def _extract_tick_timestamp(self, item: Any) -> int:
-        if hasattr(item, "timestamp"):
-            return ensure_epoch_ms(getattr(item, "timestamp"))
-        if isinstance(item, dict) and "timestamp" in item:
-            return ensure_epoch_ms(item["timestamp"])
-        raise TypeError(f"Tick is missing 'timestamp': {type(item)!r}")
-
+        if hasattr(item, "data_ts"):
+            return ensure_epoch_ms(getattr(item, "data_ts"))
+        if isinstance(item, dict) and "data_ts" in item:
+            return ensure_epoch_ms(item["data_ts"])
+        raise TypeError(f"Tick is missing 'data_ts': {type(item)!r}")
+    
     async def drain_ticks(self, *, until_timestamp: int) -> AsyncIterator[Any]:
         """Yield ticks with tick.timestamp <= until_timestamp (cooperatively)."""
         if self.tick_queue is None:
             return
-
         until = int(until_timestamp)
         n = 0
-
         # flush buffered tick first
+        
         if self._next_tick is not None:
             item = self._next_tick
             self._next_tick = None
@@ -135,7 +135,7 @@ class BacktestDriver(BaseDriver):
                 if self.stop_event.is_set():
                     break
                 timestamp = int(ts)
-
+                log_info(self._logger, "driver.phase.step", timestamp=timestamp)
                 # ---- ingest (optional gating) ----
                 if getattr(self, "guard", None) is not None:
                     self.guard.enter(RuntimePhase.INGEST)
@@ -147,6 +147,12 @@ class BacktestDriver(BaseDriver):
                 async for tick in self.drain_ticks(until_timestamp=timestamp):
                     self.engine.ingest_tick(tick)
                     drained_ticks += 1
+                log_info(
+                    self._logger,
+                    "driver.ingest",
+                    timestamp=timestamp,
+                    drained_ticks_count=drained_ticks,
+                )
 
                 # ---- step ----
                 if getattr(self, "guard", None) is not None:

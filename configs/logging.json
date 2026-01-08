@@ -2,7 +2,7 @@
   "active_profile": "default",
   "profiles": {
     "default": {
-      "level": "INFO",
+      "level": "DEBUG",
       "format": { "json": true },
       "handlers": {
         "console": { "enabled": true, "level": "WARNING" },

@@ -56,7 +56,6 @@ def test_option_chain_rest_source_monotonic_and_poll_interval(
     src = DeribitOptionChainRESTSource(
         currency="BTC",
         interval="1m",
-        poll_interval_ms=500,
         stop_event=stop_event,
         root=tmp_path / "raw" / "option_chain",
     )
@@ -66,6 +65,40 @@ def test_option_chain_rest_source_monotonic_and_poll_interval(
 
     assert [r["data_ts"] for r in rows] == [1_000, 2_000]
     assert [r["data_ts"] for r in rows] == sorted(r["data_ts"] for r in rows)
-    assert waits == [0.5, 0.5]
+    assert waits == [60.0, 60.0]
     assert isinstance(rows[0]["records"], list)
     assert all(not isinstance(r, IngestionTick) for r in rows)
+
+
+def test_option_chain_rest_source_fetch(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    def fake_now_ms() -> int:
+        return 1_234
+
+    def fake_get(url: str, params: dict[str, Any], timeout: float) -> Any:
+        payload = {
+            "result": [
+                {
+                    "instrument_name": "BTC-1JAN24-10000-C",
+                    "expiration_timestamp": 1_700_100_000_000,
+                    "strike": 10_000,
+                    "option_type": "call",
+                }
+            ]
+        }
+        return _response(payload)
+
+    monkeypatch.setattr(option_chain_source, "_now_ms", fake_now_ms)
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+
+    src = DeribitOptionChainRESTSource(
+        currency="BTC",
+        interval="1m",
+        poll_interval_ms=60_000,
+        root=tmp_path / "raw" / "option_chain",
+    )
+    monkeypatch.setattr(src, "_write_raw_snapshot", lambda *_args, **_kwargs: None)
+
+    rows = src.fetch()
+    assert [r["data_ts"] for r in rows] == [1_234]
+    assert isinstance(rows[0]["records"], list)

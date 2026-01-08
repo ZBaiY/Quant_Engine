@@ -17,6 +17,7 @@ from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.sentiment.worker import SentimentWorker
 from ingestion.sentiment.source import SentimentFileSource
 from ingestion.sentiment.normalize import SentimentNormalizer
+from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.utils.cleaned_path_resolver import (
     base_asset_from_symbol,
     resolve_cleaned_paths,
@@ -124,6 +125,9 @@ def _build_backtest_ingestion_plan(
         interval = _interval_for("ohlcv", symbol, handler)
         if not interval:
             raise ValueError(f"Missing OHLCV interval for symbol {symbol!r}")
+        interval_ms = _to_interval_ms(interval)
+        if interval_ms is None:
+            raise ValueError(f"Invalid OHLCV interval {interval!r} for symbol {symbol!r}")
         root = data_root / "cleaned" / "ohlcv"
         symbol_for_paths = _symbol_for_paths(symbol)
         paths = resolve_cleaned_paths(
@@ -141,6 +145,7 @@ def _build_backtest_ingestion_plan(
             *,
             symbol: str = symbol,
             interval: str = interval,
+            interval_ms: int = int(interval_ms),
             root: Path = root,
             paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
@@ -159,6 +164,8 @@ def _build_backtest_ingestion_plan(
                 source=source,
                 normalizer=normalizer,
                 symbol=symbol,
+                interval=interval,
+                interval_ms=interval_ms,
                 poll_interval=None,  # backtest: do not throttle
             )
 
@@ -169,6 +176,7 @@ def _build_backtest_ingestion_plan(
                 "source_type": "OHLCVFileSource",
                 "root": str(root),
                 "interval": interval,
+                "interval_ms": int(interval_ms),
                 "has_local_data": has_local_data,
                 "paths": existing_paths,
                 "build_worker": _build_worker_ohlcv,
@@ -182,6 +190,9 @@ def _build_backtest_ingestion_plan(
     for symbol, handler in engine.orderbook_handlers.items():
         root = data_root / "cleaned" / "orderbook"
         interval = _interval_for("orderbook", symbol, handler)
+        interval_ms = _to_interval_ms(interval) if interval else None
+        if interval and interval_ms is None:
+            raise ValueError(f"Invalid orderbook interval {interval!r} for symbol {symbol!r}")
         symbol_for_paths = _symbol_for_paths(symbol)
         paths = resolve_cleaned_paths(
             data_root=data_root,
@@ -196,6 +207,8 @@ def _build_backtest_ingestion_plan(
         def _build_worker_orderbook(
             *,
             symbol: str = symbol,
+            interval: str | None = interval,
+            interval_ms: int | None = int(interval_ms) if interval_ms is not None else None,
             root: Path = root,
             paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
@@ -213,6 +226,8 @@ def _build_backtest_ingestion_plan(
                 source=source,
                 normalizer=normalizer,
                 symbol=symbol,
+                interval=interval,
+                interval_ms=interval_ms,
                 poll_interval=None,  # backtest: do not throttle
             )
 
@@ -223,6 +238,7 @@ def _build_backtest_ingestion_plan(
                 "source_type": "OrderbookFileSource",
                 "root": str(root),
                 "interval": interval,
+                "interval_ms": int(interval_ms) if interval_ms is not None else None,
                 "has_local_data": has_local_data,
                 "paths": existing_paths,
                 "build_worker": _build_worker_orderbook,
@@ -240,6 +256,9 @@ def _build_backtest_ingestion_plan(
         interval = _interval_for("option_chain", symbol, handler)
         if not interval:
             raise ValueError(f"Missing option_chain interval for symbol {symbol!r}")
+        interval_ms = _to_interval_ms(interval)
+        if interval_ms is None:
+            raise ValueError(f"Invalid option_chain interval {interval!r} for symbol {symbol!r}")
         asset = _asset_for("option_chain", symbol, handler)
         paths = resolve_cleaned_paths(
             data_root=data_root,
@@ -257,6 +276,7 @@ def _build_backtest_ingestion_plan(
             symbol: str = symbol,
             asset: str = asset,
             interval: str = interval,
+            interval_ms: int = int(interval_ms),
             root: Path = root,
             paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
@@ -276,6 +296,7 @@ def _build_backtest_ingestion_plan(
                 normalizer=normalizer,
                 symbol=symbol,
                 interval=interval,
+                interval_ms=interval_ms,
                 poll_interval=None,  # backtest: do not throttle
             )
 
@@ -287,6 +308,7 @@ def _build_backtest_ingestion_plan(
                 "source_type": "OptionChainFileSource",
                 "root": str(root),
                 "interval": interval,
+                "interval_ms": int(interval_ms),
                 "has_local_data": has_local_data,
                 "paths": existing_paths,
                 "build_worker": _build_worker_option_chain,
@@ -301,6 +323,9 @@ def _build_backtest_ingestion_plan(
     for symbol, handler in engine.sentiment_handlers.items():
         root = data_root / "cleaned" / "sentiment"
         interval = _interval_for("sentiment", symbol, handler)
+        interval_ms = _to_interval_ms(interval) if interval else None
+        if interval and interval_ms is None:
+            raise ValueError(f"Invalid sentiment interval {interval!r} for symbol {symbol!r}")
         provider = _provider_for(symbol, handler)
         paths = resolve_cleaned_paths(
             data_root=data_root,
@@ -316,6 +341,8 @@ def _build_backtest_ingestion_plan(
             *,
             symbol: str = symbol,
             provider: str = provider,
+            interval: str | None = interval,
+            interval_ms: int | None = int(interval_ms) if interval_ms is not None else None,
             root: Path = root,
             paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
@@ -332,6 +359,8 @@ def _build_backtest_ingestion_plan(
             return SentimentWorker(
                 source=source,
                 normalizer=normalizer,
+                interval=interval,
+                interval_ms=interval_ms,
                 poll_interval=None,  # backtest: do not throttle
             )
 
@@ -342,6 +371,7 @@ def _build_backtest_ingestion_plan(
                 "source_type": "SentimentFileSource",
                 "root": str(root),
                 "interval": interval,
+                "interval_ms": int(interval_ms) if interval_ms is not None else None,
                 "has_local_data": has_local_data,
                 "paths": existing_paths,
                 "build_worker": _build_worker_sentiment,

@@ -308,7 +308,7 @@ class StrategyLoader:
             interval_ms=int(interval_ms),
             universe=universe,
         )
-
+        
         return StrategyEngine(
             spec=spec,
             ohlcv_handlers=ohlcv_handlers,

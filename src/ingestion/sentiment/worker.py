@@ -17,7 +17,7 @@ from ingestion.sentiment.source import (
 )
 import ingestion.sentiment.source as sentiment_source
 from quant_engine.utils.asyncio import iter_source, source_kind
-from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "sentiment"
@@ -51,6 +51,7 @@ class SentimentWorker(IngestWorker):
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,
+        poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._normalizer = normalizer
@@ -63,7 +64,7 @@ class SentimentWorker(IngestWorker):
         self._raw_root: Path = sentiment_source.DATA_ROOT / "raw" / "sentiment"
         self._provider = str(normalizer.provider or normalizer.symbol)
 
-        # Sleep pacing is only relevant for sync sources.
+        # Canonical interval (ms) for alignment/semantics.
         if interval_ms is not None:
             self._interval_ms: int | None = int(interval_ms)
         elif interval is not None:
@@ -72,14 +73,20 @@ class SentimentWorker(IngestWorker):
                 raise ValueError(f"Invalid interval format: {interval!r}")
             self._interval_ms = int(ms)
             _guard_interval_ms(interval, self._interval_ms)
-        elif poll_interval is not None:
-            # legacy compatibility
-            self._interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
             self._interval_ms = None
 
         if self._interval_ms is not None and self._interval_ms <= 0:
             raise ValueError("interval_ms must be > 0")
+
+        if poll_interval_ms is not None:
+            self._poll_interval_ms = int(poll_interval_ms)
+        elif poll_interval is not None:
+            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+        else:
+            self._poll_interval_ms = None
+        if self._poll_interval_ms is not None and self._poll_interval_ms <= 0:
+            raise ValueError("poll_interval_ms must be > 0")
 
     def backfill(
         self,
@@ -148,15 +155,6 @@ class SentimentWorker(IngestWorker):
         self,
         emit: Callable[[IngestionTick], Awaitable[None] | None],
     ) -> None:
-        log_info(
-            self._logger,
-            "ingestion.worker_start",
-            worker=self.__class__.__name__,
-            source_type=type(self._source).__name__,
-            interval=self._interval,
-            poll_interval_ms=self._interval_ms,
-            domain=_DOMAIN,
-        )
         self._error_logged = False
         stop_reason = "exit"
 
@@ -188,14 +186,45 @@ class SentimentWorker(IngestWorker):
 
         try:
             kind = source_kind(self._source)
+            poll_interval_ms = self._poll_interval_ms
+            if kind == "fetch":
+                if poll_interval_ms is None:
+                    if self._interval_ms is None:
+                        raise ValueError("Sentiment fetch source requires poll_interval_ms or interval")
+                    poll_interval_ms = int(self._interval_ms)
+                elif self._interval_ms is not None and poll_interval_ms != self._interval_ms:
+                    log_warn(
+                        self._logger,
+                        "ingestion.poll_interval_override",
+                        worker=self.__class__.__name__,
+                        domain=_DOMAIN,
+                        interval=self._interval,
+                        interval_ms=int(self._interval_ms),
+                        poll_interval_ms=int(poll_interval_ms),
+                    )
+                    poll_interval_ms = int(self._interval_ms)
+                self._poll_interval_ms = poll_interval_ms
+            else:
+                poll_interval_ms = None
+
+            log_info(
+                self._logger,
+                "ingestion.worker_start",
+                worker=self.__class__.__name__,
+                source_type=type(self._source).__name__,
+                interval=self._interval,
+                interval_ms=self._interval_ms,
+                poll_interval_ms=poll_interval_ms,
+                domain=_DOMAIN,
+            )
             sync_context = {
                 "worker": self.__class__.__name__,
                 "domain": _DOMAIN,
                 "interval": self._interval,
             }
             poll_interval_s = (
-                float(self._interval_ms) / 1000.0
-                if self._interval_ms is not None and self._interval_ms > 0
+                float(poll_interval_ms) / 1000.0
+                if poll_interval_ms is not None and poll_interval_ms > 0
                 else None
             )
             last_fetch = time.monotonic()
@@ -238,10 +267,7 @@ class SentimentWorker(IngestWorker):
                         poll_seq=self._poll_seq,
                     )
 
-                if kind == "iter" and self._interval_ms is not None:
-                    await asyncio.sleep(self._interval_ms / 1000.0)
-                else:
-                    await asyncio.sleep(0)
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"
             raise

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable, Awaitable, Any, Iterable, Mapping, cast
 
-from ingestion.contracts.tick import IngestionTick
+from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms
 from ingestion.contracts.worker import IngestWorker
 from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.option_chain.source import (
@@ -17,7 +17,7 @@ from ingestion.option_chain.source import (
 )
 import ingestion.option_chain.source as option_chain_source
 from quant_engine.utils.asyncio import iter_source, source_kind
-from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "option_chain"
@@ -45,6 +45,7 @@ class OptionChainWorker(IngestWorker):
         fetch_source: DeribitOptionChainRESTSource | None = None,
         symbol: str,
         interval: str | None = None,
+        interval_ms: int | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -60,6 +61,16 @@ class OptionChainWorker(IngestWorker):
         self._raw_root: Path = option_chain_source.DATA_ROOT / "raw" / "option_chain"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        if interval_ms is not None:
+            self._interval_ms = int(interval_ms)
+        elif interval is not None:
+            ms = _to_interval_ms(interval)
+            if ms is None:
+                raise ValueError(f"Invalid interval format: {interval!r}")
+            self._interval_ms = int(ms)
+            _guard_interval_ms(interval, self._interval_ms)
+        else:
+            self._interval_ms = None
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
         elif poll_interval is not None:
@@ -179,15 +190,6 @@ class OptionChainWorker(IngestWorker):
         return count
 
     async def run(self, emit: Callable[[IngestionTick], Awaitable[None] | None]) -> None:
-        log_info(
-            self._logger,
-            "ingestion.worker_start",
-            worker=self.__class__.__name__,
-            source_type=type(self._source).__name__,
-            symbol=self._symbol,
-            poll_interval_ms=self._poll_interval_ms,
-            domain=_DOMAIN,
-        )
         self._error_logged = False
         stop_reason = "exit"
 
@@ -216,14 +218,49 @@ class OptionChainWorker(IngestWorker):
 
         try:
             kind = source_kind(self._source)
+            poll_interval_ms = self._poll_interval_ms
+            if kind == "fetch":
+                if poll_interval_ms is None:
+                    if self._interval_ms is None:
+                        raise ValueError(
+                            f"Option chain fetch source requires poll_interval_ms or interval; symbol={self._symbol}"
+                        )
+                    poll_interval_ms = int(self._interval_ms)
+                elif self._interval_ms is not None and poll_interval_ms != self._interval_ms:
+                    log_warn(
+                        self._logger,
+                        "ingestion.poll_interval_override",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        interval=self._interval,
+                        interval_ms=int(self._interval_ms),
+                        poll_interval_ms=int(poll_interval_ms),
+                    )
+                    poll_interval_ms = int(self._interval_ms)
+                self._poll_interval_ms = poll_interval_ms
+            else:
+                poll_interval_ms = None
+
+            log_info(
+                self._logger,
+                "ingestion.worker_start",
+                worker=self.__class__.__name__,
+                source_type=type(self._source).__name__,
+                symbol=self._symbol,
+                interval=self._interval,
+                interval_ms=self._interval_ms,
+                poll_interval_ms=poll_interval_ms,
+                domain=_DOMAIN,
+            )
             sync_context = {
                 "worker": self.__class__.__name__,
                 "symbol": self._symbol,
                 "domain": _DOMAIN,
             }
             poll_interval_s = (
-                float(self._poll_interval_ms) / 1000.0
-                if self._poll_interval_ms is not None and self._poll_interval_ms > 0
+                float(poll_interval_ms) / 1000.0
+                if poll_interval_ms is not None and poll_interval_ms > 0
                 else None
             )
             last_fetch = time.monotonic()
@@ -267,11 +304,8 @@ class OptionChainWorker(IngestWorker):
                         emit_ms=emit_ms,
                         poll_seq=self._poll_seq,
                     )
-                if kind == "iter" and self._poll_interval_ms is not None:
-                    await asyncio.sleep(self._poll_interval_ms / 1000.0)
-                else:
-                    # Cooperative yield: prevent starvation when the stream is bursty
-                    await asyncio.sleep(0)
+                # Cooperative yield: prevent starvation when the stream is bursty
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"
             raise

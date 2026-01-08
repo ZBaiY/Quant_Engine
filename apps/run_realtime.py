@@ -11,6 +11,7 @@ from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.orderbook.worker import OrderbookWorker
 from ingestion.orderbook.source import OrderbookWebSocketSource
 from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
+from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.runtime.realtime import RealtimeDriver
 from quant_engine.strategy.engine import StrategyEngine
@@ -77,11 +78,13 @@ def _build_realtime_ingestion_plan(
             source = OHLCVWebSocketSource()
             normalizer = BinanceOHLCVNormalizer(symbol=symbol)
             interval = getattr(handler, "interval", None)
+            interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
             worker = OHLCVWorker(
                 source=source,
                 normalizer=normalizer,
                 symbol=symbol,
                 interval=str(interval) if interval else None,
+                interval_ms=int(interval_ms) if interval_ms is not None else None,
             )
             attach_backfill_worker(handler, worker, emit)
             return worker
@@ -103,10 +106,14 @@ def _build_realtime_ingestion_plan(
             # source = OrderbookWebSocketSource(symbol=symbol, depth=handler.depth)
             source = OrderbookWebSocketSource()
             normalizer = BinanceOrderbookNormalizer(symbol=symbol)
+            interval = getattr(handler, "interval", None)
+            interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
             worker = OrderbookWorker(
                 source=source,
                 normalizer=normalizer,
                 symbol=symbol,
+                interval=str(interval) if interval else None,
+                interval_ms=int(interval_ms) if interval_ms is not None else None,
             )
             attach_backfill_worker(handler, worker, emit)
             return worker
@@ -144,11 +151,13 @@ def _build_realtime_ingestion_plan(
                     source = OptionChainStreamSource()
                     normalizer = DeribitOptionChainNormalizer(symbol=asset)
                     interval = getattr(handler, "interval", None)
+                    interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
                     worker = OptionChainWorker(
                         source=source,
                         normalizer=normalizer,
                         symbol=asset,
                         interval=str(interval) if interval else None,
+                        interval_ms=int(interval_ms) if interval_ms is not None else None,
                     )
                     attach_backfill_worker(handler, worker, emit)
                     return worker
@@ -185,9 +194,13 @@ def _build_realtime_ingestion_plan(
                 def _build_worker_sentiment(src: str = src, handler: Any = sh, emit=emit):
                     source = SentimentStreamSource()
                     normalizer = SentimentNormalizer(symbol=src, provider=src)
+                    interval = getattr(handler, "interval", None)
+                    interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
                     worker = SentimentWorker(
                         source=source,
                         normalizer=normalizer,
+                        interval=str(interval) if interval else None,
+                        interval_ms=int(interval_ms) if interval_ms is not None else None,
                     )
                     attach_backfill_worker(handler, worker, emit)
                     return worker

@@ -13,7 +13,7 @@ from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource, OHLCVRESTSource, OHLCVWebSocketSource
 import ingestion.ohlcv.source as ohlcv_source
 from quant_engine.utils.asyncio import iter_source, source_kind
-from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "ohlcv"
@@ -42,6 +42,7 @@ class OHLCVWorker(IngestWorker):
         fetch_source: OHLCVRESTSource | None = None,
         symbol: str,
         interval: str | None = None,
+        interval_ms: int | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -59,21 +60,19 @@ class OHLCVWorker(IngestWorker):
         self._raw_write_count = 0
         # Semantic bar interval length (ms-int). Used for metadata / validation.
         self.interval_ms: int | None = None
-        if self._interval is not None:
+        if interval_ms is not None:
+            self.interval_ms = int(interval_ms)
+        elif self._interval is not None:
             ms = _to_interval_ms(self._interval)
             if ms is None:
                 raise ValueError(f"Invalid interval format: {self._interval!r}")
             self.interval_ms = int(ms)
             _guard_interval_ms(self._interval, self.interval_ms)
-        # Worker-level pacing for *sync* sources (file replay / REST wrappers).
-        # Internal convention: ms-int.
+        # REST-only poll cadence (ms-int). Interval remains canonical.
         if poll_interval_ms is not None:
             self._poll_interval_ms: int | None = int(poll_interval_ms)
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
-        elif self.interval_ms is not None:
-            # Default pacing for sync sources: 1 bar per interval.
-            self._poll_interval_ms = int(self.interval_ms)
         else:
             self._poll_interval_ms = None
 
@@ -171,16 +170,6 @@ class OHLCVWorker(IngestWorker):
         return count
 
     async def run(self, emit: Callable[[IngestionTick], Awaitable[None] | None]) -> None:
-        log_info(
-            self._logger,
-            "ingestion.worker_start",
-            worker=self.__class__.__name__,
-            source_type=type(self._source).__name__,
-            symbol=self._symbol,
-            interval=self._interval,
-            poll_interval_ms=self._poll_interval_ms,
-            domain=_DOMAIN,
-        )
         self._error_logged = False
         stop_reason = "exit"
 
@@ -210,6 +199,41 @@ class OHLCVWorker(IngestWorker):
                 
         try:
             kind = source_kind(self._source)
+            poll_interval_ms = self._poll_interval_ms
+            if kind == "fetch":
+                if poll_interval_ms is None:
+                    if self.interval_ms is None:
+                        raise ValueError(
+                            f"OHLCV fetch source requires poll_interval_ms or interval; symbol={self._symbol}"
+                        )
+                    poll_interval_ms = int(self.interval_ms)
+                elif self.interval_ms is not None and poll_interval_ms != self.interval_ms:
+                    log_warn(
+                        self._logger,
+                        "ingestion.poll_interval_override",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        interval=self._interval,
+                        interval_ms=int(self.interval_ms),
+                        poll_interval_ms=int(poll_interval_ms),
+                    )
+                    poll_interval_ms = int(self.interval_ms)
+                self._poll_interval_ms = poll_interval_ms
+            else:
+                poll_interval_ms = None
+
+            log_info(
+                self._logger,
+                "ingestion.worker_start",
+                worker=self.__class__.__name__,
+                source_type=type(self._source).__name__,
+                symbol=self._symbol,
+                interval=self._interval,
+                interval_ms=self.interval_ms,
+                poll_interval_ms=poll_interval_ms,
+                domain=_DOMAIN,
+            )
             sync_context = {
                 "worker": self.__class__.__name__,
                 "symbol": self._symbol,
@@ -217,8 +241,8 @@ class OHLCVWorker(IngestWorker):
                 "interval": self._interval,
             }
             poll_interval_s = (
-                float(self._poll_interval_ms) / 1000.0
-                if self._poll_interval_ms is not None and self._poll_interval_ms > 0
+                float(poll_interval_ms) / 1000.0
+                if poll_interval_ms is not None and poll_interval_ms > 0
                 else None
             )
             last_fetch = time.monotonic()
@@ -265,11 +289,8 @@ class OHLCVWorker(IngestWorker):
                         emit_ms=emit_ms,
                         poll_seq=self._poll_seq,
                     )
-                if kind == "iter" and self._poll_interval_ms is not None:
-                    await asyncio.sleep(self._poll_interval_ms / 1000.0)
-                else:
-                    # cooperative yield for fast iterators / file replay
-                    await asyncio.sleep(0)
+                # cooperative yield for fast iterators / file replay
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"
             raise

@@ -334,57 +334,41 @@ class DeribitOptionChainRESTSource(Source):
         self._used_paths: set[Path] = set()
         self._write_count = 0
 
+        interval_ms = _to_interval_ms(self.interval)
+        if interval_ms is None:
+            raise ValueError(f"Invalid interval format: {self.interval!r}")
+
         if poll_interval_ms is not None:
-            self._poll_interval_ms = int(poll_interval_ms)
+            poll_ms = int(poll_interval_ms)
         elif poll_interval is not None:
-            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
-        elif interval is not None:
-            pms = _to_interval_ms(interval)
-            assert pms is not None, f"cannot parse interval: {interval!r}"
-            self._poll_interval_ms = int(pms)
-            _guard_interval_ms(interval, self._poll_interval_ms)
+            poll_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            self._poll_interval_ms = 60_000
+            poll_ms = int(interval_ms)
+
+        if poll_ms != int(interval_ms):
+            log_warn(
+                _LOG,
+                "ingestion.poll_interval_override",
+                domain="option_chain",
+                interval=self.interval,
+                interval_ms=int(interval_ms),
+                poll_interval_ms=int(poll_ms),
+            )
+            poll_ms = int(interval_ms)
+
+        self._poll_interval_ms = poll_ms
+        _guard_interval_ms(self.interval, self._poll_interval_ms)
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
     def __iter__(self) -> Iterator[Raw]:
         try:
-            import pandas as pd
-        except ImportError as e:
-            raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
-
-        try:
             while True:
                 if self._stop_event is not None and self._stop_event.is_set():
                     break
-                data_ts = _now_ms()
-                backoff = self._backoff_s
-                for _ in range(self._max_retries):
-                    try:
-                        rows = self._fetch()
-                        df = pd.DataFrame(rows or [])
-                        records: list[dict[str, Any]] = []
-                        if not df.empty:
-                            df["data_ts"] = int(data_ts)
-                            self._write_raw_snapshot(df=df, data_ts=int(data_ts))
-                            records = [{str(k): v for k, v in rec.items()} for rec in df.to_dict(orient="records")]
-                        # Source contract: yield a Mapping[str, Any]
-                        yield {"data_ts": int(data_ts), "records": records}
-                        break
-                    except Exception as exc:
-                        log_warn(
-                            _LOG,
-                            "option_chain.fetch_or_write_error",
-                            err_type=type(exc).__name__,
-                            err=str(exc),
-                        )
-                        if isinstance(exc, OptionChainWriteError):
-                            raise
-                        if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
-                            return
-                        backoff = min(backoff * 2.0, self._backoff_max_s)
+                for snap in self.fetch():
+                    yield snap
                 if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                     return
         finally:
@@ -404,6 +388,41 @@ class DeribitOptionChainRESTSource(Source):
         if not isinstance(result, list):
             raise RuntimeError(f"Unexpected Deribit response: {type(result)!r}")
         return result
+
+    def fetch(self) -> list[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        try:
+            import pandas as pd
+        except ImportError as e:
+            raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
+
+        data_ts = _now_ms()
+        backoff = self._backoff_s
+        for _ in range(self._max_retries):
+            try:
+                rows = self._fetch()
+                df = pd.DataFrame(rows or [])
+                records: list[dict[str, Any]] = []
+                if not df.empty:
+                    df["data_ts"] = int(data_ts)
+                    self._write_raw_snapshot(df=df, data_ts=int(data_ts))
+                    records = [{str(k): v for k, v in rec.items()} for rec in df.to_dict(orient="records")]
+                # Source contract: return Mapping[str, Any] items
+                return [{"data_ts": int(data_ts), "records": records}]
+            except Exception as exc:
+                log_warn(
+                    _LOG,
+                    "option_chain.fetch_or_write_error",
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
+                if isinstance(exc, OptionChainWriteError):
+                    raise
+                if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
+                    return []
+                backoff = min(backoff * 2.0, self._backoff_max_s)
+        return []
 
     def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
         write_counter = [self._write_count]

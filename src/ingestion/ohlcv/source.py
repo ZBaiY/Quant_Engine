@@ -12,10 +12,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ingestion.contracts.source import Source, AsyncSource, Raw
-from ingestion.contracts.tick import _guard_interval_ms
+from ingestion.contracts.tick import _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.logger import get_logger, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_warn
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
@@ -306,12 +306,30 @@ class BinanceKlinesRESTSource(Source):
         self._used_paths: set[Path] = set()
 
         if poll_interval_ms is not None:
-            self._poll_interval_ms = int(poll_interval_ms)
+            poll_ms = int(poll_interval_ms)
         elif poll_interval is not None:
-            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+            poll_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            # sensible default: 1000ms
-            self._poll_interval_ms = 1000
+            interval_ms = _to_interval_ms(self._interval)
+            if interval_ms is None:
+                raise ValueError(f"Invalid interval format: {self._interval!r}")
+            poll_ms = int(interval_ms)
+
+        interval_ms = _to_interval_ms(self._interval)
+        if interval_ms is None:
+            raise ValueError(f"Invalid interval format: {self._interval!r}")
+        if poll_ms != int(interval_ms):
+            log_warn(
+                _LOG,
+                "ingestion.poll_interval_override",
+                domain="ohlcv",
+                interval=self._interval,
+                interval_ms=int(interval_ms),
+                poll_interval_ms=int(poll_ms),
+            )
+            poll_ms = int(interval_ms)
+
+        self._poll_interval_ms = poll_ms
 
         _guard_interval_ms(self._interval, self._poll_interval_ms)
         if self._poll_interval_ms <= 0:
@@ -331,40 +349,8 @@ class BinanceKlinesRESTSource(Source):
             while True:
                 if self._stop_event is not None and self._stop_event.is_set():
                     return
-                try:
-                    rows = _binance_klines_rest(
-                        symbol=self._symbol,
-                        interval=self._interval,
-                        limit=2,
-                        base_url=self._base_url,
-                        timeout=self._timeout,
-                    )
-                except Exception:
-                    # fail-soft: transient network errors
-                    if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
-                        return
-                    continue
-
-                if len(rows) >= 2:
-                    # penultimate is the last fully closed bar
-                    bar = rows[-2]
-                elif len(rows) == 1:
-                    # fallback: if API returns only 1 bar, treat it as closed if its close_time < now
-                    bar = rows[0]
-                    try:
-                        if int(bar.get("close_time", 0)) >= _now_ms():
-                            bar = {}
-                    except Exception:
-                        bar = {}
-                else:
-                    bar = {}
-
-                if bar:
-                    ct = int(bar["close_time"])
-                    if self._last_close_time is None or ct > self._last_close_time:
-                        self._last_close_time = ct
-                        self._write_raw_snapshot(bar)
-                        yield bar
+                for bar in self.fetch():
+                    yield bar
 
                 if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                     return
@@ -387,6 +373,44 @@ class BinanceKlinesRESTSource(Source):
             base_url=self._base_url,
             timeout=self._timeout,
         )
+
+    def fetch(self) -> list[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        try:
+            rows = _binance_klines_rest(
+                symbol=self._symbol,
+                interval=self._interval,
+                limit=2,
+                base_url=self._base_url,
+                timeout=self._timeout,
+            )
+        except Exception:
+            # fail-soft: transient network errors
+            return []
+
+        if len(rows) >= 2:
+            # penultimate is the last fully closed bar
+            bar = rows[-2]
+        elif len(rows) == 1:
+            # fallback: if API returns only 1 bar, treat it as closed if its close_time < now
+            bar = rows[0]
+            try:
+                if int(bar.get("close_time", 0)) >= _now_ms():
+                    bar = {}
+            except Exception:
+                bar = {}
+        else:
+            bar = {}
+
+        if not bar:
+            return []
+        ct = int(bar["close_time"])
+        if self._last_close_time is None or ct > self._last_close_time:
+            self._last_close_time = ct
+            self._write_raw_snapshot(bar)
+            return [bar]
+        return []
 
     def _write_raw_snapshot(self, bar: Mapping[str, Any]) -> None:
         write_counter = [self._write_count]
@@ -687,6 +711,8 @@ class OHLCVRESTSource(Source):
         *,
         fetch_fn: Callable[[], Iterable[Raw]],
         backfill_fn: Callable[..., Iterable[Raw]] | None = None,
+        interval: str | None = None,
+        interval_ms: int | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         stop_event: threading.Event | None = None,
@@ -697,24 +723,51 @@ class OHLCVRESTSource(Source):
         fetch_fn:
             Callable returning an iterable of raw OHLCV payloads.
             The function itself handles authentication / pagination.
-        poll_interval:
-            Backward-compatible polling cadence in seconds.
-        poll_interval_ms:
-            Polling cadence in epoch milliseconds.
         interval:
-            Polling cadence as an interval string (e.g. "250ms", "1s", "1m").
-            If provided, it takes precedence over poll_interval.
+            Canonical data interval (e.g. "250ms", "1s", "1m").
+        interval_ms:
+            Canonical data interval in milliseconds.
+        poll_interval:
+            REST polling cadence in seconds (IO-only).
+        poll_interval_ms:
+            REST polling cadence in milliseconds (IO-only).
         """
         self._fetch_fn = fetch_fn
         self._backfill_fn = backfill_fn
         self._stop_event = stop_event
+        self._interval = interval
+        if interval_ms is not None:
+            self._interval_ms = int(interval_ms)
+        elif interval is not None:
+            ms = _to_interval_ms(interval)
+            if ms is None:
+                raise ValueError(f"Invalid interval format: {interval!r}")
+            self._interval_ms = int(ms)
+            _guard_interval_ms(interval, self._interval_ms)
+        else:
+            self._interval_ms = None
 
         if poll_interval_ms is not None:
-            self._poll_interval_ms = int(poll_interval_ms)
+            poll_ms = int(poll_interval_ms)
         elif poll_interval is not None:
-            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+            poll_ms = int(round(float(poll_interval) * 1000.0))
+        elif self._interval_ms is not None:
+            poll_ms = int(self._interval_ms)
         else:
             raise ValueError("One of poll_interval, poll_interval_ms, or interval must be provided")
+
+        if self._interval_ms is not None and poll_ms != int(self._interval_ms):
+            log_warn(
+                _LOG,
+                "ingestion.poll_interval_override",
+                domain="ohlcv",
+                interval=self._interval,
+                interval_ms=int(self._interval_ms),
+                poll_interval_ms=int(poll_ms),
+            )
+            poll_ms = int(self._interval_ms)
+
+        self._poll_interval_ms = poll_ms
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
@@ -723,8 +776,7 @@ class OHLCVRESTSource(Source):
         while True:
             if self._stop_event is not None and self._stop_event.is_set():
                 return
-            rows = self._fetch_fn()
-            for row in rows:
+            for row in self.fetch():
                 yield row
             if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                 return
@@ -739,6 +791,11 @@ class OHLCVRESTSource(Source):
         if self._backfill_fn is None:
             raise NotImplementedError("OHLCVRESTSource backfill requires backfill_fn")
         return self._backfill_fn(start_ts=int(start_ts), end_ts=int(end_ts))
+
+    def fetch(self) -> Iterable[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        return self._fetch_fn()
 
 
 class OHLCVWebSocketSource(AsyncSource):

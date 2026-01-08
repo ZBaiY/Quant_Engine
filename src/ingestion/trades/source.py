@@ -355,7 +355,7 @@ class TradesRESTSource(Source):
         while True:
             if self._stop_event is not None and self._stop_event.is_set():
                 return
-            for row in self._fetch_fn():
+            for row in self.fetch():
                 yield row
             if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                 return
@@ -370,6 +370,11 @@ class TradesRESTSource(Source):
         if self._backfill_fn is None:
             raise NotImplementedError("TradesRESTSource backfill requires backfill_fn")
         return self._backfill_fn(int(start_ts), int(end_ts))
+
+    def fetch(self) -> Iterable[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        return self._fetch_fn()
 
 
 # ---------------------------------------------------------------------------
@@ -423,26 +428,8 @@ class BinanceAggTradesRESTSource(Source):
         while True:
             if self._stop_event is not None and self._stop_event.is_set():
                 return
-            try:
-                rows = _binance_aggtrades_rest(
-                    symbol=self._symbol,
-                    limit=self._limit,
-                    from_id=(self._last_trade_id + 1) if self._last_trade_id is not None else None,
-                    base_url=self._base_url,
-                    timeout=self._timeout,
-                )
-            except Exception:
-                if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
-                    return
-                continue
-
-            # emit in ascending trade_id order
-            rows = sorted(rows, key=lambda r: int(r["trade_id"]))
-            for r in rows:
-                tid = int(r["trade_id"])
-                if self._last_trade_id is None or tid > self._last_trade_id:
-                    self._last_trade_id = tid
-                    yield r
+            for row in self.fetch():
+                yield row
 
             if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                 return
@@ -462,6 +449,30 @@ class BinanceAggTradesRESTSource(Source):
             base_url=self._base_url,
             timeout=self._timeout,
         )
+
+    def fetch(self) -> list[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        try:
+            rows = _binance_aggtrades_rest(
+                symbol=self._symbol,
+                limit=self._limit,
+                from_id=(self._last_trade_id + 1) if self._last_trade_id is not None else None,
+                base_url=self._base_url,
+                timeout=self._timeout,
+            )
+        except Exception:
+            return []
+
+        # emit in ascending trade_id order
+        rows = sorted(rows, key=lambda r: int(r["trade_id"]))
+        out: list[Raw] = []
+        for r in rows:
+            tid = int(r["trade_id"])
+            if self._last_trade_id is None or tid > self._last_trade_id:
+                self._last_trade_id = tid
+                out.append(r)
+        return out
 
 
 class BinanceAggTradesWebSocketSource(Source):

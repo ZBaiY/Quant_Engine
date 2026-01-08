@@ -14,7 +14,7 @@ from ingestion.contracts.source import AsyncSource, Raw, Source
 from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms, _coerce_epoch_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.logger import get_logger, log_exception
+from quant_engine.utils.logger import get_logger, log_exception, log_warn
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
@@ -267,6 +267,7 @@ class SentimentRESTSource(Source):
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,
+        poll_interval_ms: int | None = None,
         stop_event: threading.Event | None = None,
     ) -> None:
         self._fetch_fn = fetch_fn
@@ -280,23 +281,41 @@ class SentimentRESTSource(Source):
                 raise ValueError(f"Invalid interval format: {interval!r}")
             self._interval_ms = int(ms)
             _guard_interval_ms(interval, self._interval_ms)
-        elif poll_interval is not None:
-            # legacy compatibility
-            self._interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            raise ValueError("One of interval_ms, interval, or poll_interval must be provided")
+            self._interval_ms = None
 
-        if self._interval_ms <= 0:
-            raise ValueError("interval_ms must be > 0")
+        if poll_interval_ms is not None:
+            poll_ms = int(poll_interval_ms)
+        elif poll_interval is not None:
+            poll_ms = int(round(float(poll_interval) * 1000.0))
+        elif self._interval_ms is not None:
+            poll_ms = int(self._interval_ms)
+        else:
+            raise ValueError("One of poll_interval_ms, poll_interval, or interval must be provided")
+
+        if self._interval_ms is not None and poll_ms != int(self._interval_ms):
+            log_warn(
+                _LOG,
+                "ingestion.poll_interval_override",
+                domain="sentiment",
+                interval=interval,
+                interval_ms=int(self._interval_ms),
+                poll_interval_ms=int(poll_ms),
+            )
+            poll_ms = int(self._interval_ms)
+
+        self._poll_interval_ms = poll_ms
+
+        if self._poll_interval_ms <= 0:
+            raise ValueError("poll_interval_ms must be > 0")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
             if self._stop_event is not None and self._stop_event.is_set():
                 return
-            rows = self._fetch_fn()
-            for row in rows:
+            for row in self.fetch():
                 yield row
-            if self._sleep_or_stop(self._interval_ms / 1000.0):
+            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
                 return
 
     def _sleep_or_stop(self, seconds: float) -> bool:
@@ -304,6 +323,11 @@ class SentimentRESTSource(Source):
             time.sleep(seconds)
             return False
         return self._stop_event.wait(seconds)
+
+    def fetch(self) -> Iterable[Raw]:
+        if self._stop_event is not None and self._stop_event.is_set():
+            return []
+        return self._fetch_fn()
 
 
 class SentimentStreamSource(AsyncSource):

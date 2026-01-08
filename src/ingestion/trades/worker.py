@@ -80,9 +80,9 @@ class TradesWorker(IngestWorker):
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            self._poll_interval_ms = 0
-        if self._poll_interval_ms < 0:
-            raise ValueError("poll_interval_ms must be >= 0")
+            self._poll_interval_ms = None
+        if self._poll_interval_ms is not None and self._poll_interval_ms <= 0:
+            raise ValueError("poll_interval_ms must be > 0")
 
     def backfill(
         self,
@@ -213,28 +213,35 @@ class TradesWorker(IngestWorker):
             raise
 
     async def run(self, emit: EmitFn) -> None:
-        log_info(
-            self._logger,
-            "ingestion.worker_start",
-            worker=self.__class__.__name__,
-            source_type=type(self._source).__name__,
-            symbol=self._symbol,
-            poll_interval_ms=self._poll_interval_ms,
-            domain=_DOMAIN,
-        )
         self._error_logged = False
         stop_reason = "exit"
         # --- async source ---
         try:
             kind = source_kind(self._source)
+            poll_interval_ms = self._poll_interval_ms
+            if kind == "fetch":
+                if poll_interval_ms is None:
+                    raise ValueError(f"Trades fetch source requires poll_interval_ms; symbol={self._symbol}")
+            else:
+                poll_interval_ms = None
+
+            log_info(
+                self._logger,
+                "ingestion.worker_start",
+                worker=self.__class__.__name__,
+                source_type=type(self._source).__name__,
+                symbol=self._symbol,
+                poll_interval_ms=poll_interval_ms,
+                domain=_DOMAIN,
+            )
             sync_context = {
                 "worker": self.__class__.__name__,
                 "symbol": self._symbol,
                 "domain": _DOMAIN,
             }
             poll_interval_s = (
-                float(self._poll_interval_ms) / 1000.0
-                if self._poll_interval_ms and self._poll_interval_ms > 0
+                float(poll_interval_ms) / 1000.0
+                if poll_interval_ms is not None and poll_interval_ms > 0
                 else None
             )
             last_fetch = time.monotonic()
@@ -278,10 +285,7 @@ class TradesWorker(IngestWorker):
                         emit_ms=emit_ms,
                         poll_seq=self._poll_seq,
                     )
-                if kind == "iter" and self._poll_interval_ms > 0:
-                    await asyncio.sleep(self._poll_interval_ms / 1000.0)
-                else:
-                    await asyncio.sleep(0)
+                await asyncio.sleep(0)
             return
         except asyncio.CancelledError:
             stop_reason = "cancelled"

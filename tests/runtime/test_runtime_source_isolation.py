@@ -12,4 +12,4 @@ def test_runtime_modules_do_not_import_ingestion_sources() -> None:
             if "ingestion." in line and ".source" in line:
                 offenders.append(f"{path}:{line.strip()}")
                 break
-    assert not offenders, f"runtime imports ingestion sources:\n" + "\n".join(offenders)
+    assert not offenders, "runtime imports ingestion sources:\n" + "\n".join(offenders)

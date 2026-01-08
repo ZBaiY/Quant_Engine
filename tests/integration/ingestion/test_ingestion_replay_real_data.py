@@ -7,6 +7,7 @@ import pytest
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource
 from ingestion.ohlcv.worker import OHLCVWorker
+from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.registry import get_strategy
@@ -33,7 +34,7 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
 
     async def emit_to_queue(tick: object) -> None:
         nonlocal seq
-        ts = ensure_epoch_ms(getattr(tick, "timestamp"))
+        ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         emitted_ts.append(int(ts))
         emitted_domains.add(str(getattr(tick, "domain")))
         await tick_queue.put((int(ts), seq, tick))
@@ -61,10 +62,13 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
             end_ts=start_ts + 2 * int(engine.spec.interval_ms),
         )
         normalizer = BinanceOHLCVNormalizer(symbol=symbol)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         worker = OHLCVWorker(
             source=source,
             normalizer=normalizer,
             symbol=symbol,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))

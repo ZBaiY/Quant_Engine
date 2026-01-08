@@ -229,7 +229,7 @@ def test_engine_step_order_and_context() -> None:
     assert risk.last_context["timestamp"] == EPOCH_MS
 
 
-class SpyEngine(StrategyEngineProto):
+class SpyEngine(StrategyEngine):
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.spec = EngineSpec.from_interval(

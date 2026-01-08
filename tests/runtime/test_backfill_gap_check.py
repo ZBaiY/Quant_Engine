@@ -137,6 +137,7 @@ def _make_ohlcv_backfill_worker(tmp_path, monkeypatch, *, symbol: str = "BTCUSDT
         normalizer=normalizer,
         symbol=symbol,
         interval=interval,
+        interval_ms=INTERVAL_MS,
     )
     return worker, raw_root, backfill_calls
 

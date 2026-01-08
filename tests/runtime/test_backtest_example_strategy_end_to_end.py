@@ -19,6 +19,7 @@ from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.sentiment.worker import SentimentWorker
 from ingestion.sentiment.source import SentimentFileSource
 from ingestion.sentiment.normalize import SentimentNormalizer
+from ingestion.contracts.tick import _to_interval_ms
 
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
@@ -108,7 +109,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
 
     async def emit_to_queue(tick: object) -> None:
         nonlocal seq
-        ts = ensure_epoch_ms(getattr(tick, "timestamp"))
+        ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         await tick_queue.put((ts, seq, tick))
         seq += 1
 
@@ -117,6 +118,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
 
     for symbol, handler in engine.ohlcv_handlers.items():
         interval = getattr(handler, "interval", None)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         has_local_data = bool(interval) and _find_parquet_files(ohlcv_root / symbol / str(interval))
         if not has_local_data:
             log_warn(
@@ -140,6 +142,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
             source=source,
             normalizer=normalizer,
             symbol=symbol,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
         log_info(
@@ -156,6 +160,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
 
     orderbook_root = data_root / "cleaned" / "orderbook"
     for symbol, handler in engine.orderbook_handlers.items():
+        interval = getattr(handler, "interval", None)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         has_local_data = _has_orderbook_data(orderbook_root / symbol)
         if not has_local_data:
             log_warn(
@@ -178,6 +184,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
             source=source,
             normalizer=normalizer,
             symbol=symbol,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
         log_info(
@@ -194,6 +202,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
 
     option_chain_root = data_root / "cleaned" / "option_chain"
     for symbol, handler in engine.option_chain_handlers.items():
+        interval = getattr(handler, "interval", None)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         asset = base_asset_from_symbol(symbol)
         has_local_data = _find_parquet_files(option_chain_root / asset / "1m")
         if not has_local_data:
@@ -218,6 +228,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
             source=source,
             normalizer=normalizer,
             symbol=symbol,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
         log_info(
@@ -234,6 +246,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
 
     sentiment_root = data_root / "cleaned" / "sentiment"
     for src, handler in engine.sentiment_handlers.items():
+        interval = getattr(handler, "interval", None)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         has_local_data = _has_sentiment_data(sentiment_root / src)
         if not has_local_data:
             log_warn(
@@ -255,6 +269,8 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         worker = SentimentWorker(
             source=source,
             normalizer=normalizer,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
         log_info(

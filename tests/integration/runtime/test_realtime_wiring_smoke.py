@@ -8,6 +8,7 @@ from ingestion.contracts.tick import IngestionTick
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource
 from ingestion.ohlcv.worker import OHLCVWorker
+from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.registry import get_strategy
 from quant_engine.utils.paths import data_root_from_file
@@ -51,10 +52,13 @@ async def test_realtime_wiring_smoke_with_file_source() -> None:
             end_ts=end_ts,
         )
         normalizer = BinanceOHLCVNormalizer(symbol=symbol)
+        interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
         worker = OHLCVWorker(
             source=source,
             normalizer=normalizer,
             symbol=symbol,
+            interval=str(interval) if interval else None,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
             poll_interval=None,
         )
 

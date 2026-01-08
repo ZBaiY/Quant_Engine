@@ -64,6 +64,7 @@ def test_ohlcv_rest_source_iteration_order_and_poll_interval(
         return list(rows)
 
     src = OHLCVRESTSource(fetch_fn=fetch_fn, poll_interval_ms=250, stop_event=stop_event)
+    assert list(src.fetch()) == rows
     out = list(src)
 
     assert out == rows

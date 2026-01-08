@@ -315,7 +315,7 @@ async def iter_source(
     kind = source_kind(source)
     if kind == "async":
         try:
-            async for item in source:  # type: ignore[operator]
+            async for item in source:  
                 yield item
         finally:
             await _close_source_async(source, None, logger=logger, context=context)

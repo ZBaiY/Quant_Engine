@@ -8,7 +8,7 @@ from quant_engine.utils.logger import get_logger, init_logging, log_info, log_wa
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.paths import data_root_from_file
 from quant_engine.runtime.backtest import BacktestDriver
-from quant_engine.utils.apps_helpers import build_backtest_engine
+from quant_engine.utils.app_wiring import build_backtest_engine
 
 STRATEGY_NAME = "EXAMPLE"
 BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
@@ -85,9 +85,9 @@ async def main() -> None:
     _seq = 0
 
     ingestion_tasks: list[asyncio.Task[None]] = []
-    
+
     async def emit_to_queue(tick: object) -> None:
-        # Expect tick to have `.timestamp` (engine-time) attribute.
+        # Queue key is tick.data_ts (data-time, epoch ms). `_seq` is a stable tie-breaker for equal timestamps.
         nonlocal _seq
         ts = ensure_epoch_ms(getattr(tick, "data_ts"))
         await tick_queue.put((ts, _seq, tick))
@@ -115,7 +115,7 @@ async def main() -> None:
             end_ts=entry["end_ts"],
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-    
+
     # -------------------------------------------------
     # 3. Run deterministic backtest (time only)
     # -------------------------------------------------
@@ -133,7 +133,7 @@ async def main() -> None:
         start_ts=driver_cfg["start_ts"],
         end_ts=driver_cfg["end_ts"],
     )
-
+    
     await driver.run()
     
     log_info(logger, "ingestion.worker.stop", count=len(ingestion_tasks))

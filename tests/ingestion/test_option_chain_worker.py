@@ -11,6 +11,7 @@ from ingestion.contracts.tick import IngestionTick
 from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.option_chain.source import OptionChainFileSource
 from ingestion.option_chain.worker import OptionChainWorker
+from ingestion.contracts.tick import _to_interval_ms
 
 
 def _write_parquet(df: pd.DataFrame, path: Path) -> None:
@@ -51,7 +52,15 @@ async def test_option_chain_worker_run_emits_ticks_in_order(
 
     source = OptionChainFileSource(root=root, asset=asset, interval=interval)
     normalizer = DeribitOptionChainNormalizer(symbol=asset)
-    worker = OptionChainWorker(normalizer=normalizer, source=source, symbol=asset, poll_interval_ms=1)
+    interval_ms = _to_interval_ms(interval)
+    worker = OptionChainWorker(
+        normalizer=normalizer,
+        source=source,
+        symbol=asset,
+        interval=interval,
+        interval_ms=int(interval_ms) if interval_ms is not None else None,
+        poll_interval_ms=1,
+    )
 
     async def fast_sleep(_seconds: float) -> None:
         return None

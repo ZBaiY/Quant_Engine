@@ -11,6 +11,7 @@ from quant_engine.runtime.lifecycle import LifecycleGuard, RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.contracts.engine import StrategyEngineProto
 from quant_engine.runtime.snapshot import EngineSnapshot
+from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import cancel_tasks, set_loop_exception_handler
 from quant_engine.utils.guards import format_exc, join_threads
 from quant_engine.utils.logger import get_logger, log_error, log_exception
@@ -29,7 +30,7 @@ class BaseDriver(ABC):
     def __init__(
         self,
         *,
-        engine: StrategyEngineProto,
+        engine: StrategyEngine,
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
         shutdown_threads: list[threading.Thread] | None = None,

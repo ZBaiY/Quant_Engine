@@ -8,7 +8,7 @@ from pathlib import Path
 import asyncio
 import pytest
 
-from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
+from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms, _to_interval_ms
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource
 from ingestion.ohlcv.worker import OHLCVWorker
@@ -57,6 +57,7 @@ async def test_replay_semantics_ohlcv_15m_btcusdt(monkeypatch: pytest.MonkeyPatc
         normalizer=normalizer,
         symbol="BTCUSDT",
         interval="15m",
+        interval_ms=int(_to_interval_ms("15m") or 900_000),
         poll_interval_ms=1,
     )
 
@@ -145,6 +146,8 @@ async def test_replay_semantics_option_chain_1m_btc_parallel_stability(
         source=option_source,
         normalizer=option_normalizer,
         symbol="BTC",
+        interval="1m",
+        interval_ms=int(_to_interval_ms("1m") or 60_000),
         poll_interval_ms=0,
     )
 
@@ -154,6 +157,7 @@ async def test_replay_semantics_option_chain_1m_btc_parallel_stability(
         normalizer=ohlcv_normalizer,
         symbol="BTCUSDT",
         interval="15m",
+        interval_ms=int(_to_interval_ms("15m") or 900_000),
         poll_interval_ms=1,
     )
 
@@ -265,6 +269,8 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
         source=option_source,
         normalizer=DeribitOptionChainNormalizer(symbol="BTC"),
         symbol="BTC",
+        interval="1m",
+        interval_ms=int(_to_interval_ms("1m") or 60_000),
         poll_interval_ms=0,
     )
     ohlcv_worker = OHLCVWorker(
@@ -272,6 +278,7 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
         normalizer=BinanceOHLCVNormalizer(symbol="BTCUSDT"),
         symbol="BTCUSDT",
         interval="15m",
+        interval_ms=int(_to_interval_ms("15m") or 900_000),
         poll_interval_ms=1,
     )
 
@@ -418,6 +425,7 @@ async def test_no_drop_monotonic_last_timestamp_ohlcv_bounded(
         normalizer=BinanceOHLCVNormalizer(symbol="BTCUSDT"),
         symbol="BTCUSDT",
         interval="15m",
+        interval_ms=int(_to_interval_ms("15m") or 900_000),
         poll_interval_ms=1,
     )
 

@@ -2,7 +2,7 @@
 
 Backtest flow (relevant slice):
 - `apps/run_backtest.py` calls `build_backtest_engine()`.
-- `build_backtest_engine()` in `src/quant_engine/utils/apps_helpers.py`:
+- `build_backtest_engine()` in `src/quant_engine/utils/app_wiring.py`:
   - `StrategyCls.standardize()` -> returns `NormalizedStrategyCfg` (intervals standardized per domain).
   - `StrategyLoader.from_config()` -> returns `StrategyEngine` with per-domain handlers.
   - `_build_backtest_ingestion_plan()` -> builds a list of worker configs.
