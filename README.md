@@ -1,15 +1,25 @@
-# Overview
-Quant Engine (TradeBot v4) is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across:
-- **Backtest**
-- **Mock (paper) trading**
-- **Live trading**
+# SoionLab
+
+[![CI](https://github.com/ZBaiY/SoionLab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ZBaiY/SoionLab/actions/workflows/ci.yml?query=branch%3Amain)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%20macOS-9cf)
+
+## Overview
+
+Quant Engine (TradeBot v4) is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across **Backtest / Mock (paper) / Live**.
 
 Core idea: components communicate through explicit contracts (Protocols), while the runtime enforces **time/lifecycle correctness** and **execution realism**.
 
--**Design rules (non-negotiable):**
-- **Strategy** = static *template* specification (what to run).  
-  No mode, no time, no side effects.  
-  Concrete symbols are resolved via an explicit **bind** step.
+**Design rules (non-negotiable):**
+- **Strategy** is a static template specification: no mode, no time, no side effects.
+- Concrete symbols are resolved via an explicit **bind** step.
+- **Driver** (Backtest / Mock / Realtime) is the **single time authority**.
+
+## Support matrix
+
+- **OS**: Ubuntu 22.04.5 LTS (x86_64), macOS (Apple Silicon)
+- **Python**: 3.11, 3.12
+- **CI**: GitHub Actions workflow at `.github/workflows/ci.yml`
 
 ## Installation
 
@@ -17,26 +27,18 @@ This repo is a **self-contained runtime instance**:
 - Runtime data root: `./data/`
 - Runtime artifacts root: `./artifacts/`
 
-All filesystem paths are **repo-root anchored** (no current-working-directory dependence).
+All filesystem paths are **repo-root anchored** (no CWD dependence).
 
 ### Quick start (VPS / Ubuntu 22.04 + Conda)
 
-1) Install Miniconda (or Anaconda). Conda avoids common macOS numpy/pandas binary mismatch issues.
 ```bash
 apt-get update && apt-get install -y curl bzip2
 curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
 bash /tmp/miniconda.sh -b -p /root/miniconda3
 /root/miniconda3/bin/conda init bash
 # reopen shell or: source ~/.bashrc
-```
 
-2) Install deps (creates/updates conda env, installs repo editable):
-```bash
 bash scripts/installation.sh
-```
-
-3) Activate (default env: `qe`):
-```bash
 source /root/miniconda3/etc/profile.d/conda.sh
 conda activate qe
 ```
@@ -54,6 +56,14 @@ pip install -r requirements.txt
 pip install -e .
 python -c "import quant_engine, ingestion; print('imports_ok')"
 ```
+### Testing
+CI runs unit + integration tests **without local/private datasets**.
+```
+pytest -q -m "not local_data" tests
+```
+Local data tests are opt-in:
+	•	mark tests with @pytest.mark.local
+	•	run locally with your dataset available
 
 ### Notes
 
