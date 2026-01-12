@@ -30,23 +30,8 @@ def assert_monotonic(ts: int, last_ts: int | None, *, label: str) -> int:
     return int(ts)
 
 
-def utc_date_parts(epoch_ms: int) -> tuple[str, str]:
-    from datetime import datetime, timezone
-
-    dt = datetime.fromtimestamp(int(epoch_ms) / 1000.0, tz=timezone.utc)
-    year = dt.strftime("%Y")
-    ymd = dt.strftime("%Y_%m_%d")
-    return year, ymd
-
-
 def format_exc(e: BaseException) -> str:
     return "".join(traceback.format_exception_only(type(e), e)).strip()
-
-
-def bounded_backoff(attempt: int, base: float, cap: float) -> float:
-    if attempt <= 0:
-        return float(base)
-    return min(float(base) * (2.0 ** int(attempt)), float(cap))
 
 
 def join_threads(threads: Iterable[Thread], timeout_s: float) -> None:

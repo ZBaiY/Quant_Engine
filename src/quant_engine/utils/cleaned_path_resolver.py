@@ -103,32 +103,6 @@ def resolve_cleaned_paths(
     )
 
 
-def resolve_raw_paths(
-    *,
-    data_root: Path,  # parent of "raw/"
-    domain: Domain,
-    start_ts: int,
-    end_ts: int,
-    symbol: str | None = None,
-    interval: str | None = None,
-    asset: str | None = None,
-    venue: str | None = None,
-    provider: str | None = None,
-) -> list[Path]:
-    """Pure path resolver for raw layout (mirrors cleaned paths)."""
-    return _resolve_stage_paths(
-        data_root=data_root,
-        stage="raw",
-        domain=domain,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        symbol=symbol,
-        interval=interval,
-        asset=asset,
-        venue=venue,
-        provider=provider,
-    )
-
 
 def _resolve_stage_paths(
     *,

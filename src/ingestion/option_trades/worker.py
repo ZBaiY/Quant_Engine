@@ -22,7 +22,6 @@ import ingestion.option_trades.source as option_trades_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
 
-_LOG_SAMPLE_EVERY = 100
 _DOMAIN = "option_trades"
 
 def _as_primitive(x: Any) -> str | int | float | bool | None:
@@ -234,47 +233,15 @@ class OptionTradesWorker(IngestWorker):
                 "domain": _DOMAIN,
             }
             poll_interval_s = self.poll_interval_s if self.poll_interval_s and self.poll_interval_s > 0 else None
-            last_fetch = time.monotonic()
             async for raw in iter_source(
                 src,
                 logger=self._logger,
                 context=sync_context,
                 poll_interval_s=poll_interval_s if kind == "fetch" else None,
             ):
-                now = time.monotonic()
                 self._poll_seq += 1
-                sample = (self._poll_seq % _LOG_SAMPLE_EVERY) == 0
-                if sample:
-                    log_debug(
-                        self._logger,
-                        "ingestion.source_fetch_success",
-                        worker=self.__class__.__name__,
-                        symbol=self.symbol,
-                        domain=_DOMAIN,
-                        latency_ms=int((now - last_fetch) * 1000),
-                        n_items=1,
-                        normalize_ms=None,
-                        emit_ms=None,
-                        poll_seq=self._poll_seq,
-                    )
-                last_fetch = time.monotonic()
-                norm_start = time.monotonic()
                 tick = self._normalize(raw)
-                normalize_ms = int((time.monotonic() - norm_start) * 1000)
-                emit_start = time.monotonic()
                 await self._emit(emit, tick)
-                emit_ms = int((time.monotonic() - emit_start) * 1000)
-                if sample:
-                    log_debug(
-                        self._logger,
-                        "ingestion.sample_timing",
-                        worker=self.__class__.__name__,
-                        symbol=self.symbol,
-                        domain=_DOMAIN,
-                        normalize_ms=normalize_ms,
-                        emit_ms=emit_ms,
-                        poll_seq=self._poll_seq,
-                    )
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"

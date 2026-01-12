@@ -8,9 +8,7 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.contracts.portfolio import PortfolioState
-from quant_engine.contracts.engine import StrategyEngineProto
 from collections.abc import AsyncIterator
-from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
 from quant_engine.utils.logger import log_error
 

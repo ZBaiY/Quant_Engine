@@ -7,9 +7,6 @@ their data and feature dependencies.
 
 from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.registry import register_strategy
-## =====================================================================
-## features_users: RSI-ROLLING-MEAN_DECISION_{A}, RSI-ROLLING-STD_DECISION_{A}
-## =====================================================================
 
 @register_strategy("EXAMPLE")
 class ExampleStrategy(StrategyBase):
@@ -94,7 +91,6 @@ class ExampleStrategy(StrategyBase):
         "matching": {"type": "SIMULATED"},
     }
     PORTFOLIO_CFG = {
-        #"step_size": 1,  # STANDARD portfolio. for non-standard, set in params e.g. #"step_size": 0.0001,  # FRACTIONAL portfolio
         "type": "STANDARD",
         "params": {"initial_capital": 1000000,},
     }

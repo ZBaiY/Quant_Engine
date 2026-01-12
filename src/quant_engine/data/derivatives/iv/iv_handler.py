@@ -269,11 +269,12 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 cache_size=len(self._snapshots),
             )
         except Exception as exc:
-            log_exception(
+            log_warn(
                 self._logger,
                 "iv_surface.bootstrap.error",
                 symbol=self.symbol,
                 asset=self.asset,
+                err_type=type(exc).__name__,
                 err=str(exc),
             )
         finally:

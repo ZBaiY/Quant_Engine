@@ -9,7 +9,6 @@ from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineMode, EngineSpec
-from quant_engine.contracts.engine import StrategyEngineProto
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.guards import ensure_epoch_ms
@@ -109,8 +108,7 @@ class BacktestDriver(BaseDriver):
         self._install_loop_exception_handler()
         try:
             # -------- preload --------
-            if getattr(self, "guard", None) is not None:
-                self.guard.enter(RuntimePhase.PRELOAD)
+            self.guard.enter(RuntimePhase.PRELOAD)
             log_info(self._logger, "driver.phase.load_history", timestamp=self.start_ts)
             await to_thread_limited(
                 self.engine.load_history,
@@ -122,8 +120,7 @@ class BacktestDriver(BaseDriver):
             )
 
             # -------- warmup --------
-            if getattr(self, "guard", None) is not None:
-                self.guard.enter(RuntimePhase.WARMUP)
+            self.guard.enter(RuntimePhase.WARMUP)
             log_info(self._logger, "driver.phase.warmup", timestamp=self.start_ts)
             await to_thread_limited(
                 self.engine.warmup_features,
@@ -141,8 +138,7 @@ class BacktestDriver(BaseDriver):
                 timestamp = int(ts)
                 log_info(self._logger, "driver.phase.step", timestamp=timestamp)
                 # ---- ingest (optional gating) ----
-                if getattr(self, "guard", None) is not None:
-                    self.guard.enter(RuntimePhase.INGEST)
+                self.guard.enter(RuntimePhase.INGEST)
 
                 # Align handlers before ingest to satisfy handler contracts.
                 self.engine.align_to(timestamp)
@@ -266,8 +262,7 @@ class BacktestDriver(BaseDriver):
 =======
 >>>>>>> 9ae8102 (cleanup 1)
                 # ---- step ----
-                if getattr(self, "guard", None) is not None:
-                    self.guard.enter(RuntimePhase.STEP)
+                self.guard.enter(RuntimePhase.STEP)
 
                 result = self.engine.step(ts=timestamp)
 
@@ -290,8 +285,7 @@ class BacktestDriver(BaseDriver):
                     )
 
             # -------- finish --------
-            if getattr(self, "guard", None) is not None:
-                self.guard.enter(RuntimePhase.FINISH)
+            self.guard.enter(RuntimePhase.FINISH)
             log_info(self._logger, "driver.phase.finish", timestamp=self.end_ts)
         except asyncio.CancelledError:
             self._shutdown_components()

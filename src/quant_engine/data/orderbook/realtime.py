@@ -300,10 +300,11 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
         except Exception as exc:
-            log_exception(
+            log_warn(
                 self._logger,
                 "orderbook.bootstrap.error",
                 symbol=self.symbol,
+                err_type=type(exc).__name__,
                 err=str(exc),
             )
         finally:
@@ -427,7 +428,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
         worker = self._backfill_worker
         if worker is None:
-            log_warn(
+            log_info(
                 self._logger,
                 "orderbook.backfill.no_worker",
                 symbol=self.symbol,
@@ -437,7 +438,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             return 0
         backfill = getattr(worker, "backfill", None)
         if not callable(backfill):
-            log_warn(
+            log_info(
                 self._logger,
                 "orderbook.backfill.no_worker_method",
                 symbol=self.symbol,

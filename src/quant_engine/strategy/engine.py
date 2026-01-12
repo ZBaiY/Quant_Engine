@@ -112,7 +112,7 @@ class StrategyEngine:
             "trades": len(self.trades_handlers),
             "option_trades": len(self.option_trades_handlers),
         }
-        
+
         domains_present = [k for k, v in counts.items() if v]
         log_debug(
             self._logger,
@@ -133,9 +133,6 @@ class StrategyEngine:
         self._empty_snapshot_logged: set[str] = set()
         self.strategy_name = "<unnamed>"
         self.config_hash = "<no-hash>"
-        
-        
-
     def _warn_schema_mismatches(self) -> None:
         if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
             log_warn(
@@ -529,15 +526,6 @@ class StrategyEngine:
         if h is None and self.ohlcv_handlers:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
-
-    def _get_primary_market_snapshot(self, ts: int) -> Any:
-        primary_handler = self._get_primary_ohlcv_handler()
-        if primary_handler is not None and hasattr(primary_handler, "get_snapshot"):
-            try:
-                return primary_handler.get_snapshot(ts)
-            except TypeError:
-                return primary_handler.get_snapshot()
-        return None
 
     def _extract_snapshot_ts(self, snap: Any) -> int | None:
         if isinstance(snap, Mapping):
@@ -1046,12 +1034,6 @@ class StrategyEngine:
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
         model_outputs_out = dict(model_outputs)
         fills_out = list(fills)
-        market_snapshots_out: dict[str, Any] = {}
-        for domain, snaps in market_snapshots.items():
-            if isinstance(snaps, Mapping):
-                market_snapshots_out[domain] = dict(snaps)
-            else:
-                market_snapshots_out[domain] = snaps
         if hasattr(self.portfolio, "update_marks"):
             self.portfolio.update_marks(market_snapshots)
         portfolio_post = self.portfolio.state()
@@ -1086,7 +1068,7 @@ class StrategyEngine:
         log_step_trace(
             self._logger,
             step_ts=timestamp,
-            strategy=getattr(self, "strategy_name", None),
+            strategy=self.strategy_name,
             symbol=self.symbol,
             features=features,
             models=model_outputs,

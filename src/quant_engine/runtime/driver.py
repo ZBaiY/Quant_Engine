@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Iterable, List, Optional
+from typing import AsyncIterator, Iterable, List
 import asyncio
 import threading
 import traceback
@@ -9,7 +9,6 @@ import traceback
 from quant_engine.exceptions.core import FatalError
 from quant_engine.runtime.lifecycle import LifecycleGuard, RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
-from quant_engine.contracts.engine import StrategyEngineProto
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import cancel_tasks, set_loop_exception_handler

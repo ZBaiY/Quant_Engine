@@ -228,6 +228,7 @@ def test_engine_step_order_and_context() -> None:
     snapshot = engine.step(ts=EPOCH_MS)
 
     assert trace == ["handlers", "features", "models", "decision", "risk", "execution", "portfolio"]
+    assert engine._step_stage_index == len(engine.STEP_ORDER)
     assert isinstance(snapshot, EngineSnapshot)
     assert model.last_context is not None
     assert decision.last_context is not None

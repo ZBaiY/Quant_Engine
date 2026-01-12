@@ -411,10 +411,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
         except Exception as exc:
-            log_exception(
+            log_warn(
                 self._logger,
                 "ohlcv.bootstrap.error",
                 symbol=self.symbol,
+                err_type=type(exc).__name__,
                 err=str(exc),
             )
         finally:
@@ -549,7 +550,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
     def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
         worker = self._backfill_worker
         if worker is None:
-            log_warn(
+            log_info(
                 self._logger,
                 "ohlcv.backfill.no_worker",
                 symbol=self.symbol,
@@ -559,7 +560,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
             return 0
         backfill = getattr(worker, "backfill", None)
         if not callable(backfill):
-            log_warn(
+            log_info(
                 self._logger,
                 "ohlcv.backfill.no_worker_method",
                 symbol=self.symbol,

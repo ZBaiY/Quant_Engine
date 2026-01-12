@@ -416,24 +416,19 @@ class StrategyBase:
         if not isinstance(interval, str) or not interval:
             interval = cls.INTERVAL
             out["interval"] = interval
-        if isinstance(interval, str) and interval:
-            if "interval_ms" not in out or out.get("interval_ms") is None:
-                ms = to_interval_ms(interval)
-                if ms is None:
-                    raise ValueError(f"Invalid interval format: {interval}")
-                out["interval_ms"] = int(ms)
+        if out.get("interval_ms") is None:
+            ms = to_interval_ms(interval)
+            if ms is None:
+                raise ValueError(f"Invalid interval format: {interval}")
+            out["interval_ms"] = int(ms)
 
         # Merge precedence: global -> strategy -> runtime
         combined_presets: Dict[str, Any] = copy.deepcopy(GLOBAL_PRESETS)
         if isinstance(cls.PRESETS, dict) and cls.PRESETS:
-            for k, v in cls.PRESETS.items():
-                combined_presets[k] = copy.deepcopy(v)
-
-        # Runtime-provided presets override strategy
+            combined_presets.update({k: copy.deepcopy(v) for k, v in cls.PRESETS.items()})
         runtime_presets = out.get("presets")
         if isinstance(runtime_presets, dict) and runtime_presets:
-            for k, v in runtime_presets.items():
-                combined_presets[k] = v
+            combined_presets.update(runtime_presets)
         if combined_presets:
             out = StrategyBase._expand_refs(out, combined_presets)
         out.pop("presets", None)
@@ -444,27 +439,10 @@ class StrategyBase:
 
         data = out.get("data")
         if isinstance(data, dict):
-            # ------ helper ------
-            def _fix_ohlcv(block: Dict[str, Any]) -> None:
-                # unify interval key
+            def _fix_block(block: Dict[str, Any], *, allow_refresh: bool = False) -> None:
                 if "tf" in block and "interval" not in block:
                     block["interval"] = block.pop("tf")
-                interval = block.get("interval")
-                if isinstance(interval, str) and interval:
-                    ms = to_interval_ms(interval)
-                    if ms is None:
-                        raise ValueError(f"Invalid interval format: {interval}")
-                    block["interval_ms"] = int(ms)
-                # strip warmup from history (runtime concern)
-                hist = block.get("history")
-                if isinstance(hist, dict):
-                    hist.pop("warmup", None)
-
-            def _fix_orderbook(block: Dict[str, Any]) -> None:
-                # unify interval key
-                if "tf" in block and "interval" not in block:
-                    block["interval"] = block.pop("tf")
-                if "refresh_interval" in block and "interval" not in block:
+                if allow_refresh and "refresh_interval" in block and "interval" not in block:
                     block["interval"] = block.pop("refresh_interval")
                 interval = block.get("interval")
                 if isinstance(interval, str) and interval:
@@ -472,63 +450,31 @@ class StrategyBase:
                     if ms is None:
                         raise ValueError(f"Invalid interval format: {interval}")
                     block["interval_ms"] = int(ms)
-                # strip warmup from history (runtime concern)
                 hist = block.get("history")
                 if isinstance(hist, dict):
                     hist.pop("warmup", None)
 
-            def _fix_generic(block: Dict[str, Any]) -> None:
-                if "tf" in block and "interval" not in block:
-                    block["interval"] = block.pop("tf")
-                interval = block.get("interval")
-                if isinstance(interval, str) and interval:
-                    ms = to_interval_ms(interval)
-                    if ms is None:
-                        raise ValueError(f"Invalid interval format: {interval}")
-                    block["interval_ms"] = int(ms)
-                hist = block.get("history")
-                if isinstance(hist, dict):
-                    hist.pop("warmup", None)
-            # ------ process ------
+            def _fix_section(section: Dict[str, Any]) -> None:
+                ohlcv = section.get("ohlcv")
+                if isinstance(ohlcv, dict):
+                    _fix_block(ohlcv)
+                orderbook = section.get("orderbook")
+                if isinstance(orderbook, dict):
+                    _fix_block(orderbook, allow_refresh=True)
+                for key in ("option_chain", "iv_surface", "sentiment"):
+                    block = section.get(key)
+                    if isinstance(block, dict):
+                        _fix_block(block)
+
             primary = data.get("primary")
             if isinstance(primary, dict):
-                ohlcv = primary.get("ohlcv")
-                if isinstance(ohlcv, dict):
-                    _fix_ohlcv(ohlcv)
-                orderbook = primary.get("orderbook")
-                if isinstance(orderbook, dict):
-                    _fix_orderbook(orderbook)
-                option_chain = primary.get("option_chain")
-                if isinstance(option_chain, dict):
-                    _fix_generic(option_chain)
-                iv_surface = primary.get("iv_surface")
-                if isinstance(iv_surface, dict):
-                    _fix_generic(iv_surface)
-                sentiment = primary.get("sentiment")
-                if isinstance(sentiment, dict):
-                    _fix_generic(sentiment)
-            
-            # ------ secondary ------
+                _fix_section(primary)
+
             secondary = data.get("secondary")
             if isinstance(secondary, dict):
-                for _, sec in secondary.items():
-                    if not isinstance(sec, dict):
-                        continue
-                    ohlcv = sec.get("ohlcv")
-                    if isinstance(ohlcv, dict):
-                        _fix_ohlcv(ohlcv)
-                    orderbook = sec.get("orderbook")
-                    if isinstance(orderbook, dict):
-                        _fix_orderbook(orderbook)
-                    option_chain = sec.get("option_chain")
-                    if isinstance(option_chain, dict):
-                        _fix_generic(option_chain)
-                    iv_surface = sec.get("iv_surface")
-                    if isinstance(iv_surface, dict):
-                        _fix_generic(iv_surface)
-                    sentiment = sec.get("sentiment")
-                    if isinstance(sentiment, dict):
-                        _fix_generic(sentiment)
+                for sec in secondary.values():
+                    if isinstance(sec, dict):
+                        _fix_section(sec)
 
         # ---------------------------
         # FEATURES: unify params.ref + canonicalize names

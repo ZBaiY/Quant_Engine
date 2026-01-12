@@ -1,13 +1,3 @@
-# PR checklist (asyncio audit):
-# - [x] map task creation/await paths in runtime + ingestion
-# - [x] log task/loop exceptions with shutdown signaling
-# - [x] offload sync source iteration from async workers to threads
-# - [x] guard shared writer maps/locks + add lock wait logging
-# - [x] confirm cancellation paths cancel background tasks
-# Audit notes:
-# - to_thread: sync source iter/fetch, close, and backtest warmup/preload moved off loop
-# - backpressure: bounded to_thread limiter with inflight/waiting logs
-# - remaining sync: realtime preload/warmup/step kept on loop for single-threaded engine safety
 from __future__ import annotations
 
 import asyncio

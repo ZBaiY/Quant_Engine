@@ -14,8 +14,8 @@ from ingestion.orderbook.source import OrderbookFileSource, OrderbookRESTSource,
 import ingestion.orderbook.source as orderbook_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
+from ingestion.utils import resolve_poll_interval_ms
 
-_LOG_SAMPLE_EVERY = 100
 _DOMAIN = "orderbook"
 
 def _as_primitive(x: Any) -> str | int | float | bool | None:
@@ -196,18 +196,17 @@ class OrderbookWorker(IngestWorker):
                             f"Orderbook fetch source requires poll_interval_ms or interval; symbol={self._symbol}"
                         )
                     poll_interval_ms = int(self._interval_ms)
-                elif self._interval_ms is not None and poll_interval_ms != self._interval_ms:
-                    log_warn(
-                        self._logger,
-                        "ingestion.poll_interval_override",
-                        worker=self.__class__.__name__,
-                        symbol=self._symbol,
-                        domain=_DOMAIN,
-                        interval=self._interval,
-                        interval_ms=int(self._interval_ms),
-                        poll_interval_ms=int(poll_interval_ms),
-                    )
-                    poll_interval_ms = int(self._interval_ms)
+                poll_interval_ms = resolve_poll_interval_ms(
+                    self._logger,
+                    poll_interval_ms=poll_interval_ms,
+                    interval_ms=self._interval_ms,
+                    log_context={
+                        "worker": self.__class__.__name__,
+                        "symbol": self._symbol,
+                        "domain": _DOMAIN,
+                        "interval": self._interval,
+                    },
+                )
                 self._poll_interval_ms = poll_interval_ms
             else:
                 poll_interval_ms = None
@@ -234,47 +233,15 @@ class OrderbookWorker(IngestWorker):
                 if poll_interval_ms is not None and poll_interval_ms > 0
                 else None
             )
-            last_fetch = time.monotonic()
             async for raw in iter_source(
                 self._source,
                 logger=self._logger,
                 context=sync_context,
                 poll_interval_s=poll_interval_s if kind == "fetch" else None,
             ):
-                now = time.monotonic()
                 self._poll_seq += 1
-                sample = (self._poll_seq % _LOG_SAMPLE_EVERY) == 0
-                if sample:
-                    log_debug(
-                        self._logger,
-                        "ingestion.source_fetch_success",
-                        worker=self.__class__.__name__,
-                        symbol=self._symbol,
-                        domain=_DOMAIN,
-                        latency_ms=int((now - last_fetch) * 1000),
-                        n_items=1,
-                        normalize_ms=None,
-                        emit_ms=None,
-                        poll_seq=self._poll_seq,
-                    )
-                last_fetch = time.monotonic()
-                norm_start = time.monotonic()
                 tick = self._normalize(raw)
-                normalize_ms = int((time.monotonic() - norm_start) * 1000)
-                emit_start = time.monotonic()
                 await _emit(tick)
-                emit_ms = int((time.monotonic() - emit_start) * 1000)
-                if sample:
-                    log_debug(
-                        self._logger,
-                        "ingestion.sample_timing",
-                        worker=self.__class__.__name__,
-                        symbol=self._symbol,
-                        domain=_DOMAIN,
-                        normalize_ms=normalize_ms,
-                        emit_ms=emit_ms,
-                        poll_seq=self._poll_seq,
-                    )
                 # cooperative yield to avoid starving other asyncio tasks
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
