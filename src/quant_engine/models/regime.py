@@ -30,9 +30,6 @@ class VolRegimeModel(ModelBase):
             vol = float(self.fget(features, ftype="VOLATILITY", purpose="MODEL"))
         except Exception:
             # Fallback: use (validated) required feature names if index is not bound yet
-            if not getattr(self, "required_features", None):
-                vol = 0.0
-            else:
-                name = next(iter(self.required_features))
-                vol = float(features.get(name, 0.0))
+            name = next(iter(getattr(self, "required_features", ())), None)
+            vol = float(features.get(name, 0.0)) if name else 0.0
         return 1.0 if vol > self.threshold else -1.0

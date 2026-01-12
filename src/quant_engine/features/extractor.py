@@ -90,37 +90,7 @@ def _normalize_feature_item(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 class FeatureExtractor:
-    """
-    TradeBot v4 Unified Feature Extractor
-
-    Naming convention (enforced):
-        <TYPE>_<PURPOSE>_<SYMBOL>
-        <TYPE>_<PURPOSE>_<SYMBOL>^<REF>
-
-    FeatureChannels in v4 operate **only on timestamp-aligned snapshots**.
-
-    Context passed to each FeatureChannel:
-        {
-            "timestamp": int,     # current timestamp (epoch ms)
-            "data": {
-                "ohlcv": {symbol → OHLCVHandler},
-                "orderbook": {symbol → OrderbookHandler},
-                "option_chain": {symbol → OptionChainHandler},
-                "iv_surface": {symbol → IVSurfaceDataHandler},
-                "sentiment": {symbol → SentimentHandler},
-                "trades": {symbol → TradesHandler},
-                "option_trades": {symbol → OptionTradesHandler},
-            },
-            "warmup_window": Optional[int],
-            "ohlcv_window": Optional[pd.DataFrame],
-        }
-
-    FeatureChannels then call:
-        snapshot(context, data_type)
-        window_any(context, data_type, n)
-
-    No feature should ever access handler internals directly.
-    """
+    """Unified v4 feature extractor over timestamp-aligned handler snapshots."""
 
     _logger = get_logger(__name__)
 
@@ -215,9 +185,7 @@ class FeatureExtractor:
         elif not isinstance(n, int) or n <= 0:
             raise ValueError(f"Invalid warmup_steps: {n!r}")
         self.warmup_steps = n
-    # ------------------------------------------------------------------
     # Strategy interval (engine-injected)
-    # ------------------------------------------------------------------
     def set_interval(self, interval: str | None) -> None:
         """Inject strategy observation interval (e.g. '1m', '15m').
 
@@ -267,17 +235,11 @@ class FeatureExtractor:
                 except Exception:
                     pass
 
-    # ----------------------------------------------------------------------
-    # Full-window initialization
-    # ----------------------------------------------------------------------
     def initialize(self) -> Dict[str, Any]:
         """
         Perform full-window initialization (historical warmup).
         Called on backtest startup or live cold-start.
         """
-        # 1) Determine required warmup window across all channels
-        
-
         # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
         primary_handler: Optional[OHLCVHandlerProto] = None
 
@@ -350,9 +312,6 @@ class FeatureExtractor:
 
         return self._last_output
 
-    # ----------------------------------------------------------------------
-    # Incremental update
-    # ----------------------------------------------------------------------
     def update(self, timestamp: int | None = None) -> Dict[str, Any]:
         """
         Incremental update for new bar arrival.
@@ -374,17 +333,11 @@ class FeatureExtractor:
                 "Timestamp inference is owned by the engine/driver in v4."
             )
 
-        assert timestamp is not None
-
-        # ----------------------------------------------------------
-        # 2) Anti-lookahead: if time hasn’t advanced, return cached
-        # ----------------------------------------------------------
+        # Anti-lookahead: if time hasn’t advanced, return cached
         if self._last_timestamp is not None and timestamp <= self._last_timestamp:
             return self._last_output
 
-        # ----------------------------------------------------------
-        # 3) Build runtime context & update channels
-        # ----------------------------------------------------------
+        # Build runtime context & update channels
         runtime_context = {
             "timestamp": timestamp,
             "interval": self._interval,
@@ -459,9 +412,6 @@ class FeatureExtractor:
 
         log_debug(self._logger, "FeatureExtractor warmup completed")
 
-    # ----------------------------------------------------------------------
-    # Output aggregator
-    # ----------------------------------------------------------------------
     def compute_output(self) -> Dict[str, Any]:
         """
         Collect feature outputs.
@@ -491,14 +441,9 @@ class FeatureExtractor:
 
         return result
 
-    # ----------------------------------------------------------------------
-    # Thin wrapper (keeps old API)
-    # ----------------------------------------------------------------------
     def compute(self) -> Dict[str, Any]:
         """
         Kept for backward compatibility.
         In v4 this performs an incremental update.
         """
-        out = self.update()
-        log_debug(self._logger, "FeatureExtractor computed features", keys=list(out.keys()))
-        return out
+        return self.update()

@@ -3,7 +3,6 @@
 from quant_engine.features.registry import build_feature
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.utils.logger import get_logger, log_debug
-#### 有些feature需要对手标的，注意param里应该包含ref字段。
 
 
 class FeatureLoader:

@@ -3,6 +3,27 @@ from quant_engine.contracts.model import ModelBase, parse_feature_name
 from .registry import register_model
 
 
+def _find_feature_name(
+    required_features: set[str],
+    *,
+    ftype: str,
+    purpose: str,
+    symbol: str,
+    prefer_last: bool,
+) -> str | None:
+    match: str | None = None
+    for name in required_features:
+        try:
+            t, p, s, _r = parse_feature_name(name)
+        except Exception:
+            continue
+        if t == ftype and p == purpose and s == symbol:
+            match = name
+            if not prefer_last:
+                break
+    return match
+
+
 @register_model("RSI-MODEL")
 class RSIMomentumModel(ModelBase):
     # design-time capability requirement
@@ -21,15 +42,13 @@ class RSIMomentumModel(ModelBase):
             rsi = float(self.fget(features, ftype="RSI", purpose="MODEL"))
         except Exception:
             # Fallback: locate RSI feature in validation names
-            rsi_name = None
-            for n in getattr(self, "required_features", set()):
-                try:
-                    t, p, s, r = parse_feature_name(n)
-                except Exception:
-                    continue
-                if t == "RSI" and p == "MODEL" and s == self.symbol:
-                    rsi_name = n
-                    break
+            rsi_name = _find_feature_name(
+                getattr(self, "required_features", set()),
+                ftype="RSI",
+                purpose="MODEL",
+                symbol=self.symbol,
+                prefer_last=False,
+            )
             if rsi_name is None:
                 return 0.0
             rsi = float(features.get(rsi_name, 0.0))
@@ -55,19 +74,21 @@ class MACDMomentumModel(ModelBase):
             signal = float(self.fget(features, ftype="MACD_SIGNAL", purpose="MODEL"))
         except Exception:
             # Fallback: locate by parsing validation names (order-independent)
-            macd_name = None
-            sig_name = None
-            for n in getattr(self, "required_features", set()):
-                try:
-                    t, p, s, r = parse_feature_name(n)
-                except Exception:
-                    continue
-                if p != "MODEL" or s != self.symbol:
-                    continue
-                if t == "MACD":
-                    macd_name = n
-                elif t == "MACD_SIGNAL":
-                    sig_name = n
+            required = getattr(self, "required_features", set())
+            macd_name = _find_feature_name(
+                required,
+                ftype="MACD",
+                purpose="MODEL",
+                symbol=self.symbol,
+                prefer_last=True,
+            )
+            sig_name = _find_feature_name(
+                required,
+                ftype="MACD_SIGNAL",
+                purpose="MODEL",
+                symbol=self.symbol,
+                prefer_last=True,
+            )
             if macd_name is None or sig_name is None:
                 return 0.0
             macd = float(features.get(macd_name, 0.0))
