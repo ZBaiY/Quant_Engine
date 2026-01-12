@@ -97,7 +97,6 @@ class BaseDriver(ABC):
         PRELOAD → WARMUP → STEP* → FINISH
         """
         raise NotImplementedError
-        # -------- preload --------
 
     def _shutdown_components(self) -> None:
         self._stop_event.set()

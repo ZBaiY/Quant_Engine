@@ -14,6 +14,7 @@ from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.logger import log_debug, log_info, log_warn
+from quant_engine.utils.num import visible_end_ts
 
 DRAIN_YIELD_EVERY = 2048
 STEP_LOG_EVERY = 100
@@ -152,6 +153,7 @@ class BacktestDriver(BaseDriver):
                     drained_ticks += 1
 
                 if self.spec.mode == EngineMode.BACKTEST:
+<<<<<<< HEAD
                     handler = None
                     if getattr(self.engine, "ohlcv_handlers", None):
                         handler = self.engine.ohlcv_handlers.get("BTCUSDT")
@@ -187,6 +189,50 @@ class BacktestDriver(BaseDriver):
                             self.engine.ingest_tick(item)
                             drained_ticks += 1
                             watermark = getattr(self.engine, "_last_tick_ts_by_key", {}).get(key)
+=======
+                    handler, interval_ms = _get_primary_ohlcv_handler()
+                    if handler is not None and isinstance(interval_ms, int) and interval_ms > 0:
+                        need_ts = visible_end_ts(timestamp, interval_ms)
+                        if self.tick_queue is not None:
+                            key = f"ohlcv:{handler.symbol}:{getattr(handler, 'source_id', None)}"
+                            last_tick_ts_by_key = getattr(self.engine, "_last_tick_ts_by_key", {})
+                            watermark = last_tick_ts_by_key.get(key)
+                            if watermark is None and callable(getattr(handler, "last_timestamp", None)):
+                                watermark = handler.last_timestamp()
+                            while True:
+                                if watermark is not None and int(watermark) >= int(need_ts):
+                                    break
+                                if self._ingestion_tasks is not None and all(t.done() for t in self._ingestion_tasks):
+                                    raise RuntimeError(
+                                        f"backtest.missing_data: key={key} need_ts={need_ts} watermark={watermark}"
+                                    )
+                                raw = await self.tick_queue.get()
+                                if isinstance(raw, tuple) and len(raw) == 2:
+                                    _ts, item = raw
+                                elif isinstance(raw, tuple) and len(raw) == 3:
+                                    _ts, _seq, item = raw
+                                else:
+                                    item = raw
+                                    _ts = getattr(item, "data_ts", None)
+                                if _ts is not None and int(_ts) > int(timestamp):
+                                    raise RuntimeError(
+                                        f"backtest.missing_data: key={key} need_ts={need_ts} head_ts={_ts} step_ts={timestamp}"
+                                    )
+                                assert isinstance(item, IngestionTick)
+                                self.engine.ingest_tick(item)
+                                drained_ticks += 1
+                                watermark = last_tick_ts_by_key.get(key)
+                        actual_last_ts = handler.last_timestamp() if hasattr(handler, "last_timestamp") else None
+                        closed_bar_ready = actual_last_ts is not None and int(actual_last_ts) >= int(need_ts)
+                        if not closed_bar_ready:
+                            log_warn(
+                                self._logger,
+                                "backtest.closed_bar.not_ready",
+                                timestamp=int(timestamp),
+                                expected_visible_end_ts=int(need_ts),
+                                actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
+                            )
+>>>>>>> 9ae8102 (cleanup 1)
                 log_info(
                     self._logger,
                     "driver.ingest",
@@ -194,6 +240,7 @@ class BacktestDriver(BaseDriver):
                     drained_ticks_count=drained_ticks,
                 )
 
+<<<<<<< HEAD
                 if self.spec.mode == EngineMode.BACKTEST:
                     handler = None
                     if getattr(self.engine, "ohlcv_handlers", None):
@@ -216,6 +263,8 @@ class BacktestDriver(BaseDriver):
                                 actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
                             )
 
+=======
+>>>>>>> 9ae8102 (cleanup 1)
                 # ---- step ----
                 if getattr(self, "guard", None) is not None:
                     self.guard.enter(RuntimePhase.STEP)

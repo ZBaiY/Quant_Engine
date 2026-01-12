@@ -16,6 +16,7 @@ from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset
+from quant_engine.utils.num import visible_end_ts
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.ohlcv.source import OHLCVFileSource
 
@@ -303,11 +304,8 @@ class OHLCVDataHandler(RealTimeDataHandler):
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         if isinstance(self.interval_ms, int) and self.interval_ms > 0:
             # Closed-bar visibility: only expose bars with data_ts <= visible_end_ts.
-            ve = (t // int(self.interval_ms)) * int(self.interval_ms)
+            ve = visible_end_ts(t, int(self.interval_ms))
             snap = self.cache.get_at_or_before(int(ve))
-            if snap is None:
-                snap = self.cache.get_at_or_before(int(ve - 1))
-                ve = ve - 1
             if snap is not None and int(snap.data_ts) > int(ve):
                 log_warn(
                     self._logger,
@@ -334,11 +332,8 @@ class OHLCVDataHandler(RealTimeDataHandler):
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         if isinstance(self.interval_ms, int) and self.interval_ms > 0:
             # Closed-bar visibility: only expose bars with data_ts <= visible_end_ts.
-            ve = (t // int(self.interval_ms)) * int(self.interval_ms)
+            ve = visible_end_ts(t, int(self.interval_ms))
             snapshots = self.cache.get_n_before(int(ve), n)
-            if not snapshots:
-                snapshots = self.cache.get_n_before(int(ve - 1), n)
-                ve = ve - 1
             if snapshots:
                 last_ts = int(snapshots[-1].data_ts)
                 if last_ts > int(ve):

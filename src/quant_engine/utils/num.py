@@ -1,9 +1,9 @@
-
-
 from __future__ import annotations
 
 from typing import Any
 
+def visible_end_ts(ts: int, interval_ms: int) -> int:
+    return (ts // interval_ms) * interval_ms - 1
 
 def to_float(x: Any) -> float:
     """

@@ -196,12 +196,11 @@ class OptionChainWorker(IngestWorker):
         self._error_logged = False
         stop_reason = "exit"
 
-        async def _emit(tick: IngestionTick) -> bool:
+        async def _emit(tick: IngestionTick) -> None:
             try:
                 r = emit(tick)
                 if inspect.isawaitable(r):
                     await r  # type: ignore[misc]
-                return False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -214,7 +213,7 @@ class OptionChainWorker(IngestWorker):
                         domain=_DOMAIN,
                         reason="stop_replay",
                     )
-                    return True
+                    raise  # let outer except handle uniformly
                 self._error_logged = True
                 log_exception(
                     self._logger,
@@ -305,10 +304,7 @@ class OptionChainWorker(IngestWorker):
                 tick = self._normalize(raw)
                 normalize_ms = int((time.monotonic() - norm_start) * 1000)
                 emit_start = time.monotonic()
-                stop_replay = await _emit(tick)
-                if stop_replay:
-                    stop_reason = "replay_done"
-                    return
+                await _emit(tick)
                 emit_ms = int((time.monotonic() - emit_start) * 1000)
                 if sample:
                     log_debug(

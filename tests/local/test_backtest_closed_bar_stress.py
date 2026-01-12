@@ -155,45 +155,12 @@ async def test_backtest_closed_bar_stress() -> None:
     if not any(p.exists() for p in paths):
         pytest.skip("No local OHLCV data for stress run")
 
-    results: list[dict] = []
     base_fingerprint = None
-    first_divergence_ts_list: list[int | None] = []
-    divergence_detail_by_run: list[dict | None] = []
+    divergences: list[dict] = []
     for i in range(RUNS):
         run_id = f"local_backtest_stress_{i}"
         result = await _run_once(run_id=run_id, data_root=data_root)
-        if base_fingerprint is None:
-            base_fingerprint = result["fingerprint"]
-            first_divergence_ts_list.append(None)
-            divergence_detail_by_run.append(None)
-        else:
-            first_ts = None
-            for (a_ts, a_feat, a_snap), (b_ts, b_feat, b_snap) in zip(base_fingerprint, result["fingerprint"]):
-                if (a_ts, a_feat, a_snap) != (b_ts, b_feat, b_snap):
-                    first_ts = a_ts
-                    break
-            first_divergence_ts_list.append(first_ts)
-            if first_ts is not None:
-                base_map = results[0]["step_map"]
-                run_map = result["step_map"]
-                divergence_detail_by_run.append(
-                    {
-                        "ts": first_ts,
-                        "base_features": base_map.get(first_ts, (None, None))[0],
-                        "base_snapshot": base_map.get(first_ts, (None, None))[1],
-                        "run_features": run_map.get(first_ts, (None, None))[0],
-                        "run_snapshot": run_map.get(first_ts, (None, None))[1],
-                    }
-                )
-            else:
-                divergence_detail_by_run.append(None)
-        results.append(result)
-
-    try:
-        assert all(r["count_not_ready_steps"] == 0 for r in results)
-    except AssertionError:
-        for i, result in enumerate(results):
-            run_id = f"local_backtest_stress_{i}"
+        if result["count_not_ready_steps"] > 0:
             print(
                 "run",
                 run_id,
@@ -204,10 +171,30 @@ async def test_backtest_closed_bar_stress() -> None:
                 "first_not_ready_detail",
                 result["first_not_ready_detail"],
             )
-        print("divergence_summary:", {f"local_backtest_stress_{i}": ts for i, ts in enumerate(first_divergence_ts_list)})
-        for i, detail in enumerate(divergence_detail_by_run):
-            if detail is None:
-                continue
-            run_id = f"local_backtest_stress_{i}"
-            print("divergence_detail", run_id, detail)
-        raise
+        if base_fingerprint is None:
+            base_fingerprint = result["fingerprint"]
+        else:
+            run_fingerprint = result["fingerprint"]
+            if base_fingerprint != run_fingerprint:
+                first_idx = next((idx for idx, steps in enumerate(zip(base_fingerprint, run_fingerprint), 1) if steps[0] != steps[1]), None)
+                if first_idx is None:
+                    first_idx = min(len(base_fingerprint), len(run_fingerprint)) + 1
+                base_entry = base_fingerprint[first_idx - 1] if len(base_fingerprint) >= first_idx else None
+                run_entry = run_fingerprint[first_idx - 1] if len(run_fingerprint) >= first_idx else None
+                ts = base_entry[0] if base_entry is not None else (run_entry[0] if run_entry is not None else None)
+                divergences.append(
+                    {
+                        "run_id": run_id,
+                        "ts": ts,
+                        "base_features": None if base_entry is None else base_entry[1],
+                        "base_snapshot": None if base_entry is None else base_entry[2],
+                        "run_features": None if run_entry is None else run_entry[1],
+                        "run_snapshot": None if run_entry is None else run_entry[2],
+                    }
+                )
+
+    if divergences:
+        print("divergence_summary:", {detail["run_id"]: detail["ts"] for detail in divergences})
+        for detail in divergences:
+            print("divergence_detail", detail["run_id"], detail)
+        raise AssertionError("closed-bar stress fingerprints diverged")

@@ -17,6 +17,7 @@ from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto, RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace
+from quant_engine.utils.num import visible_end_ts
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.guards import (
     assert_monotonic,
@@ -1076,7 +1077,7 @@ class StrategyEngine:
             handler = self._get_primary_ohlcv_handler()
             interval_ms = getattr(handler, "interval_ms", None) if handler is not None else None
             if handler is not None and isinstance(interval_ms, int) and interval_ms > 0:
-                expected_visible_end_ts = (int(timestamp) // int(interval_ms)) * int(interval_ms) - 1
+                expected_visible_end_ts = visible_end_ts(int(timestamp), int(interval_ms))
                 if callable(getattr(handler, "last_timestamp", None)):
                     actual_last_ts = handler.last_timestamp()
                     if actual_last_ts is not None:

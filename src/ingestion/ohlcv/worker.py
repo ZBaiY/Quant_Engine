@@ -144,7 +144,16 @@ class OHLCVWorker(IngestWorker):
         for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
             try:
                 raw_map = dict(raw)
-            except Exception:
+            except Exception as exc:
+                log_debug(
+                    self._logger,
+                    "ingestion.backfill.raw_convert_error",
+                    worker=self.__class__.__name__,
+                    symbol=self._symbol,
+                    domain=_DOMAIN,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
                 continue
             ts_any = raw_map.get("data_ts") or raw_map.get("close_time")
             if ts_any is None and "open_time" in raw_map and self.interval_ms is not None:
@@ -176,12 +185,11 @@ class OHLCVWorker(IngestWorker):
         self._error_logged = False
         stop_reason = "exit"
 
-        async def _emit(tick: IngestionTick) -> bool:
+        async def _emit(tick: IngestionTick) -> None:
             try:
                 r = emit(tick)
                 if inspect.isawaitable(r):
-                    await r  
-                return False
+                    await r
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -194,7 +202,7 @@ class OHLCVWorker(IngestWorker):
                         domain=_DOMAIN,
                         reason="stop_replay",
                     )
-                    return True
+                    raise  # let outer except handle uniformly
                 self._error_logged = True
                 log_exception(
                     self._logger,
@@ -290,10 +298,7 @@ class OHLCVWorker(IngestWorker):
                 emit_ms = None
                 if tick is not None:
                     emit_start = time.monotonic()
-                    stop_replay = await _emit(tick)
-                    if stop_replay:
-                        stop_reason = "replay_done"
-                        return
+                    await _emit(tick)
                     emit_ms = int((time.monotonic() - emit_start) * 1000)
                 if sample:
                     log_debug(
