@@ -54,7 +54,17 @@ def test_execution_uses_snapshot_attrs(monkeypatch) -> None:
     fills = engine.execute(
         timestamp=1_700_000_000_000,
         target_position=1.0,
-        portfolio_state={"position": 0.0},
+        portfolio_state={
+            "position": 0.0,
+            "position_qty": 0.0,
+            "position_lots": 0,
+            "cash": 10000.0,
+            "total_equity": 10000.0,
+            "qty_step": "1",
+            "qty_mode": "LOTS",
+            "min_qty": 0.0,
+            "min_notional": 0.0,
+        },
         primary_snapshots={"orderbook": snap},
     )
 

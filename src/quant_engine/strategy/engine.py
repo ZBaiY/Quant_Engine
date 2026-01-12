@@ -928,6 +928,8 @@ class StrategyEngine:
         # -------------------------------------------------
         # 3. Portfolio snapshot (used by model/decision/risk)
         # -------------------------------------------------
+        if hasattr(self.portfolio, "update_marks"):
+            self.portfolio.update_marks(market_snapshots)
         portfolio_state = self.portfolio.state()
         if hasattr(portfolio_state, "to_dict"):
             portfolio_state_dict = dict(portfolio_state.to_dict())
@@ -1034,6 +1036,8 @@ class StrategyEngine:
                 market_snapshots_out[domain] = dict(snaps)
             else:
                 market_snapshots_out[domain] = snaps
+        if hasattr(self.portfolio, "update_marks"):
+            self.portfolio.update_marks(market_snapshots)
         portfolio_post = self.portfolio.state()
         if isinstance(portfolio_post, PortfolioState):
             portfolio_post = PortfolioState(dict(portfolio_post.to_dict()))

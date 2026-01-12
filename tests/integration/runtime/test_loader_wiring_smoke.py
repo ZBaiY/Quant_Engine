@@ -36,3 +36,34 @@ def test_loader_builds_rsi_adx_without_model() -> None:
     assert engine.risk_manager is not None
     assert engine.execution_engine is not None
     assert engine.portfolio is not None
+
+
+def test_loader_inits_portfolio_before_risk(monkeypatch) -> None:
+    order = []
+    from quant_engine.portfolio.loader import PortfolioLoader
+    from quant_engine.risk.loader import RiskLoader
+    from quant_engine.execution.loader import ExecutionLoader
+
+    orig_portfolio = PortfolioLoader.from_config
+    orig_risk = RiskLoader.from_config
+    orig_exec = ExecutionLoader.from_config
+
+    def _portfolio(*args, **kwargs):
+        order.append("portfolio")
+        return orig_portfolio(*args, **kwargs)
+
+    def _risk(*args, **kwargs):
+        order.append("risk")
+        return orig_risk(*args, **kwargs)
+
+    def _exec(*args, **kwargs):
+        order.append("execution")
+        return orig_exec(*args, **kwargs)
+
+    monkeypatch.setattr(PortfolioLoader, "from_config", _portfolio)
+    monkeypatch.setattr(RiskLoader, "from_config", _risk)
+    monkeypatch.setattr(ExecutionLoader, "from_config", _exec)
+
+    _ = _build_engine("EXAMPLE", bind_symbols={"A": "BTCUSDT", "B": "ETHUSDT"})
+    assert order.index("portfolio") < order.index("risk")
+    assert order.index("portfolio") < order.index("execution")

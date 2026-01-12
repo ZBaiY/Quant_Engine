@@ -95,6 +95,7 @@ class ExampleStrategy(StrategyBase):
         "matching": {"type": "SIMULATED"},
     }
     PORTFOLIO_CFG = {
+        #"step_size": 1,  # STANDARD portfolio. for non-standard, set in params e.g. #"step_size": 0.0001,  # FRACTIONAL portfolio
         "type": "STANDARD",
         "params": {"initial_capital": 1000000,},
     }
@@ -176,7 +177,6 @@ class RSIADXSidewaysStrategy(StrategyBase):
                     "slippage_bound_bps": 10,
                     # "min_qty": 1,
                     "min_notional": 10.0,
-                    "integer_only": True,
                 },
             },
         }
@@ -192,4 +192,98 @@ class RSIADXSidewaysStrategy(StrategyBase):
     PORTFOLIO_CFG = {
         "type": "STANDARD",
         "params": {"initial_capital": 1000000},
+    }
+
+@register_strategy("RSI-ADX-SIDEWAYS-FRACTIONAL")
+class RSIADXSidewaysStrategyFractional(StrategyBase):
+
+    STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL"
+    INTERVAL = "15m"
+    # B-style, but single-symbol
+    UNIVERSE_TEMPLATE = {
+        "primary": "{A}",
+    }
+
+    DATA = {
+        "primary": {
+            "ohlcv": {"$ref": "OHLCV_15M_180D"},
+        }
+    }
+
+    REQUIRED_DATA = {"ohlcv"}
+
+    FEATURES_USER = [
+        {
+            "name": "RSI_DECISION_{A}",
+            "type": "RSI",
+            "symbol": "{A}",
+            "params": {"window": '{window_RSI}'},
+        },
+        {
+            "name": "ADX_DECISION_{A}",
+            "type": "ADX",
+            "symbol": "{A}",
+            "params": {"window": '{window_ADX}'},
+        },
+        {
+            "name": "RSI-MEAN_DECISION_{A}",
+            "type": "RSI-MEAN",
+            "symbol": "{A}",
+            "params": {
+                "window_rsi": "{window_RSI}",
+                "window_rolling": "{window_RSI_rolling}",
+            },
+        },
+        {
+            "name": "RSI-STD_DECISION_{A}",
+            "type": "RSI-STD",
+            "symbol": "{A}",
+            "params": {
+                "window_rsi": "{window_RSI}",
+                "window_rolling": "{window_RSI_rolling}",
+            },
+        },
+    ]
+
+    # no model — rule-based decision
+    MODEL_CFG = None
+
+    DECISION_CFG = {
+        "type": "RSI-DYNAMIC-BAND",
+        "params": {
+            "rsi": "RSI_DECISION_{A}",
+            "rsi_mean": "RSI-MEAN_DECISION_{A}",
+            "rsi_std": "RSI-STD_DECISION_{A}",
+            "adx": "ADX_DECISION_{A}",
+            "adx_threshold": 25,
+            "variance_factor": 1.8,
+            "mae": 0.0,
+        },
+    }
+
+    RISK_CFG = {
+        "shortable": False,
+        "rules": {
+            "FULL-ALLOCATION": {},
+            "FRACTIONAL-CASH-CONSTRAINT": {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bound_bps": 10,
+                    # "min_qty": 1,
+                    "min_notional": 10.0,
+                },
+            },
+        }
+    }
+
+    EXECUTION_CFG = {
+        "policy": {"type": "IMMEDIATE"},
+        "router": {"type": "SIMPLE"},
+        "slippage": {"type": "LINEAR"},
+        "matching": {"type": "SIMULATED"},
+    }
+
+    PORTFOLIO_CFG = {
+        "type": "FRACTIONAL",
+        "params": {"initial_capital": 1000000, "step_size": 0.001},
     }

@@ -15,6 +15,7 @@ from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler, to_interval_ms
+from quant_engine.utils.logger import get_logger, log_info
 
 class StrategyLoader:
 
@@ -187,6 +188,16 @@ class StrategyLoader:
             }
             model_main = models["main"]
             model_required = getattr(model_main, "required_feature_types", set())
+        portfolio = PortfolioLoader.from_config(symbol=symbol, cfg=cfg["portfolio"])
+        portfolio_state = portfolio.state().to_dict()
+        log_info(
+            get_logger(__name__),
+            "loader.portfolio.init",
+            symbol=symbol,
+            portfolio_type=cfg.get("portfolio", {}).get("type"),
+            qty_step=portfolio_state.get("qty_step"),
+            qty_mode=portfolio_state.get("qty_mode"),
+        )
         risk_manager = RiskLoader.from_config(symbol=symbol, cfg=cfg["risk"])
         decision = DecisionLoader.from_config(symbol=symbol, cfg=cfg["decision"])
         if getattr(decision, "symbol", None) is None:
@@ -247,7 +258,6 @@ class StrategyLoader:
         # 2ed Validation finished -- feature dependencies
         # -----------------------------------------------
         execution_engine = ExecutionLoader.from_config(symbol=symbol, cfg=cfg["execution"])
-        portfolio = PortfolioLoader.from_config(symbol=symbol, cfg=cfg["portfolio"])
 
         feature_extractor = FeatureLoader.from_config(
             final_features,

@@ -30,6 +30,7 @@ Configuration Parameters:
 - eps: float tolerance for comparisons (default 1e-9)
 """
 
+from decimal import Decimal, ROUND_FLOOR
 from typing import Any, Dict
 from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.registry import register_risk
@@ -56,23 +57,49 @@ class CashPositionConstraintRule(RiskBase):
     """
 
     required_feature_types: set[str] = set()
+    PRIORITY = 90
 
     def __init__(self, symbol: str, **kwargs):
         super().__init__(symbol=symbol, **kwargs)
 
-        # Fee and slippage parameters
+        ignored_params = []
+        for key in ("step_size", "qty_step", "qty_mode", "integer_only"):
+            if key in kwargs:
+                ignored_params.append(key)
+        if ignored_params:
+            log_warn(
+                get_logger(__name__),
+                "risk.cfg.ignored_portfolio_owned_param",
+                symbol=symbol,
+                params=ignored_params,
+                reason="Portfolio-owned quantity grid params must come from portfolio snapshot",
+            )
+
+        # Fee and slippage parameters (risk-owned)
         self.fee_rate = float(kwargs.get("fee_rate", 0.001))  # 0.1% default
         self.slippage_bound_bps = float(kwargs.get("slippage_bound_bps", 10))  # 10 bps = 0.1%
 
-        # Minimum trade filter
+        # Minimum trade filter (risk-owned)
         self.min_qty = float(kwargs.get("min_qty", 0))
         self.min_notional = float(kwargs.get("min_notional", 0))
 
-        # Quantity handling
-        self.integer_only = bool(kwargs.get("integer_only", True))
+        # Quantity handling (portfolio-owned; resolved from snapshot)
         self.eps = float(kwargs.get("eps", DEFAULT_EPS))
 
         self._logger = get_logger(__name__)
+        log_info(
+            self._logger,
+            "risk.cfg.resolved_params",
+            symbol=self.symbol,
+            qty_step_source="portfolio",
+            slippage_bound_bps=self.slippage_bound_bps,
+            slippage_bound_bps_source="risk",
+            fee_rate=self.fee_rate,
+            fee_rate_source="risk",
+            min_notional_risk=self.min_notional,
+            min_notional_risk_source="risk",
+            min_notional_portfolio_source="portfolio",
+        )
 
     def adjust(self, size: float, context: Dict[str, Any]) -> float:
         """
@@ -101,6 +128,25 @@ class CashPositionConstraintRule(RiskBase):
 
         cash = float(portfolio.get("cash", 0.0))
         current_position_qty = float(portfolio.get("position_qty", portfolio.get("position", 0.0)))
+        portfolio_min_qty = portfolio.get("min_qty")
+        if portfolio_min_qty is not None:
+            try:
+                self.min_qty = float(portfolio_min_qty)
+            except (TypeError, ValueError):
+                pass
+        portfolio_min_notional = portfolio.get("min_notional")
+        if portfolio_min_notional is not None:
+            try:
+                self.min_notional = float(portfolio_min_notional)
+            except (TypeError, ValueError):
+                pass
+        qty_step = Decimal(str(portfolio.get("qty_step", portfolio.get("step_size", "1"))))
+        if qty_step <= 0:
+            qty_step = Decimal("1")
+        current_lots = portfolio.get("position_lots")
+        if current_lots is None:
+            current_lots = int((Decimal(str(current_position_qty)) / qty_step).to_integral_value(rounding=ROUND_FLOOR))
+        current_lots = int(current_lots)
 
         # Extract current price from primary snapshots
         price_info = self._get_current_price(context)
@@ -187,21 +233,22 @@ class CashPositionConstraintRule(RiskBase):
             equity=equity,
             desired_notional=desired_notional,
             desired_qty=desired_qty,
-            integer_only=self.integer_only
+            qty_step=str(qty_step),
+            qty_mode=portfolio.get("qty_mode", "LOTS"),
         )
 
-        # Calculate position change needed
-        position_delta_qty = target_qty - current_position_qty
+        desired_lots = int((Decimal(str(desired_qty)) / qty_step).to_integral_value(rounding=ROUND_FLOOR))
+        position_delta_lots = desired_lots - current_lots
 
-        if abs(position_delta_qty) < self.eps:
+        if position_delta_lots == 0:
             risk_state["constrained_target_position"] = target_fraction
             return target_fraction
 
         # -------------------------------------------------------
-        # BUY: apply floor+drop (standard) or clip (fractional)
+        # BUY: clip to affordability in lots
         # -------------------------------------------------------
-        if position_delta_qty > 0:
-            buy_qty = position_delta_qty
+        if position_delta_lots > 0:
+            buy_lots = position_delta_lots
 
             # Conservative effective price with slippage bound
             slippage_factor = 1.0 + self.slippage_bound_bps / 10000.0
@@ -209,78 +256,33 @@ class CashPositionConstraintRule(RiskBase):
             fee_multiplier = 1.0 + self.fee_rate
 
             # Max affordable quantity
-            max_affordable_qty = cash / (p_eff * fee_multiplier) if (p_eff * fee_multiplier) > 0 else 0.0
+            per_lot_cost = p_eff * fee_multiplier * float(qty_step)
+            max_affordable_lots = int((cash / per_lot_cost)) if per_lot_cost > 0 else 0
+            if max_affordable_lots <= 0:
+                log_info(
+                    self._logger,
+                    "risk.order.clip_cash",
+                    symbol=self.symbol,
+                    original_buy_lots=buy_lots,
+                    clipped_lots=0,
+                    reason="Clipped BUY lots to 0 due to insufficient cash"
+                )
+                risk_state["constrained_target_position"] = current_position_frac
+                return current_position_frac
 
-            if self.integer_only:
-                # STANDARD: floor+drop policy
-                floored_qty = float(int(buy_qty))
-                if floored_qty <= 0:
-                    log_info(
-                        self._logger,
-                        "risk.order.floor_drop",
-                        symbol=self.symbol,
-                        original_buy_qty=buy_qty,
-                        floored_qty=0,
-                        reason="BUY qty floored to 0, dropping order"
-                    )
-                    risk_state["constrained_target_position"] = current_position_frac
-                    return current_position_frac
+            clipped_lots = min(buy_lots, max_affordable_lots)
+            if clipped_lots < buy_lots:
+                log_info(
+                    self._logger,
+                    "risk.order.clipped_cash",
+                    symbol=self.symbol,
+                    original_buy_lots=buy_lots,
+                    clipped_lots=clipped_lots,
+                    cash_available=cash,
+                    p_eff=p_eff
+                )
 
-                # Apply cash constraint after floor
-                if floored_qty > max_affordable_qty:
-                    affordable_floored = float(int(max_affordable_qty))
-                    if affordable_floored <= 0:
-                        log_info(
-                            self._logger,
-                            "risk.order.floor_drop",
-                            symbol=self.symbol,
-                            original_buy_qty=buy_qty,
-                            max_affordable=max_affordable_qty,
-                            affordable_floored=0,
-                            reason="Affordable qty floored to 0, dropping order"
-                        )
-                        risk_state["constrained_target_position"] = current_position_frac
-                        return current_position_frac
-                    floored_qty = affordable_floored
-                    log_info(
-                        self._logger,
-                        "risk.order.clipped_cash",
-                        symbol=self.symbol,
-                        original_buy_qty=buy_qty,
-                        clipped_qty=floored_qty,
-                        cash_available=cash,
-                        p_eff=p_eff,
-                        fee_rate=self.fee_rate
-                    )
-
-                final_buy_qty = floored_qty
-            else:
-                # FRACTIONAL: clip policy
-                clipped_qty = min(buy_qty, max_affordable_qty)
-                if clipped_qty < self.eps:
-                    log_info(
-                        self._logger,
-                        "risk.order.clip_cash",
-                        symbol=self.symbol,
-                        original_buy_qty=buy_qty,
-                        clipped_qty=0,
-                        reason="Clipped BUY qty to 0 due to insufficient cash"
-                    )
-                    risk_state["constrained_target_position"] = current_position_frac
-                    return current_position_frac
-
-                if clipped_qty < buy_qty:
-                    log_info(
-                        self._logger,
-                        "risk.order.clipped_cash",
-                        symbol=self.symbol,
-                        original_buy_qty=buy_qty,
-                        clipped_qty=clipped_qty,
-                        cash_available=cash,
-                        p_eff=p_eff
-                    )
-
-                final_buy_qty = clipped_qty
+            final_buy_qty = float(Decimal(clipped_lots) * qty_step)
 
             # Apply minimum trade filter
             notional = final_buy_qty * price
@@ -299,51 +301,43 @@ class CashPositionConstraintRule(RiskBase):
                 risk_state["constrained_target_position"] = current_position_frac
                 return current_position_frac
 
-            target_qty = current_position_qty + final_buy_qty
+            target_lots = current_lots + clipped_lots
 
         # -------------------------------------------------------
-        # SELL: clip to position (both standard and fractional)
+        # SELL: clip to position
         # -------------------------------------------------------
-        elif position_delta_qty < 0:
-            sell_qty = abs(position_delta_qty)
-
-            # Clip to available position
-            if sell_qty > current_position_qty + self.eps:
-                clipped_qty = current_position_qty
-                log_info(
-                    self._logger,
-                    "risk.order.clipped_position",
-                    symbol=self.symbol,
-                    original_sell_qty=sell_qty,
-                    clipped_qty=clipped_qty,
-                    position_available=current_position_qty
-                )
-            else:
-                clipped_qty = sell_qty
-
-            if self.integer_only:
-                # STANDARD: floor sell qty to integer
-                clipped_qty = float(int(clipped_qty))
-
-            if clipped_qty < self.eps:
+        elif position_delta_lots < 0:
+            sell_lots = abs(position_delta_lots)
+            clipped_lots = min(sell_lots, current_lots)
+            if clipped_lots <= 0:
                 log_info(
                     self._logger,
                     "risk.order.drop_zero_sell",
                     symbol=self.symbol,
-                    reason="Clipped SELL qty to 0, dropping order"
+                    reason="Clipped SELL lots to 0, dropping order"
                 )
                 risk_state["constrained_target_position"] = current_position_frac
                 return current_position_frac
+            if clipped_lots < sell_lots:
+                log_info(
+                    self._logger,
+                    "risk.order.clipped_position",
+                    symbol=self.symbol,
+                    original_sell_lots=sell_lots,
+                    clipped_lots=clipped_lots,
+                    position_available=current_lots
+                )
 
             # Apply minimum trade filter
-            notional = clipped_qty * price
-            if clipped_qty < self.min_qty or notional < self.min_notional:
+            final_sell_qty = float(Decimal(clipped_lots) * qty_step)
+            notional = final_sell_qty * price
+            if final_sell_qty < self.min_qty or notional < self.min_notional:
                 log_info(
                     self._logger,
                     "risk.order.drop_min_trade",
                     symbol=self.symbol,
                     side="SELL",
-                    qty=clipped_qty,
+                    qty=final_sell_qty,
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
@@ -352,9 +346,10 @@ class CashPositionConstraintRule(RiskBase):
                 risk_state["constrained_target_position"] = current_position_frac
                 return current_position_frac
 
-            target_qty = current_position_qty - clipped_qty
+            target_lots = current_lots - clipped_lots
 
         # Ensure finite final target
+        target_qty = float(Decimal(target_lots) * qty_step)
         if target_qty < -1e12:
             target_qty = -1e12
 
@@ -466,7 +461,13 @@ class FractionalCashConstraintRule(CashPositionConstraintRule):
 
     def __init__(self, symbol: str, **kwargs):
         # Override defaults for fractional trading
-        kwargs.setdefault("integer_only", False)
+        if "integer_only" in kwargs:
+            log_warn(
+                get_logger(__name__),
+                "risk.cfg.ignored_integer_only_fractional",
+                symbol=symbol,
+                reason="Fractional portfolios always use lot grids; integer_only is ignored",
+            )
         kwargs.setdefault("min_qty", 0.0001)  # Allow very small fractional trades
         kwargs.setdefault("min_notional", 1.0)  # But enforce minimum notional
         super().__init__(symbol=symbol, **kwargs)

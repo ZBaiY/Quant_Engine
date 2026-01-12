@@ -60,6 +60,7 @@ class RiskEngine:
         for rule in self.rules:
             prev_value = target_position
             target_position = float(rule.adjust(target_position, context))
+
             self._assert_in_range(
                 input_value=prev_value,
                 output_value=target_position,
@@ -76,24 +77,26 @@ class RiskEngine:
         return target_position
 
     def _order_rules(self, rules: list[RiskBase]) -> list[RiskBase]:
-        debug_full = bool(self._risk_config.get("debug_full_position", False))
-        full_rules = [r for r in rules if type(r).__name__ == "FullAllocation"]
-        if full_rules and not debug_full:
-            log_debug(
-                self._logger,
-                "risk.rules.full_allocation_skipped",
-                reason="debug_full_position disabled",
-                full_allocation_count=len(full_rules),
-            )
-        other_rules = [r for r in rules if type(r).__name__ != "FullAllocation"]
-        if debug_full and full_rules:
-            log_debug(
-                self._logger,
-                "risk.rules.reordered",
-                reason="FullAllocation forced last",
-                full_allocation_count=len(full_rules),
-            )
-        return other_rules + (full_rules if debug_full else [])
+        full_names = {"FullAllocation"}
+        cash_names = {
+            "CASH-POSITION-CONSTRAINT",
+            "FRACTIONAL-CASH-CONSTRAINT",
+        }
+
+        full_rules = [r for r in rules if type(r).__name__ in full_names]
+        cash_rules = [r for r in rules if type(r).__name__ in cash_names]
+        other_rules = [
+            r for r in rules
+            if type(r).__name__ not in full_names | cash_names
+        ]
+
+        ordered = other_rules + full_rules + cash_rules
+        log_debug(
+            self._logger,
+            "risk.rules.ordered",
+            order=[type(r).__name__ for r in ordered],
+        )
+        return ordered
 
     def _validate_rule_spaces(self, rules: list[RiskBase]) -> None:
         for idx, rule in enumerate(rules):
@@ -126,6 +129,7 @@ class RiskEngine:
         return float(score)
 
     def _map_score_to_target(self, context: dict, score: float) -> float:
+        eps = 1e-9
         risk_state = context.setdefault("risk_state", {})
         price_info = self._get_price_ref(context)
         if price_info is not None:
@@ -147,11 +151,13 @@ class RiskEngine:
         risk_state["equity"] = equity
         risk_state["current_position_frac"] = current_position_frac
 
-        if score < 0.0:
-            return -1.0
-        if score > 0.0:
+        if score >= 1.0 - eps:
             return 1.0
-        return current_position_frac
+        if score <= -1.0 + eps:
+            return -1.0
+        if abs(score) < eps:
+            return current_position_frac
+        return score
 
     def _get_price_ref(self, context: dict) -> tuple[float, str, int | None] | None:
         primary_snapshots = context.get("primary_snapshots", {})

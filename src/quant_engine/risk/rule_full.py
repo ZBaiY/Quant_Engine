@@ -20,6 +20,7 @@ class FullAllocation(RiskBase):
     - Strategies that want to allocate 100% of the decision-supplied size
       (subject to downstream execution/portfolio constraints).
     """
+    PRIORITY = 10
 
     # No feature requirements
     required_feature_types: set[str] = set()

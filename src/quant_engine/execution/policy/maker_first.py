@@ -1,4 +1,7 @@
 # execution/policy/maker_first.py
+import math
+from decimal import Decimal, ROUND_FLOOR
+
 from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.order import (
     Order,
@@ -16,6 +19,27 @@ class MakerFirstPolicy(PolicyBase):
         self.spread_threshold = spread_threshold
         self._logger = get_logger(__name__)
 
+    def _d(self, value):
+        return Decimal(str(value))
+
+    def _lots_from_qty(self, qty, step_size):
+        qty_d = self._d(qty)
+        if qty_d < 0:
+            qty_d = -qty_d
+        if qty_d <= 0:
+            return 0
+        lots = (qty_d / step_size).to_integral_value(rounding=ROUND_FLOOR)
+        return int(lots)
+
+    def _qty_from_lots(self, lots, step_size):
+        return step_size * Decimal(int(lots))
+
+    def _fee_buffer(self, min_notional, portfolio_state):
+        fee_buffer = float(portfolio_state.get("fee_buffer", 0.0))
+        if fee_buffer > 0.0:
+            return fee_buffer
+        return 0.0
+
     def generate(self, target_position, portfolio_state, market_data):
         log_debug(self._logger, "MakerFirstPolicy received target_position", target_position=target_position)
         ohlcv = market_data.get("ohlcv", None) if market_data else None
@@ -28,28 +52,54 @@ class MakerFirstPolicy(PolicyBase):
         mid = 0.5 * (best_bid + best_ask)
 
         cash = float(portfolio_state.get("cash", 0.0))
+        step_size = self._d(portfolio_state.get("qty_step", portfolio_state.get("step_size", 1)))
+        min_qty = float(portfolio_state.get("min_qty", 0.0))
+        min_notional = float(portfolio_state.get("min_notional", 0.0))
+        slippage_bps = float(portfolio_state.get("slippage_bps", 0.0))
         current_position_qty = float(
             portfolio_state.get("position_qty", portfolio_state.get("position", 0.0))
         )
-        equity = cash + current_position_qty * mid
+        current_lots = portfolio_state.get("position_lots")
+        if current_lots is None:
+            current_lots = self._lots_from_qty(current_position_qty, step_size)
+        current_lots = int(current_lots)
+        equity = float(portfolio_state.get("total_equity", cash + current_position_qty * mid))
         if equity <= 0:
             return []
 
         desired_notional = float(target_position) * equity
         desired_qty = desired_notional / mid
-        diff_qty = desired_qty - current_position_qty
+        desired_lots = self._lots_from_qty(desired_qty, step_size)
+        if desired_lots > current_lots and cash > 0.0:
+            conservative_price = max(float(best_ask), float(mid))
+            buffer = max(0.0, float(slippage_bps)) / 1e4
+            conservative_price *= 1.0 + buffer
+            per_lot_cost = conservative_price * float(step_size)
+            fee_buffer = self._fee_buffer(min_notional, portfolio_state)
+            if cash < per_lot_cost + fee_buffer or cash < min_notional:
+                return []
+            if per_lot_cost <= 0:
+                return []
+            max_affordable_lots = int(math.floor((cash - fee_buffer) / per_lot_cost))
+            desired_lots = min(desired_lots, current_lots + max_affordable_lots)
+        delta_lots = desired_lots - current_lots
 
-        if abs(diff_qty) < 1e-9:
+        if delta_lots == 0:
             return []
 
-        side = OrderSide.BUY if diff_qty > 0 else OrderSide.SELL
-        qty = abs(diff_qty)
+        side = OrderSide.BUY if delta_lots > 0 else OrderSide.SELL
+        qty = float(self._qty_from_lots(abs(delta_lots), step_size))
+        notional = qty * mid
+        if qty < min_qty or notional < min_notional:
+            return []
 
         log_debug(
             self._logger,
             "MakerFirstPolicy computed diff",
             side=side.value,
             qty=qty,
+            lots=abs(delta_lots),
+            step_size=str(step_size),
             price_ref=mid,
             equity=equity,
             current_position_qty=current_position_qty,

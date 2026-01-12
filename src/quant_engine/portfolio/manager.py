@@ -55,13 +55,12 @@ class PortfolioManager(PortfolioBase):
     _logger = get_logger(__name__)
 
     def __init__(self, symbol: str, initial_capital: float = 10000.0, **kwargs):
-        super().__init__(symbol=symbol)
+        super().__init__(symbol=symbol, **kwargs)
         self.cash = float(initial_capital)
         self.positions: dict[str, PositionRecord] = {}  # key: symbol
         self.fees = 0.0
         self.realized_pnl = 0.0
         self.unrealized_pnl = 0.0
-
         # Minimum trade filter thresholds
         self.min_qty = float(kwargs.get("min_qty", DEFAULT_MIN_QTY))
         self.min_notional = float(kwargs.get("min_notional", DEFAULT_MIN_NOTIONAL))
@@ -118,33 +117,31 @@ class PortfolioManager(PortfolioBase):
         # Initialize position if needed
         if fill_symbol not in self.positions:
             self.positions[fill_symbol] = PositionRecord(
-                symbol=fill_symbol, qty=0.0, entry_price=0.0
+                symbol=fill_symbol, lots=0, entry_price=0.0
             )
 
         pos = self.positions[fill_symbol]
-        prev_qty = pos.qty
+        prev_lots = pos.lots
         prev_avg = pos.entry_price
 
         # -------------------------------------------------------
         # BUY validation with post-slippage re-floor
         # -------------------------------------------------------
         if qty > 0:  # BUY
-            # For STANDARD portfolio: enforce integer quantities first
-            if not self._is_integer_qty(qty):
-                # Floor to integer
-                qty = float(int(qty))
-                if qty <= 0:
-                    log_info(
-                        self._logger,
-                        "portfolio.fill.drop_non_integer",
-                        symbol=fill_symbol,
-                        original_qty=fill["filled_qty"],
-                        floored_qty=0,
-                        reason="STANDARD portfolio floored non-integer qty to 0, dropping"
-                    )
-                    return
+            fill_lots = self.lots_from_qty(qty, side="BUY")
+            if fill_lots <= 0:
+                log_info(
+                    self._logger,
+                    "portfolio.fill.drop_zero_lots",
+                    symbol=fill_symbol,
+                    side="BUY",
+                    original_qty=qty,
+                    step_size=str(self.step_size),
+                    reason="BUY qty below step size, dropping fill",
+                )
+                return
 
-            required_cash = price * qty + fee
+            required_cash = price * self.qty_float(fill_lots) + fee
 
             # Post-slippage over-budget handling: re-floor qty
             if required_cash > self.cash + EPS:
@@ -166,10 +163,9 @@ class PortfolioManager(PortfolioBase):
                     return
 
                 max_affordable_qty = available_for_qty / price
-                # Re-floor to integer for STANDARD portfolio
-                reclipped_qty = float(int(max_affordable_qty))
+                reclipped_lots = self.lots_from_qty(max_affordable_qty, side="BUY")
 
-                if reclipped_qty <= 0:
+                if reclipped_lots <= 0:
                     log_info(
                         self._logger,
                         "portfolio.fill.drop_insufficient_cash",
@@ -177,7 +173,7 @@ class PortfolioManager(PortfolioBase):
                         side="BUY",
                         original_qty=qty,
                         max_affordable=max_affordable_qty,
-                        reclipped_qty=0,
+                        reclipped_lots=0,
                         reason="Re-floored qty to 0 after slippage, dropping fill"
                     )
                     return
@@ -188,24 +184,28 @@ class PortfolioManager(PortfolioBase):
                     symbol=fill_symbol,
                     side="BUY",
                     original_qty=qty,
-                    reclipped_qty=reclipped_qty,
+                    reclipped_lots=reclipped_lots,
                     price=price,
                     fee=fee,
                     cash_available=self.cash,
                     reason="Re-floored qty due to post-slippage over-budget"
                 )
-                qty = reclipped_qty
-                required_cash = price * qty + fee
+                fill_lots = reclipped_lots
+                required_cash = price * self.qty_float(fill_lots) + fee
 
             # Apply minimum trade filter
-            notional = qty * price
-            if qty < self.min_qty or notional < self.min_notional:
+            qty_decimal = self.qty_from_lots(fill_lots)
+            qty_float = float(qty_decimal)
+            notional = qty_float * price
+            if qty_float < self.min_qty or notional < self.min_notional:
                 log_info(
                     self._logger,
                     "portfolio.fill.drop_min_trade",
                     symbol=fill_symbol,
                     side="BUY",
-                    qty=qty,
+                    lots=fill_lots,
+                    qty_str=self.fmt_qty(fill_lots),
+                    step_size=str(self.step_size),
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
@@ -214,16 +214,16 @@ class PortfolioManager(PortfolioBase):
                 return
 
             # Apply BUY
-            new_qty = prev_qty + qty
+            new_lots = prev_lots + fill_lots
 
             # Update average entry price (weighted average)
-            if new_qty > EPS:
-                new_avg = (prev_avg * prev_qty + price * qty) / new_qty
+            if new_lots > 0:
+                new_avg = (prev_avg * prev_lots + price * fill_lots) / new_lots
             else:
                 new_avg = price
 
             # Update state
-            pos.qty = new_qty
+            pos.lots = new_lots
             pos.entry_price = new_avg
             self.cash -= required_cash
             self.fees += fee
@@ -236,11 +236,14 @@ class PortfolioManager(PortfolioBase):
                 self._logger,
                 "portfolio.fill.applied_buy",
                 symbol=fill_symbol,
-                qty=qty,
+                lots=fill_lots,
+                qty_str=self.fmt_qty(fill_lots),
+                step_size=str(self.step_size),
                 price=price,
                 accounting_price=price,
                 fee=fee,
-                new_position=pos.qty,
+                new_position_lots=pos.lots,
+                new_position_qty=self.qty_float(pos.lots),
                 new_avg_entry=pos.entry_price,
                 cash=self.cash,
                 fill_ts=fill_ts,
@@ -250,54 +253,52 @@ class PortfolioManager(PortfolioBase):
         # SELL validation with clip to position
         # -------------------------------------------------------
         elif qty < 0:  # SELL
-            sell_qty = abs(qty)
-
-            # For STANDARD portfolio: floor to integer first
-            if not self._is_integer_qty(sell_qty):
-                sell_qty = float(int(sell_qty))
-                if sell_qty <= 0:
-                    log_info(
-                        self._logger,
-                        "portfolio.fill.drop_non_integer",
-                        symbol=fill_symbol,
-                        side="SELL",
-                        original_qty=abs(fill["filled_qty"]),
-                        floored_qty=0,
-                        reason="STANDARD portfolio floored SELL qty to 0, dropping"
-                    )
-                    return
+            requested_lots = self.lots_from_qty(abs(qty), side="SELL")
+            if requested_lots <= 0:
+                log_info(
+                    self._logger,
+                    "portfolio.fill.drop_zero_lots",
+                    symbol=fill_symbol,
+                    side="SELL",
+                    original_qty=qty,
+                    step_size=str(self.step_size),
+                    reason="SELL qty below step size, dropping fill",
+                )
+                return
 
             # Clip to available position
-            if sell_qty > prev_qty + EPS:
-                clipped_qty = prev_qty
+            if requested_lots > prev_lots:
+                clipped_lots = prev_lots
                 log_info(
                     self._logger,
                     "portfolio.fill.reclip_slippage_budget",
                     symbol=fill_symbol,
                     side="SELL",
-                    original_qty=sell_qty,
-                    clipped_qty=clipped_qty,
-                    position_available=prev_qty,
+                    original_lots=requested_lots,
+                    clipped_lots=clipped_lots,
+                    position_available_lots=prev_lots,
                     reason="Clipped SELL qty to available position"
                 )
-                sell_qty = clipped_qty
+                sell_lots = clipped_lots
+            else:
+                sell_lots = requested_lots
 
-            # Floor after clipping for STANDARD
-            sell_qty = float(int(sell_qty))
-
-            if sell_qty < EPS:
+            if sell_lots <= 0:
                 log_debug(self._logger, "portfolio.fill.skipped_zero_sell", symbol=fill_symbol)
                 return
 
             # Apply minimum trade filter
-            notional = sell_qty * price
-            if sell_qty < self.min_qty or notional < self.min_notional:
+            sell_qty_float = self.qty_float(sell_lots)
+            notional = sell_qty_float * price
+            if sell_qty_float < self.min_qty or notional < self.min_notional:
                 log_info(
                     self._logger,
                     "portfolio.fill.drop_min_trade",
                     symbol=fill_symbol,
                     side="SELL",
-                    qty=sell_qty,
+                    lots=sell_lots,
+                    qty_str=self.fmt_qty(sell_lots),
+                    step_size=str(self.step_size),
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
@@ -306,30 +307,28 @@ class PortfolioManager(PortfolioBase):
                 return
 
             # Compute realized PnL before updating position
-            realized_from_sell = (price - prev_avg) * sell_qty
+            realized_from_sell = (price - prev_avg) * sell_qty_float
             self.realized_pnl += realized_from_sell
 
             # Update position
-            new_qty = prev_qty - sell_qty
+            new_lots = prev_lots - sell_lots
 
             # Entry price remains unchanged on SELL (unless going flat)
-            if new_qty < EPS:
-                new_qty = 0.0
+            if new_lots <= 0:
+                new_lots = 0
                 new_avg = 0.0  # Reset when flat
             else:
                 new_avg = prev_avg  # Preserve avg entry on partial sell
 
             # Cash increases from sell proceeds minus fee
-            cash_received = price * sell_qty - fee
+            cash_received = price * sell_qty_float - fee
 
-            pos.qty = new_qty
+            pos.lots = new_lots
             pos.entry_price = new_avg
             self.cash += cash_received
             self.fees += fee
 
             # Clamp small negative values
-            if -EPS < pos.qty < EPS:
-                pos.qty = 0.0
             if -EPS < self.cash < 0:
                 self.cash = 0.0
 
@@ -337,12 +336,15 @@ class PortfolioManager(PortfolioBase):
                 self._logger,
                 "portfolio.fill.applied_sell",
                 symbol=fill_symbol,
-                qty=sell_qty,
+                lots=sell_lots,
+                qty_str=self.fmt_qty(sell_lots),
+                step_size=str(self.step_size),
                 price=price,
                 accounting_price=price,
                 fee=fee,
                 realized_pnl=realized_from_sell,
-                new_position=pos.qty,
+                new_position_lots=pos.lots,
+                new_position_qty=self.qty_float(pos.lots),
                 avg_entry=pos.entry_price,
                 cash=self.cash,
                 fill_ts=fill_ts,
@@ -352,14 +354,12 @@ class PortfolioManager(PortfolioBase):
             log_debug(self._logger, "portfolio.fill.skipped_zero_qty", symbol=fill_symbol)
             return
 
+        self._canonicalize_position(pos)
+
         # -------------------------------------------------------
         # Final invariant check (should never fail after above guards)
         # -------------------------------------------------------
         self._assert_invariants(fill)
-
-    def _is_integer_qty(self, qty: float) -> bool:
-        """Check if quantity is effectively an integer."""
-        return abs(qty - round(qty)) < EPS
 
     def _assert_invariants(self, fill: dict):
         """Final guard: verify invariants hold. Log violation if detected."""
@@ -377,13 +377,13 @@ class PortfolioManager(PortfolioBase):
             violation = True
 
         for sym, pos in self.positions.items():
-            if pos.qty < -EPS:
+            if pos.lots < 0:
                 log_warn(
                     self._logger,
                     "portfolio.invariant.violation_detected",
                     invariant="position_qty >= 0",
                     symbol=sym,
-                    qty=pos.qty,
+                    lots=pos.lots,
                     fill=fill,
                     reason="Position went negative after fill (should not happen)"
                 )
@@ -396,7 +396,7 @@ class PortfolioManager(PortfolioBase):
                 self._logger,
                 "portfolio.invariant.violation_summary",
                 cash=self.cash,
-                positions={k: v.qty for k, v in self.positions.items()},
+                positions={k: v.lots for k, v in self.positions.items()},
                 fill=fill
             )
 
@@ -411,22 +411,31 @@ class PortfolioManager(PortfolioBase):
         """
         log_debug(self._logger, "PortfolioManager computing state snapshot")
         total_value = self.cash + self._compute_position_value()
+        exposure = self._compute_exposure()
 
         # Compute current position for primary symbol (for execution policy compatibility)
-        primary_position = 0.0
+        primary_lots = 0
         if self.symbol in self.positions:
-            primary_position = self.positions[self.symbol].qty
-        if abs(primary_position) < EPS:
-            primary_position = 0.0
+            primary_lots = self.positions[self.symbol].lots
+        primary_position = self.qty_float(primary_lots)
 
         snapshot = {
             "cash": self.cash,
             "position": primary_position,  # for execution policy compatibility
             "position_qty": primary_position,
+            "position_qty_str": self.fmt_qty(primary_lots),
+            "position_lots": primary_lots,
+            "step_size": float(self.step_size),
+            "qty_step": str(self.step_size),
+            "qty_mode": "LOTS",
+            "min_qty": self.min_qty,
+            "min_notional": self.min_notional,
             "positions": {
                 k: {
-                    "qty": 0.0 if abs(v.qty) < EPS else v.qty,
-                    "entry": 0.0 if abs(v.qty) < EPS else v.entry_price,
+                    "lots": v.lots,
+                    "qty": self.qty_float(v.lots),
+                    "qty_str": self.fmt_qty(v.lots),
+                    "entry": 0.0 if v.lots == 0 else v.entry_price,
                     "unrealized": v.unrealized_pnl,
                 }
                 for k, v in self.positions.items()
@@ -434,8 +443,8 @@ class PortfolioManager(PortfolioBase):
             "realized_pnl": self.realized_pnl,
             "unrealized_pnl": self.unrealized_pnl,
             "total_equity": total_value,
-            "exposure": self._compute_exposure(),
-            "position_frac": (self._compute_exposure() / total_value) if total_value > 0 else 0.0,
+            "exposure": exposure,
+            "position_frac": (exposure / total_value) if total_value > 0 else 0.0,
             "leverage": self._compute_leverage(total_value),
         }
         log_debug(
@@ -456,7 +465,7 @@ class PortfolioManager(PortfolioBase):
         """Get current position quantity for a symbol."""
         sym = symbol or self.symbol
         if sym in self.positions:
-            return self.positions[sym].qty
+            return self.qty_float(self.positions[sym].lots)
         return 0.0
 
     def get_cash(self) -> float:
@@ -470,18 +479,6 @@ class PortfolioManager(PortfolioBase):
             return self.positions[sym].entry_price
         return 0.0
 
-    # -------------------------------------------------------
-    # Internal helpers
-    # -------------------------------------------------------
-    def _compute_position_value(self):
-        """Mark positions at entry price (spot-only, no external mark)."""
-        position_value = sum(p.qty * p.entry_price for p in self.positions.values())
-        self.unrealized_pnl = 0.0
-        return position_value
-
-    def _compute_exposure(self):
-        return sum(abs(p.qty * p.entry_price) for p in self.positions.values())
-
     def _compute_leverage(self, total_equity):
         exposure = self._compute_exposure()
         leverage = exposure / total_equity if total_equity > 0 else 0.0
@@ -494,4 +491,6 @@ class PortfolioManager(PortfolioBase):
                 equity=total_equity,
                 reason="Spot-only constraint breached",
             )
+            if getattr(self, "_strict_leverage", False):
+                raise ValueError(f"Spot-only leverage violation: {leverage}")
         return leverage
