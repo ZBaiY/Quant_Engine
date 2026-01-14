@@ -4,12 +4,12 @@
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%20macOS-9cf)
 
-## 30-second value anchor
+## What is SoionLab
 SoionLab is a contract-driven research engine for execution-constrained, time-sensitive async systems. It keeps deterministic modeling boundaries by enforcing protocol interfaces and driver-owned time across backtest, mock, and realtime modes. The runtime treats time, lifecycle, and execution constraints as explicit research objects rather than implicit control flow.
 
 Core research question: what is the robustness boundary under non-ideal data arrival (ordering, frequency, completeness)?
 
-## Why SoionLab: auditable execution risk
+## What is special: auditable execution risk
 - Async hazard exposure (multi-source arrival mismatch) before a step is evaluated.
 - Single time authority / driver-owned time to prevent lookahead-by-construction.
 - Auditable failure surface: Hard Readiness vs Soft Degradation.
