@@ -2,8 +2,8 @@ AGENTS.md
 # --------------------------------------
 # Agents
 # --------------------------------------
-/docs/audits/
-/artifacts/codex
+docs/audits/
+artifacts/codex
 
 
 *.csv
