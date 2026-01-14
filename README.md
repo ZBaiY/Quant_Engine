@@ -105,32 +105,90 @@ Key constraints:
 - The runtime is single-threaded and **driver-time–controlled**.
 - Strategy / Engine / DataHandler never know data provenance.
 - The only object crossing the boundary is an immutable `IngestionTick`.
+### Deterministic replay under async ingestion
 
-### Backtest nuance: closed-bar readiness (deterministic replay)
+The engine uses the **same async ingestion → tick → driver → engine** pipeline
+for **backtest / mock / realtime**.
 
-Backtest uses the **same ingestion→tick→driver→engine** boundary as realtime/mock.
-The only difference is that the Driver replays historical ticks and advances time
-on a fixed grid.
-
-For **grid-based domains** (especially OHLCV), the Driver must not call
-`engine.step(ts)` until the DataHandler can prove the required bar is **closed and visible**
-at that `ts`.
-
-We enforce a deterministic readiness rule:
-
-- Define the last visible closed-bar timestamp:
-  `visible_end_ts(ts) = floor(ts / interval_ms) * interval_ms - 1`
-- A step is legal only if the handler is ready:
-  `handler.last_timestamp() >= visible_end_ts(ts)`
-
-This prevents both:
-- **lookahead** (future bars never become visible)
-- **race-driven nondeterminism** (no “one-bar lag” depending on scheduling)
-
-Non-grid domains (e.g., option chain snapshots) use a different readiness rule
-(`snapshot_ts ≤ ts`), but must still obey deterministic snapshot selection.
+Because ingestion is concurrent, **tick arrival order never guarantees
+domain-level readiness at a given step timestamp**.  
+Backtest runs faster and exposes this more often, but the issue exists in all modes.
 
 ---
+
+### Hard vs Soft readiness contracts
+
+**Hard (grid-based domains, e.g. OHLCV)**  
+Bars must be *closed* before they are visible.
+```
+visible_end_ts(ts) = floor(ts / interval_ms) * interval_ms - 1
+```
+A step at `ts` is legal **only if**:
+```
+handler.last_timestamp() ≥ visible_end_ts(ts)
+```
+All OHLCV handlers (primary and secondary) are subject to this rule.
+Violation is fatal: it indicates missing or inconsistent market data.
+
+This prevents:
+- lookahead
+- race-driven nondeterminism
+- “one-bar lag” depending on scheduling
+
+---
+
+**Soft (non-grid domains: option_chain, iv_surface, sentiment, orderbook, …)**  
+No closed-bar semantics.
+
+Soft domains are checked inside `engine.step(ts)`:
+- snapshot exists with `data_ts ≤ ts`
+- freshness / coverage constraints (domain-specific)
+
+If not ready:
+- the step still executes
+- a warning is logged with diagnostics
+- no blocking, no exception
+
+(Decision-layer fallback such as HOLD / exposure reduction is future work.)
+
+---
+
+### Design trade-off
+
+We deliberately keep **one execution logic across backtest / mock / realtime**.
+
+This sacrifices a small amount of backtest “perfect determinism” for soft domains,
+but gains:
+- semantic consistency
+- realistic failure modes
+- explicit, auditable data gaps
+
+A strategy that is not robust to these conditions is not production-safe.
+```mermaid
+sequenceDiagram
+    participant IngestOHLCV as OHLCV Worker
+    participant IngestSoft as Soft Worker
+    participant PQ as PriorityQueue
+    participant Driver
+    participant Engine
+
+    IngestOHLCV ->> PQ: tick(ts=00:15)
+    IngestSoft  ->> PQ: tick(ts=00:16)
+    IngestSoft  ->> PQ: tick(ts=00:17)
+
+    Driver ->> PQ: drain ticks ≤ step_ts
+    Driver ->> Engine: ingest_tick(...)
+
+    Driver ->> Driver: check OHLCV watermark
+    alt watermark ≥ visible_end_ts
+        Driver ->> Engine: step(ts)
+    else missing OHLCV bar
+        Driver ->> Driver: block / fail (hard violation)
+    end
+
+    Engine ->> Engine: soft-domain readiness checks
+    Note over Engine: soft not-ready → warn & continue
+```
 
 ## Strategy Structure vs Runtime Execution
 
