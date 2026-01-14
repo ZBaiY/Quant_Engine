@@ -596,8 +596,12 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             )
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="option_trades",
             venue=self.source,
             asset=self.asset,

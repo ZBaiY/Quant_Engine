@@ -406,8 +406,12 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
         symbol_for_paths = symbol_from_base_asset(self.symbol)
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="orderbook",
             symbol=symbol_for_paths,
             start_ts=int(start_ts),
@@ -416,7 +420,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         if not paths:
             return 0
         source = OrderbookFileSource(
-            root="cleaned/orderbook",
+            root=f"{stage}/orderbook",
             symbol=symbol_for_paths,
             start_ts=int(start_ts),
             end_ts=int(end_ts),

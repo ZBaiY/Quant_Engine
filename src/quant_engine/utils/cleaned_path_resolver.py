@@ -128,6 +128,7 @@ def _iter_years_utc(start_ts: int, end_ts: int) -> Iterable[int]:
 def resolve_cleaned_paths(
     *,
     data_root: Path,  # parent of "cleaned/"
+    stage: Literal["cleaned", "raw", "sample"] = "cleaned",
     domain: Domain,
     start_ts: int,
     end_ts: int,
@@ -159,7 +160,7 @@ def resolve_cleaned_paths(
     """
     return _resolve_stage_paths(
         data_root=data_root,
-        stage="cleaned",
+        stage=stage,
         domain=domain,
         start_ts=start_ts,
         end_ts=end_ts,
@@ -175,7 +176,7 @@ def resolve_cleaned_paths(
 def _resolve_stage_paths(
     *,
     data_root: Path,
-    stage: str,
+    stage: Literal["cleaned", "raw", "sample"] = "cleaned",
     domain: Domain,
     start_ts: int,
     end_ts: int,

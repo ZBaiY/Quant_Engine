@@ -431,8 +431,12 @@ class TradesDataHandler(RealTimeDataHandler):
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
         symbol_for_paths = symbol_from_base_asset(self.symbol)
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="trades",
             symbol=symbol_for_paths,
             start_ts=int(start_ts),
@@ -441,7 +445,7 @@ class TradesDataHandler(RealTimeDataHandler):
         if not paths:
             return 0
         source = TradesFileSource(
-            root="cleaned/trades",
+            root=f"{stage}/trades",
             symbol=symbol_for_paths,
             start_ms=int(start_ts),
             end_ms=int(end_ts),

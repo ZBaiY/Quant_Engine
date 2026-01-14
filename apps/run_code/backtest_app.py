@@ -43,7 +43,7 @@ async def run_backtest_app(
     bind_symbols: dict[str, str],
     start_ts: int,
     end_ts: int,
-    data_root: Path | str,
+    data_root: Path,
 ) -> None:
     run_id = _make_run_id(strategy_name)
     init_logging(run_id=run_id)

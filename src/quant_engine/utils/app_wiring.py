@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from quant_engine.runtime.modes import EngineMode
+from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.strategy.config import NormalizedStrategyCfg
 from quant_engine.strategy.registry import get_strategy
 
 from ingestion.ohlcv.worker import OHLCVWorker
@@ -26,17 +27,22 @@ from quant_engine.utils.cleaned_path_resolver import (
 from quant_engine.utils.paths import data_root_from_file
 
 from pathlib import Path
+import copy
 from typing import Any
 
 
 def _index_domain_cfgs(cfg: Any) -> dict[str, dict[str, dict[str, Any]]]:
     """Index normalized strategy cfg blocks by domain and symbol."""
     out: dict[str, dict[str, dict[str, Any]]] = {}
-    data = getattr(cfg, "data", None)
+    if isinstance(cfg, dict):
+        data = cfg.get("data")
+        primary_symbol = cfg.get("symbol")
+    else:
+        data = getattr(cfg, "data", None)
+        primary_symbol = getattr(cfg, "symbol", None)
     if not isinstance(data, dict):
         return out
 
-    primary_symbol = getattr(cfg, "symbol", None)
     primary = data.get("primary")
     if isinstance(primary_symbol, str) and primary_symbol and isinstance(primary, dict):
         for domain, block in primary.items():
@@ -53,6 +59,30 @@ def _index_domain_cfgs(cfg: Any) -> dict[str, dict[str, dict[str, Any]]]:
             for domain, domain_block in block.items():
                 if isinstance(domain_block, dict):
                     out.setdefault(domain, {})[symbol] = domain_block
+
+    return out
+
+
+def _inject_data_root(data_spec: dict[str, Any], data_root: Path) -> dict[str, Any]:
+    """Attach data_root to handler configs without overriding explicit roots."""
+    out = copy.deepcopy(data_spec)
+
+    def _inject_section(section: dict[str, Any]) -> None:
+        for _, block in section.items():
+            if not isinstance(block, dict):
+                continue
+            if "data_root" not in block and "cleaned_root" not in block:
+                block["data_root"] = str(data_root)
+
+    primary = out.get("primary")
+    if isinstance(primary, dict):
+        _inject_section(primary)
+
+    secondary = out.get("secondary")
+    if isinstance(secondary, dict):
+        for sec_block in secondary.values():
+            if isinstance(sec_block, dict):
+                _inject_section(sec_block)
 
     return out
 
@@ -392,22 +422,32 @@ def build_backtest_engine(
     end_ts: int = 1622592000000,
     data_root: Path | None = None,
     require_local_data: bool = True,
+    engine_spec: EngineSpec | None = None,
 ) -> tuple[StrategyEngine, dict[str, int], list[dict[str, Any]]]:
     StrategyCls = get_strategy(strategy_name)
-
-    if bind_symbols is None:
-        bind_symbols = {"A": "BTCUSDT", "B": "ETHUSDT"}
+    
     if data_root is None:
-        data_root = data_root_from_file(__file__, levels_up=1)
+        data_root = data_root_from_file(__file__, levels_up=4)
+    
     cfg = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
+    cfg_for_loader: Any = cfg
+    cfg_for_domains: Any = cfg
+    if data_root is not None:
+        cfg_dict = cfg.to_dict() if isinstance(cfg, NormalizedStrategyCfg) else dict(cfg)
+        data_spec = cfg_dict.get("data")
+        if isinstance(data_spec, dict):
+            cfg_dict["data"] = _inject_data_root(data_spec, data_root)
+        cfg_for_loader = cfg_dict
+        cfg_for_domains = cfg_dict
 
+    mode = engine_spec.mode if engine_spec is not None else EngineMode.BACKTEST
     engine = StrategyLoader.from_config(
-        strategy=cfg,
-        mode=EngineMode.BACKTEST,
+        strategy=cfg_for_loader,
+        mode=mode,
         overrides={},
     )
     driver_cfg = {"start_ts": int(start_ts), "end_ts": int(end_ts)}
-    domain_cfgs = _index_domain_cfgs(cfg)
+    domain_cfgs = _index_domain_cfgs(cfg_for_domains)
     ingestion_plan = _build_backtest_ingestion_plan(
         engine,
         data_root=data_root,

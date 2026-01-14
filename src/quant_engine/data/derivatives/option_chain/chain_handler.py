@@ -609,8 +609,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
             )
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="option_chain",
             asset=self.asset,
             interval=self.interval,
@@ -620,7 +624,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if not paths:
             return 0
         source = OptionChainFileSource(
-            root="cleaned/option_chain",
+            root=f"{stage}/option_chain",
             asset=self.asset,
             interval=self.interval,
             start_ts=int(start_ts),

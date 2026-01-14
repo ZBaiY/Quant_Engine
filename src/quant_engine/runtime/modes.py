@@ -19,6 +19,7 @@ class EngineMode(Enum):
     REALTIME = "realtime"
     BACKTEST = "backtest"
     MOCK = "mock"
+    SAMPLE = "sample"
 
 
 @dataclass(frozen=True)

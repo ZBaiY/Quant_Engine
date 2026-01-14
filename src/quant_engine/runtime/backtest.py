@@ -134,7 +134,7 @@ class BacktestDriver(BaseDriver):
 
 
             required_ohlcv_handlers: list[tuple[Any, int, str]] = []
-            if self.spec.mode == EngineMode.BACKTEST:
+            if self.spec.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
                 handlers = getattr(self.engine, "ohlcv_handlers", {}) or {}
                 for symbol in handlers.keys():
                     handler = handlers.get(symbol)
@@ -167,7 +167,7 @@ class BacktestDriver(BaseDriver):
                     self.engine.ingest_tick(tick)
                     drained_ticks += 1
 
-                if self.spec.mode == EngineMode.BACKTEST:
+                if self.spec.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
                     if required_ohlcv_handlers and self.tick_queue is not None:
                         required_keys = {key for _handler, _interval_ms, key in required_ohlcv_handlers}
                         while True:

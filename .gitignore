@@ -112,7 +112,8 @@ venv/
 # --------------------------------------
 # Data folder (ignore raw datasets, keep code)
 # --------------------------------------
-data/**
+data/cleaned/
+data/raw/
 data/**/*.csv
 data/**/*.parquet
 data/**/*.json
@@ -120,13 +121,17 @@ data/**/*.feather
 data/**/*.xlsx
 data/**/*.npz
 data/**/*.npy
-
+data/data_structure_design.txt
 # allow Python modules inside data/
 !data/**/*.py
 !data/**/__init__.py
 !data/.gitkeep
 !data/*.md
 !data/structure_design.txt
+!data/sample/ohlcv/BTCUSDT/15m/2025.parquet
+!data/sample/ohlcv/ETHUSDT/15m/2025.parquet
+!data/sample/option_chain/BTC/5m/2025/2025_12_29.parquet
+!data/sample/option_chain/BTC/5m/2025/2025_12_30.parquet
 # --------------------------------------
 # Jupyter
 # --------------------------------------
@@ -172,7 +177,8 @@ temp/
 /configs/*.yml
 /configs/*.yaml
 /configs/*.toml
-!/configs/example_config.*
+!configs/refs_sample.json
+!configs/logging.json
 
 /dev_timeline.txt
 /src/explanation.txt

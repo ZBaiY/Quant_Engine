@@ -392,8 +392,12 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         self._backfill_emit = None
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="iv_surface",
             asset=self.asset,
             interval=self.interval,

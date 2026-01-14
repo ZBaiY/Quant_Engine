@@ -439,8 +439,12 @@ class SentimentDataHandler(RealTimeDataHandler):
             )
 
     def _load_from_files(self, *, start_ts: int, end_ts: int, provider: str) -> int:
+        stage = "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="sentiment",
             provider=provider,
             start_ts=int(start_ts),
@@ -449,7 +453,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         if not paths:
             return 0
         source = SentimentFileSource(
-            root="cleaned/sentiment",
+            root=f"{stage}/sentiment",
             provider=provider,
             start_ts=int(start_ts),
             end_ts=int(end_ts),

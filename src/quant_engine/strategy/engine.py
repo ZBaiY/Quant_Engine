@@ -745,6 +745,7 @@ class StrategyEngine:
 
         self._preload_done = True
         self._anchor_ts = anchor_ts
+
         log_info(
             self._logger,
             "engine.preload.done",
@@ -861,7 +862,7 @@ class StrategyEngine:
 
         if missing:
             missing_labels = [f"{d}:{s}" for d, s, _, _ in missing]
-            if self.mode == EngineMode.BACKTEST:
+            if self.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
                 raise RuntimeError(
                     f"warmup_features() missing history for: {missing_labels}"
                 )
@@ -950,7 +951,7 @@ class StrategyEngine:
                 "StrategyEngine.step() called before warmup_features(). "
                 "Call engine.preload_data() then engine.warmup_features() first."
             )
-        if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
+        if self.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE) and not getattr(self, "_preload_done", False):
             raise RuntimeError("BACKTEST step() called before preload_data()")
 
         # Step ordering invariant: handlers -> features -> models -> decision -> risk -> execution -> portfolio -> snapshot.
@@ -1167,7 +1168,7 @@ class StrategyEngine:
         expected_visible_end_ts = None
         actual_last_ts = None
         closed_bar_ready = None
-        if self.mode == EngineMode.BACKTEST:
+        if self.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
             handler = self._get_primary_ohlcv_handler()
             interval_ms = getattr(handler, "interval_ms", None) if handler is not None else None
             if handler is not None and isinstance(interval_ms, int) and interval_ms > 0:

@@ -29,7 +29,8 @@ class RiskEngine:
         context.setdefault("decision_score", score)
         risk_state = context.setdefault("risk_state", {})
         risk_state["shortable"] = self.shortable
-        self._rule_soft_readiness(context)
+        if self._risk_config.get("enable_soft_readiness", False):
+            self._rule_soft_readiness(context)
 
         self._assert_in_range(
             input_value=score,

@@ -523,8 +523,12 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
     def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
         symbol_for_paths = symbol_from_base_asset(self.symbol)
+        stage= "cleaned"
+        if self._engine_mode == EngineMode.SAMPLE:
+            stage = "sample"
         paths = resolve_cleaned_paths(
             data_root=self._data_root,
+            stage=stage,
             domain="ohlcv",
             symbol=symbol_for_paths,
             interval=self.interval,
@@ -534,7 +538,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
         if not paths:
             return 0
         source = OHLCVFileSource(
-            root="cleaned/ohlcv",
+            root=f"{stage}/ohlcv",
             symbol=symbol_for_paths,
             interval=self.interval,
             start_ts=int(start_ts),

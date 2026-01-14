@@ -7,7 +7,7 @@
 ## What is SoionLab
 SoionLab is a contract-driven research engine for execution-constrained, time-sensitive async systems. It keeps deterministic modeling boundaries by enforcing protocol interfaces and driver-owned time across backtest, mock, and realtime modes. The runtime treats time, lifecycle, and execution constraints as explicit research objects rather than implicit control flow.
 
-Core research question: what is the robustness boundary under non-ideal data arrival (ordering, frequency, completeness)?
+Core research question: what is the robustness boundary under non-ideal data arrival (cross domain, ordering, frequency, completeness)?
 
 ## What is special: auditable execution risk
 - Async hazard exposure (multi-source arrival mismatch) before a step is evaluated.
@@ -22,8 +22,9 @@ pip install -r requirements.txt && pip install -e .
 
 Run:
 ```bash
-python apps/run_backtest.py
+python apps/run_sample.py
 ```
+Uses bundled data under `data/sample/`; intended to validate wiring + trace/log emission, not PnL.
 
 ### What you will see
 - Console warnings such as `backtest.closed_bar.not_ready` or `soft_domain.not_ready` when readiness gates fail.

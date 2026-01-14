@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from quant_engine.runtime.modes import EngineMode, EngineSpec
 from typing import Tuple
 
 
@@ -10,8 +11,21 @@ def repo_root_from_file(file: str | Path, *, levels_up: int) -> Path:
     return Path(file).resolve().parents[levels_up]
 
 
-def data_root_from_file(file: str | Path, *, levels_up: int) -> Path:
-    return repo_root_from_file(file, levels_up=levels_up) / "data"
+_ENGINE_SPEC_CONTEXT: EngineSpec | None = None
+
+
+def set_engine_spec_context(engine_spec: EngineSpec | None) -> None:
+    global _ENGINE_SPEC_CONTEXT
+    _ENGINE_SPEC_CONTEXT = engine_spec
+
+
+def data_root_from_file(
+    file: str | Path,
+    *,
+    levels_up: int,
+) -> Path:
+    root = repo_root_from_file(file, levels_up=levels_up) / "data"
+    return root
 
 
 def artifacts_root_from_file(file: str | Path, *, levels_up: int) -> Path:
