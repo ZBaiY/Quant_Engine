@@ -11,6 +11,9 @@ Strategy classes are declarative and defined elsewhere.
 
 from __future__ import annotations
 from typing import Dict, Type
+import importlib
+import importlib.util
+import pkgutil
 
 from quant_engine.strategy.base import StrategyBase
 
@@ -20,6 +23,7 @@ from quant_engine.strategy.base import StrategyBase
 # =====================================================================
 
 STRATEGY_REGISTRY: Dict[str, Type[StrategyBase]] = {}
+_STRATEGIES_LOADED = False
 
 
 def register_strategy(name: str):
@@ -47,13 +51,24 @@ def register_strategy(name: str):
     return decorator
 
 
-from quant_engine.strategy.strategies import *  # noqa: F403,F401
+def load_strategy_modules() -> None:
+    global _STRATEGIES_LOADED
+    if _STRATEGIES_LOADED:
+        return
+    _STRATEGIES_LOADED = True
+    importlib.import_module("quant_engine.strategy.strategies")
+    spec = importlib.util.find_spec("apps.strategy")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    for module_info in sorted(pkgutil.iter_modules(spec.submodule_search_locations), key=lambda m: m.name):
+        importlib.import_module(f"apps.strategy.{module_info.name}")
 
 
 def get_strategy(name: str) -> Type[StrategyBase]:
     """
     Retrieve a registered Strategy class by name.
     """
+    load_strategy_modules()
     try:
         return STRATEGY_REGISTRY[name]
     except KeyError:

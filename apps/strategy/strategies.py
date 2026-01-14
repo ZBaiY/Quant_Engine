@@ -3,16 +3,16 @@ Concrete strategy definitions.
 
 This module contains registered Strategy implementations that declare
 their data and feature dependencies.
-Internal/debug-only; user strategies live under apps/strategy/.
+Apps/strategy is the user-facing strategy interface.
 """
 
 from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.registry import register_strategy
 
-@register_strategy("EXAMPLE-DEBUG")
+@register_strategy("EXAMPLE")
 class ExampleStrategy(StrategyBase):
 
-    STRATEGY_NAME = "EXAMPLE-DEBUG"
+    STRATEGY_NAME = "EXAMPLE"
     INTERVAL = "30m"
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
@@ -101,10 +101,10 @@ class ExampleStrategy(StrategyBase):
         "params": {"initial_capital": 1000000,},
     }
 
-@register_strategy("RSI-ADX-SIDEWAYS-DEBUG")
+@register_strategy("RSI-ADX-SIDEWAYS")
 class RSIADXSidewaysStrategy(StrategyBase):
 
-    STRATEGY_NAME = "RSI-ADX-SIDEWAYS-DEBUG"
+    STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
     INTERVAL = "15m"
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
@@ -195,10 +195,10 @@ class RSIADXSidewaysStrategy(StrategyBase):
         "params": {"initial_capital": 1000000},
     }
 
-@register_strategy("RSI-ADX-SIDEWAYS-FRACTIONAL-DEBUG")
+@register_strategy("RSI-ADX-SIDEWAYS-FRACTIONAL")
 class RSIADXSidewaysStrategyFractional(StrategyBase):
 
-    STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL-DEBUG"
+    STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL"
     INTERVAL = "15m"
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
