@@ -16,7 +16,7 @@ from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
 from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto, RealTimeDataHandler
-from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace
+from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace, log_throttle, throttle_key
 from quant_engine.utils.num import visible_end_ts
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.cleaned_path_resolver import normalize_symbol, symbol_matches
@@ -369,8 +369,9 @@ class StrategyEngine:
                 ts = ensure_epoch_ms(tick.data_ts)
                 key = format_tick_key(tick.domain, tick.symbol, getattr(tick, "source_id", None))
                 count = int(getattr(self, "_ohlcv_key_log_count", 0))
-                if count < 3: ## limit logs
-                    log_info(
+                throttle_id = throttle_key("ingest.ohlcv.key", type(self).__name__, key)
+                if count < 3 and log_throttle(throttle_id, 60.0): ## limit logs
+                    log_debug(
                         self._logger,
                         "ingest.ohlcv.key",
                         key=key,
@@ -539,6 +540,7 @@ class StrategyEngine:
                     h.align_to(timestamp)
 
         if self.mode in (EngineMode.REALTIME, EngineMode.MOCK):
+            # Gap check is a guard: no downstream updates until data is continuous.
             # Realtime/mock only: external backfill to close gaps before step().
             for hmap in (
                 self.ohlcv_handlers,
@@ -684,6 +686,7 @@ class StrategyEngine:
             )
 
         engine_interval_ms = getattr(self.spec, "interval_ms", None)
+        # Engine owns lifecycle transitions; preload is the only handler bootstrap entrypoint.
         log_info(
             self._logger,
             "engine.preload.start",
@@ -806,6 +809,7 @@ class StrategyEngine:
         anchor_ts = ensure_epoch_ms(anchor_ts)
         self._anchor_ts = anchor_ts
 
+        # Driver timestamp is the anchor.
         log_info(
             self._logger,
             "engine.warmup.start",
@@ -957,6 +961,7 @@ class StrategyEngine:
         if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
             raise RuntimeError("BACKTEST step() called before preload_data()")
 
+        # Step ordering invariant: handlers -> features -> models -> decision -> risk -> execution -> portfolio -> snapshot.
         self._reset_step_order()
         timestamp = ensure_epoch_ms(ts)
         if self._guardrails_enabled:
@@ -969,6 +974,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
+        # Driver timestamp is the anchor.
         self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
         primary_symbol = self.symbol
@@ -1050,12 +1056,7 @@ class StrategyEngine:
         if hasattr(self.portfolio, "update_marks"):
             self.portfolio.update_marks(market_snapshots)
         portfolio_state = self.portfolio.state()
-        if hasattr(portfolio_state, "to_dict"):
-            portfolio_state_dict = dict(portfolio_state.to_dict())
-        elif isinstance(portfolio_state, Mapping):
-            portfolio_state_dict = dict(portfolio_state)
-        else:
-            portfolio_state_dict = {"state": portfolio_state}
+        portfolio_state_dict = dict(portfolio_state.to_dict())
 
         # -------------------------------------------------
         # 4. Model predictions
@@ -1149,6 +1150,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 9. Return immutable engine snapshot (post-execution)
         # -------------------------------------------------
+        # Snapshot timestamp is driver-owned and must match the step anchor.
         self._enter_stage("snapshot")
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
         model_outputs_out = dict(model_outputs)
@@ -1156,8 +1158,7 @@ class StrategyEngine:
         if hasattr(self.portfolio, "update_marks"):
             self.portfolio.update_marks(market_snapshots)
         portfolio_post = self.portfolio.state()
-        if isinstance(portfolio_post, PortfolioState):
-            portfolio_post = PortfolioState(dict(portfolio_post.to_dict()))
+        portfolio_post = PortfolioState(dict(portfolio_post.to_dict()))
         snapshot = EngineSnapshot(
                     timestamp=timestamp,
                     mode=self.spec.mode,                 # engine-owned

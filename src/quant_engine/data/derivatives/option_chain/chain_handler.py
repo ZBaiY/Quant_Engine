@@ -6,7 +6,7 @@ from typing import Any, Mapping, cast
 import pandas as pd
 import time
 
-from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
+from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception, log_throttle, throttle_key
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.contracts.snapshot import (
@@ -291,11 +291,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if snap is None:
             return
 
-        # allow passing an already-built snapshot
-        if isinstance(payload, OptionChainSnapshot):
-            self.cache.push(snap)
-            return
-
         # update market gap classification (best-effort)
         last = self.cache.last()
         last_ts = int(last.data_ts) if last is not None else None
@@ -525,13 +520,15 @@ class OptionChainDataHandler(RealTimeDataHandler):
             lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
             bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self.cache, "maxlen", None))
             if bars is None or bars <= 0:
-                log_warn(
-                    self._logger,
-                    "option_chain.backfill.no_lookback",
-                    symbol=self.display_symbol, instrument_symbol=self.symbol,
-                    asset=self.asset,
-                    target_ts=int(target_ts),
-                )
+                throttle_id = throttle_key("option_chain.backfill.no_lookback", type(self).__name__, self.symbol, self.interval_ms)
+                if log_throttle(throttle_id, 60.0):
+                    log_warn(
+                        self._logger,
+                        "option_chain.backfill.no_lookback",
+                        symbol=self.display_symbol, instrument_symbol=self.symbol,
+                        asset=self.asset,
+                        target_ts=int(target_ts),
+                    )
                 return
             start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
             end_ts = int(target_ts)
@@ -564,6 +561,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     err=str(exc),
                 )
             return
+        # Gap check is a guard: no downstream updates until data is continuous.
         gap_threshold = int(target_ts) - int(self.interval_ms)
         if int(last_ts) >= gap_threshold:
             return
@@ -646,23 +644,27 @@ class OptionChainDataHandler(RealTimeDataHandler):
     def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
         worker = self._backfill_worker
         if worker is None:
-            log_info(
-                self._logger,
-                "option_chain.backfill.no_worker",
-                symbol=self.display_symbol, instrument_symbol=self.symbol,
-                asset=self.asset,
-                start_ts=int(start_ts),
-                end_ts=int(end_ts),
-            )
+            throttle_id = throttle_key("option_chain.backfill.no_worker", type(self).__name__, self.symbol, self.interval_ms)
+            if log_throttle(throttle_id, 60.0):
+                log_debug(
+                    self._logger,
+                    "option_chain.backfill.no_worker",
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
+                    asset=self.asset,
+                    start_ts=int(start_ts),
+                    end_ts=int(end_ts),
+                )
             return 0
         backfill = getattr(worker, "backfill", None)
         if not callable(backfill):
-            log_info(
-                self._logger,
-                "option_chain.backfill.no_worker_method",
-                symbol=self.display_symbol, instrument_symbol=self.symbol,
-                worker_type=type(worker).__name__,
-            )
+            throttle_id = throttle_key("option_chain.backfill.no_worker_method", type(self).__name__, self.symbol, self.interval_ms)
+            if log_throttle(throttle_id, 60.0):
+                log_debug(
+                    self._logger,
+                    "option_chain.backfill.no_worker_method",
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
+                    worker_type=type(worker).__name__,
+                )
             return 0
         emit = self._backfill_emit or self.on_new_tick
         return int(
@@ -723,50 +725,34 @@ def _persist_option_chain_payload(persist, payload: Any, target_ts: int) -> None
     persist(df=df, data_ts=int(target_ts))
 
 
-def _build_snapshot_from_payload(payload: Any, *, symbol: str, market: MarketSpec) -> OptionChainSnapshot | None:
-    # Case 0: already a snapshot
-    if isinstance(payload, OptionChainSnapshot):
-        return payload
+def _build_snapshot_from_payload(payload: Mapping[str, Any], *, symbol: str, market: MarketSpec) -> OptionChainSnapshot | None:
+    d = {str(k): v for k, v in payload.items()}
 
-    # Case 1: direct DataFrame (caller does not provide a timestamp)
-    if isinstance(payload, pd.DataFrame):
-        try:
-            return OptionChainSnapshot.from_chain_aligned(
-                data_ts=_now_ms(),
-                chain=payload,
-                symbol=symbol,
-                market=market,
-                schema_version=2,
-            )
-        except Exception:
-            return None
+    ts_any = d.get("data_ts") or d.get("timestamp")
+    ts = int(ts_any) if ts_any is not None else _now_ms()
 
-    # Case 2: mapping wrapper
-    if isinstance(payload, Mapping):
-        d = {str(k): v for k, v in payload.items()}
+    chain = d.get("chain")
+    if chain is None:
+        chain = d.get("frame")
+    if chain is None:
+        chain = d.get("records")
 
-        ts_any = d.get("data_ts") or d.get("timestamp")
-        ts = int(ts_any) if ts_any is not None else _now_ms()
+    if isinstance(chain, list):
+        chain = pd.DataFrame(chain)
 
-        chain = d.get("chain")
-        if chain is None:
-            chain = d.get("frame")
-        if chain is None:
-            chain = d.get("records")
+    if not isinstance(chain, pd.DataFrame):
+        return None
 
-        if isinstance(chain, pd.DataFrame):
-            try:
-                return OptionChainSnapshot.from_chain_aligned(
-                    data_ts=ts,
-                    chain=chain,
-                    symbol=symbol,
-                    market=market,
-                    schema_version=int(d.get("schema_version") or 2),
-                )
-            except Exception:
-                return None
-
-    return None
+    try:
+        return OptionChainSnapshot.from_chain_aligned(
+            data_ts=ts,
+            chain=chain,
+            symbol=symbol,
+            market=market,
+            schema_version=int(d.get("schema_version") or 2),
+        )
+    except Exception:
+        return None
 
 
 def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:

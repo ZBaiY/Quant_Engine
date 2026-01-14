@@ -7,7 +7,7 @@ from typing import Any, Deque, Optional
 
 import numpy as np
 import pandas as pd
-from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
+from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception, log_throttle, throttle_key
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
@@ -293,13 +293,15 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
             bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self._snapshots, "maxlen", None))
             if bars is None or bars <= 0:
-                log_warn(
-                    self._logger,
-                    "iv_surface.backfill.no_lookback",
-                    symbol=self.display_symbol, instrument_symbol=self.symbol,
-                    asset=self.asset,
-                    target_ts=int(target_ts),
-                )
+                throttle_id = throttle_key("iv_surface.backfill.no_lookback", type(self).__name__, self.symbol, self.interval_ms)
+                if log_throttle(throttle_id, 60.0):
+                    log_warn(
+                        self._logger,
+                        "iv_surface.backfill.no_lookback",
+                        symbol=self.display_symbol, instrument_symbol=self.symbol,
+                        asset=self.asset,
+                        target_ts=int(target_ts),
+                    )
                 return
             start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
             end_ts = int(target_ts)
@@ -332,6 +334,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                     err=str(exc),
                 )
             return
+        # Gap check is a guard: no downstream updates until data is continuous.
         gap_threshold = int(target_ts) - int(self.interval_ms)
         if int(last_ts) >= gap_threshold:
             return

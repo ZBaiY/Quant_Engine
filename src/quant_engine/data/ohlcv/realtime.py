@@ -13,7 +13,7 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
-from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
+from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception, log_throttle, throttle_key
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.num import visible_end_ts
@@ -441,12 +441,14 @@ class OHLCVDataHandler(RealTimeDataHandler):
             lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
             bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self.cache, "maxlen", None))
             if bars is None or bars <= 0:
-                log_warn(
-                    self._logger,
-                    "ohlcv.backfill.no_lookback",
-                    symbol=self.symbol,
-                    target_ts=int(target_ts),
-                )
+                throttle_id = throttle_key("ohlcv.backfill.no_lookback", type(self).__name__, self.symbol, self.interval_ms)
+                if log_throttle(throttle_id, 60.0):
+                    log_warn(
+                        self._logger,
+                        "ohlcv.backfill.no_lookback",
+                        symbol=self.symbol,
+                        target_ts=int(target_ts),
+                    )
                 return
             start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
             end_ts = int(target_ts)
@@ -476,6 +478,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
                     err=str(exc),
                 )
             return
+        # Gap check is a guard: no downstream updates until data is continuous.
         gap_threshold = int(target_ts) - int(self.interval_ms)
         if int(last_ts) >= gap_threshold:
             return
@@ -560,22 +563,26 @@ class OHLCVDataHandler(RealTimeDataHandler):
     def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
         worker = self._backfill_worker
         if worker is None:
-            log_info(
-                self._logger,
-                "ohlcv.backfill.no_worker",
-                symbol=self.symbol,
-                start_ts=int(start_ts),
-                end_ts=int(end_ts),
-            )
+            throttle_id = throttle_key("ohlcv.backfill.no_worker", type(self).__name__, self.symbol, self.interval_ms)
+            if log_throttle(throttle_id, 60.0):
+                log_debug(
+                    self._logger,
+                    "ohlcv.backfill.no_worker",
+                    symbol=self.symbol,
+                    start_ts=int(start_ts),
+                    end_ts=int(end_ts),
+                )
             return 0
         backfill = getattr(worker, "backfill", None)
         if not callable(backfill):
-            log_info(
-                self._logger,
-                "ohlcv.backfill.no_worker_method",
-                symbol=self.symbol,
-                worker_type=type(worker).__name__,
-            )
+            throttle_id = throttle_key("ohlcv.backfill.no_worker_method", type(self).__name__, self.symbol, self.interval_ms)
+            if log_throttle(throttle_id, 60.0):
+                log_debug(
+                    self._logger,
+                    "ohlcv.backfill.no_worker_method",
+                    symbol=self.symbol,
+                    worker_type=type(worker).__name__,
+                )
             return 0
         emit = self._backfill_emit or self.on_new_tick
         return int(

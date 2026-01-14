@@ -331,25 +331,10 @@ class CashPositionConstraintRule(RiskBase):
             if hasattr(orderbook, "get_attr"):
                 bid = orderbook.get_attr("best_bid")
                 ask = orderbook.get_attr("best_ask")
-            elif isinstance(orderbook, dict):
-                bid = orderbook.get("best_bid")
-                ask = orderbook.get("best_ask")
 
             if bid is not None and ask is not None:
                 try:
                     price = (float(bid) + float(ask)) / 2.0
-                    data_ts = getattr(orderbook, "data_ts", None)
-                    return price, "orderbook.mid", data_ts
-                except (TypeError, ValueError):
-                    pass
-            mid = None
-            if isinstance(orderbook, dict):
-                mid = orderbook.get("mid")
-            elif hasattr(orderbook, "get_attr"):
-                mid = orderbook.get_attr("mid")
-            if mid is not None:
-                try:
-                    price = float(mid)
                     data_ts = getattr(orderbook, "data_ts", None)
                     return price, "orderbook.mid", data_ts
                 except (TypeError, ValueError):
@@ -359,9 +344,7 @@ class CashPositionConstraintRule(RiskBase):
         ohlcv = primary_snapshots.get("ohlcv")
         if ohlcv is not None:
             close = None
-            if isinstance(ohlcv, dict):
-                close = ohlcv.get("close")
-            elif hasattr(ohlcv, "get_attr"):
+            if hasattr(ohlcv, "get_attr"):
                 close = ohlcv.get_attr("close")
 
             if close is not None:
@@ -379,9 +362,7 @@ class CashPositionConstraintRule(RiskBase):
             ohlcv = ohlcv_map[self.symbol]
             if ohlcv is not None:
                 close = None
-                if isinstance(ohlcv, dict):
-                    close = ohlcv.get("close")
-                elif hasattr(ohlcv, "get_attr"):
+                if hasattr(ohlcv, "get_attr"):
                     close = ohlcv.get_attr("close")
     
                 if close is not None:

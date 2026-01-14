@@ -7,7 +7,6 @@ from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
-from quant_engine.contracts.portfolio import PortfolioState
 from collections.abc import AsyncIterator
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
@@ -143,38 +142,9 @@ class RealtimeDriver(BaseDriver):
                 # even if step() is CPU-heavy.
                 await asyncio.sleep(0)
 
-                if isinstance(result, EngineSnapshot):
-                    self._snapshots.append(result)
-                elif isinstance(result, dict):
-                    snap = self.engine.get_snapshot() if hasattr(self.engine, "get_snapshot") else None
-                    if snap is not None:
-                        self._snapshots.append(snap)
-                    else:
-                        features = dict(result.get("features", {}) or {})
-                        model_outputs = dict(result.get("model_outputs", {}) or {})
-                        fills = list(result.get("fills", []) or [])
-                        market_data = result.get("market_data")
-                        if isinstance(market_data, dict):
-                            market_data = dict(market_data)
-                        portfolio_state = result.get("portfolio")
-                        if isinstance(portfolio_state, PortfolioState):
-                            portfolio_state = PortfolioState(dict(portfolio_state.to_dict()))
-                        elif isinstance(portfolio_state, dict):
-                            portfolio_state = PortfolioState(dict(portfolio_state))
-                        else:
-                            portfolio_state = PortfolioState({})
-                        self._snapshots.append(
-                            EngineSnapshot(
-                                timestamp=ts,
-                                mode=self.spec.mode,
-                                features=features,
-                                model_outputs=model_outputs,
-                                decision_score=result.get("decision_score"),
-                                target_position=result.get("target_position"),
-                                fills=fills,
-                                portfolio=portfolio_state,
-                            )
-                        )
+                if not isinstance(result, EngineSnapshot):
+                    raise TypeError(f"engine.step() must return EngineSnapshot, got {type(result).__name__}")
+                self._snapshots.append(result)
         except asyncio.CancelledError:
             self._shutdown_components()
             raise

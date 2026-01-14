@@ -23,6 +23,7 @@ _DEBUG_MODULES: set[str] = set()
 _CONFIGURED = False
 _RUN_ID: str | None = None
 _MODE: str | None = None
+_LOG_THROTTLE_STATE: dict[str, float] = {}
 
 # ---------------------------------------------------------------------
 # Canonical log categories (semantic contract)
@@ -665,6 +666,20 @@ def log_error(logger: Logger, msg: str, **context):
 
 def log_exception(logger: Logger, msg: str, **context):
     logger.exception(msg, extra={"context": _sanitize_context(context)})
+
+def throttle_key(*parts: object) -> str:
+    normalized = ("<none>" if p is None else str(p) for p in parts)
+    return ":".join(normalized)
+
+def log_throttle(key: str, every_s: float, *, now_s: float | None = None) -> bool:
+    if every_s is None or every_s <= 0:
+        return True
+    now = time.monotonic() if now_s is None else float(now_s)
+    last = _LOG_THROTTLE_STATE.get(key)
+    if last is None or (now - last) >= float(every_s):
+        _LOG_THROTTLE_STATE[key] = now
+        return True
+    return False
 
 # ---------------------------------------------------------------------
 # Domain-specific logging helpers (semantic, not infrastructural)

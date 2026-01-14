@@ -12,7 +12,7 @@ from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.strategy.engine import StrategyEngine, format_tick_key
 from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.guards import ensure_epoch_ms
-from quant_engine.utils.logger import log_debug, log_info, log_warn
+from quant_engine.utils.logger import log_debug, log_info, log_warn, log_throttle, throttle_key
 from quant_engine.utils.num import visible_end_ts
 
 DRAIN_YIELD_EVERY = 2048
@@ -108,6 +108,7 @@ class BacktestDriver(BaseDriver):
         self._install_loop_exception_handler()
         try:
             # -------- preload --------
+            # Driver is the single time authority and sequences lifecycle transitions.
             self.guard.enter(RuntimePhase.PRELOAD)
             log_info(self._logger, "driver.phase.load_history", timestamp=self.start_ts)
             await to_thread_limited(
@@ -120,6 +121,7 @@ class BacktestDriver(BaseDriver):
             )
 
             # -------- warmup --------
+            # Driver timestamp is the anchor.
             self.guard.enter(RuntimePhase.WARMUP)
             log_info(self._logger, "driver.phase.warmup", timestamp=self.start_ts)
             await to_thread_limited(
@@ -147,14 +149,16 @@ class BacktestDriver(BaseDriver):
                     required_ohlcv_handlers.append((handler, int(interval_ms), key))
 
             step_count = 0
+            # Driver is the single time authority; iter_timestamps defines step anchors.
             async for ts in self.iter_timestamps():
                 if self.stop_event.is_set():
                     break
                 timestamp = int(ts)
-                log_info(self._logger, "driver.phase.step", timestamp=timestamp)
+                log_debug(self._logger, "driver.phase.step", timestamp=timestamp)
                 # ---- ingest (optional gating) ----
                 self.guard.enter(RuntimePhase.INGEST)
 
+                # Driver timestamp is the anchor.
                 # Align handlers before ingest to satisfy handler contracts.
                 self.engine.align_to(timestamp)
 
@@ -248,15 +252,30 @@ class BacktestDriver(BaseDriver):
                             actual_last_ts = handler.last_timestamp() if hasattr(handler, "last_timestamp") else None
                             closed_bar_ready = actual_last_ts is not None and int(actual_last_ts) >= int(need_ts)
                             if not closed_bar_ready:
-                                log_warn(
-                                    self._logger,
-                                    "backtest.closed_bar.not_ready",
-                                    timestamp=int(timestamp),
-                                    expected_visible_end_ts=int(need_ts),
-                                    actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
-                                    symbol=getattr(handler, "symbol", None),
+                                symbol = getattr(handler, "symbol", None)
+                                handler_type = handler.__class__.__name__
+                                interval_val = getattr(handler, "interval", None) or getattr(handler, "interval_ms", None)
+                                key = throttle_key("backtest.closed_bar.not_ready", handler_type, symbol, interval_val)
+                                lag_ms = int(need_ts) - int(actual_last_ts) if actual_last_ts is not None else None
+                                interval_ms = int(interval_ms) if isinstance(interval_ms, int) else None
+                                actionable = (
+                                    lag_ms is not None
+                                    and interval_ms is not None
+                                    and lag_ms >= 3 * int(interval_ms)
                                 )
-                log_info(
+                                if log_throttle(key, 60.0):
+                                    log_fn = log_warn if actionable else log_debug
+                                    log_fn(
+                                        self._logger,
+                                        "backtest.closed_bar.not_ready",
+                                        timestamp=int(timestamp),
+                                        expected_visible_end_ts=int(need_ts),
+                                        actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
+                                        symbol=symbol,
+                                        lag_ms=lag_ms,
+                                        interval_ms=interval_ms,
+                                    )
+                log_debug(
                     self._logger,
                     "driver.ingest",
                     timestamp=timestamp,
@@ -270,12 +289,9 @@ class BacktestDriver(BaseDriver):
 
                 await asyncio.sleep(0)  # let ingestion tasks run
 
-                if isinstance(result, EngineSnapshot):
-                    self._snapshots.append(result)
-                elif isinstance(result, dict):
-                    snap = self.engine.get_snapshot() if hasattr(self.engine, "get_snapshot") else None
-                    if snap is not None:
-                        self._snapshots.append(snap)
+                if not isinstance(result, EngineSnapshot):
+                    raise TypeError(f"engine.step() must return EngineSnapshot, got {type(result).__name__}")
+                self._snapshots.append(result)
                 step_count += 1
                 if self._step_log_every > 0 and (step_count % self._step_log_every) == 0:
                     log_debug(
