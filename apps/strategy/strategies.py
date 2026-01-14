@@ -73,7 +73,6 @@ class ExampleStrategy(StrategyBase):
     }
     RISK_CFG = {
         "shortable": False,
-        "enable_soft_readiness": False,
         "rules": {
             "ATR-SIZER": {
                 "params": {"atr_feature": "ATR_RISK_{A}"}
@@ -171,7 +170,6 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     RISK_CFG = {
         "shortable": False,
-        "enable_soft_readiness": False,
         "rules": {
             "FULL-ALLOCATION": {},
             "CASH-POSITION-CONSTRAINT": {
@@ -266,7 +264,6 @@ class RSIADXSidewaysStrategyFractional(StrategyBase):
 
     RISK_CFG = {
         "shortable": False,
-        "enable_soft_readiness": False,
         "rules": {
             "FULL-ALLOCATION": {},
             "FRACTIONAL-CASH-CONSTRAINT": {

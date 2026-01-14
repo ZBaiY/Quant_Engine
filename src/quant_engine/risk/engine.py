@@ -29,8 +29,7 @@ class RiskEngine:
         context.setdefault("decision_score", score)
         risk_state = context.setdefault("risk_state", {})
         risk_state["shortable"] = self.shortable
-        if self._risk_config.get("enable_soft_readiness", False):
-            self._rule_soft_readiness(context)
+        self._rule_soft_readiness(context)
 
         self._assert_in_range(
             input_value=score,
@@ -79,6 +78,7 @@ class RiskEngine:
         return target_position
 
     def _rule_soft_readiness(self, context: dict) -> None:
+        ### Soft Readiness Rule -- unfinished ###
         readiness_ctx = context.get("readiness_ctx")
         if not isinstance(readiness_ctx, dict):
             return

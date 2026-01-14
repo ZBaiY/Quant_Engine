@@ -1013,7 +1013,7 @@ class StrategyEngine:
                 if symbol_ctx:
                     readiness_ctx[domain] = symbol_ctx
         ##### Soft readiness context, sometimes async has jammed data or in realtime lagging data #####
-
+        
         # primary_snapshots is per-domain for the primary symbol (no OHLCV-as-canonical shortcut).
         primary_snapshots = {
             domain: snaps[primary_symbol]

@@ -44,7 +44,7 @@ def _sample_overrides() -> dict:
     if not isinstance(soft_cfg, dict):
         soft_cfg = {}
     soft_cfg = dict(soft_cfg)
-    soft_cfg["enabled"] = True
+    soft_cfg["enabled"] = False
     soft_cfg.setdefault(
         "domains",
         ["orderbook", "option_chain", "iv_surface", "sentiment", "trades", "option_trades"],
