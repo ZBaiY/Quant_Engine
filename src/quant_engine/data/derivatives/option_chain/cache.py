@@ -14,8 +14,10 @@ This module intentionally stores references to snapshots in secondary indices
 from collections import deque
 from typing import Generic, Iterable, TypeAlias, TypeVar
 
+import pandas as pd
+
 from quant_engine.data.contracts.cache import SnapshotCache
-from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
+from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot, OptionChainSnapshotView
 
 
 SnapT = TypeVar("SnapT", bound=OptionChainSnapshot)
@@ -30,18 +32,7 @@ def _snap_ts(s: object) -> int:
     return int(ts)
 
 
-def _snap_expiries_ms(s: object) -> set[int]:
-    """Extract unique expiry_ts values from snapshot frame (best-effort)."""
-    frame = getattr(s, "frame", None)
-    if frame is None:
-        return set()
-    try:
-        if hasattr(frame, "columns") and "expiry_ts" in frame.columns:  # type: ignore[attr-defined]
-            xs = frame["expiry_ts"].dropna().unique()  # type: ignore[index]
-            return {int(v) for v in xs if v is not None}
-    except Exception:
-        return set()
-    return set()
+# Note: expiry keys are cached on OptionChainSnapshot via get_expiry_keys_ms().
 
 
 def _term_key_ms(*, snap_ts: int, expiry_ts: int, term_bucket_ms: int) -> int:
@@ -57,6 +48,13 @@ def _term_key_ms(*, snap_ts: int, expiry_ts: int, term_bucket_ms: int) -> int:
     if term < 0:
         term = 0
     return (int(term) // tb) * tb
+
+
+def _concat_frames(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
+    xs = [f for f in frames if f is not None]
+    if not xs:
+        return pd.DataFrame()
+    return pd.concat(xs, ignore_index=True)
 
 
 class DequeSnapshotCache(Generic[SnapT], SnapshotCache[SnapT]):
@@ -111,54 +109,33 @@ class DequeSnapshotCache(Generic[SnapT], SnapshotCache[SnapT]):
 
 
 class OptionChainExpiryIndexedCache(SnapshotCache[OptionChainSnapshot]):
-    """Option-chain cache with an expiry index.
+    """Option-chain cache with expiry-sliced view helpers.
 
-    Indices:
-      1) main: global time-ordered cache (snapshots ordered by data_ts)
-      2) by_expiry: snapshots indexed by expiry_ts (references only)
-
-    Notes:
-    - by_expiry stores references to snapshots; it does not copy snapshot records.
-    - If a snapshot contains many expiries, it will be referenced in many buckets.
-      This is intentional and cheap (pointer references), and avoids materializing
-      per-expiry slices at ingest-time.
+    Assumes snapshots are pushed in non-decreasing data_ts order; out-of-order pushes are undefined behavior.
     """
 
     def __init__(
         self,
         *,
         maxlen: int = 512,
-        per_expiry_maxlen: int = 256,
+        default_expiry_window: int = 5,
     ):
         self.maxlen = int(maxlen)
-        self._per_expiry_maxlen = int(per_expiry_maxlen)
+        self.default_expiry_window = int(default_expiry_window)
         if self.maxlen <= 0:
             raise ValueError("maxlen must be > 0")
-        if self._per_expiry_maxlen <= 0:
-            raise ValueError("per_expiry_maxlen must be > 0")
+        if self.default_expiry_window <= 0:
+            raise ValueError("default_expiry_window must be > 0")
 
         self.main: DequeSnapshotCache[OptionChainSnapshot] = DequeSnapshotCache(maxlen=self.maxlen)
-        self.by_expiry: dict[int, DequeSnapshotCache[OptionChainSnapshot]] = {}
 
         # Protocol attribute: iterable buffer points to global cache.
         self.buffer = self.main.buffer
-
-    def _bucket_expiry(self, expiry_ts: int) -> DequeSnapshotCache[OptionChainSnapshot]:
-        k = int(expiry_ts)
-        b = self.by_expiry.get(k)
-        if b is None:
-            b = DequeSnapshotCache(maxlen=self._per_expiry_maxlen)
-            self.by_expiry[k] = b
-        return b
 
     # --- SnapshotCache interface (delegates to main) ---
 
     def push(self, s: OptionChainSnapshot) -> None:
         self.main.push(s)
-
-        # expiry index: store snapshot reference in each expiry bucket present.
-        for ex in _snap_expiries_ms(s):
-            self._bucket_expiry(ex).push(s)
 
     def last(self) -> OptionChainSnapshot | None:
         return self.main.last()
@@ -177,118 +154,81 @@ class OptionChainExpiryIndexedCache(SnapshotCache[OptionChainSnapshot]):
 
     def clear(self) -> None:
         self.main.clear()
-        for b in self.by_expiry.values():
-            b.clear()
-        self.by_expiry.clear()
 
     # --- Expiry helpers ---
 
     def expiries(self) -> list[int]:
-        return sorted(self.by_expiry.keys())
+        s = self.last()
+        if s is None:
+            return []
+        return sorted(s.get_expiry_keys_ms())
 
     def last_for_expiry(self, expiry_ts: int) -> OptionChainSnapshot | None:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.last() if b is not None else None
+        base = self.main.last()
+        return None if base is None else OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts)
 
     def get_at_or_before_for_expiry(self, expiry_ts: int, timestamp: int) -> OptionChainSnapshot | None:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.get_at_or_before(timestamp) if b is not None else None
+        base = self.main.get_at_or_before(timestamp)
+        return None if base is None else OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts)
 
     def window_for_expiry(self, expiry_ts: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.window(n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.window(n):
+            out.append(OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts))
+        return out
 
     def get_n_before_for_expiry(self, expiry_ts: int, timestamp: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.get_n_before(timestamp, n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.get_n_before(timestamp, n):
+            out.append(OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts))
+        return out
+
+    def window_df_for_expiry(self, expiry_ts: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_expiry_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.window_for_expiry(expiry_ts, k)])
+
+    def get_n_before_df_for_expiry(self, expiry_ts: int, timestamp: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_expiry_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.get_n_before_for_expiry(expiry_ts, timestamp, k)])
 
 
 class OptionChainTermBucketedCache(SnapshotCache[OptionChainSnapshot]):
-    """Option-chain cache with term-bucket (DTE-like) index.
+    """Option-chain cache with term-bucket view helpers.
 
-    Indices:
-      1) main: global time-ordered cache (snapshots ordered by data_ts)
-      2) by_term: snapshots indexed by term bucket key (references only)
-         term := expiry_ts - snapshot.data_ts (ms)
-         key  := floor(term / term_bucket_ms) * term_bucket_ms
-      3) by_expiry: optional per-expiry buckets (references only)
-
-    Notes:
-    - A single chain snapshot usually contains many expiries.
-      Therefore one snapshot will be referenced in many term buckets.
-    - This is pointer-cheap and avoids per-expiry slicing at ingest time.
-    - Term bucketing is a convenience index; it must never become a primary sort key.
+    Assumes snapshots are pushed in non-decreasing data_ts order; out-of-order pushes are undefined behavior.
     """
 
     def __init__(
         self,
         *,
         maxlen: int = 512,
-        per_term_maxlen: int = 256,
         term_bucket_ms: int = 86_400_000,
-        per_expiry_maxlen: int | None = None,
-        enable_expiry_index: bool = True,
+        default_term_window: int = 5,
+        default_expiry_window: int = 5,
     ):
         self.maxlen = int(maxlen)
         self.term_bucket_ms = int(term_bucket_ms)
+        self.default_term_window = int(default_term_window)
+        self.default_expiry_window = int(default_expiry_window)
         if self.maxlen <= 0:
             raise ValueError("maxlen must be > 0")
         if self.term_bucket_ms <= 0:
             raise ValueError("term_bucket_ms must be > 0")
-
-        self._per_term_maxlen = int(per_term_maxlen)
-        if self._per_term_maxlen <= 0:
-            raise ValueError("per_term_maxlen must be > 0")
-
-        self._enable_expiry_index = bool(enable_expiry_index)
-        self._per_expiry_maxlen = (
-            int(per_expiry_maxlen)
-            if per_expiry_maxlen is not None
-            else int(self._per_term_maxlen)
-        )
-        if self._enable_expiry_index and self._per_expiry_maxlen <= 0:
-            raise ValueError("per_expiry_maxlen must be > 0")
+        if self.default_term_window <= 0:
+            raise ValueError("default_term_window must be > 0")
+        if self.default_expiry_window <= 0:
+            raise ValueError("default_expiry_window must be > 0")
 
         self.main: DequeSnapshotCache[OptionChainSnapshot] = DequeSnapshotCache(maxlen=self.maxlen)
 
-        # Indices (references only)
-        self.by_term: dict[int, DequeSnapshotCache[OptionChainSnapshot]] = {}
-        self.by_expiry: dict[int, DequeSnapshotCache[OptionChainSnapshot]] = {}
-
         # Protocol attribute: iterable buffer points to global cache.
         self.buffer = self.main.buffer
-
-    def _bucket_term(self, term_key: int) -> DequeSnapshotCache[OptionChainSnapshot]:
-        k = int(term_key)
-        b = self.by_term.get(k)
-        if b is None:
-            b = DequeSnapshotCache(maxlen=self._per_term_maxlen)
-            self.by_term[k] = b
-        return b
-
-    def _bucket_expiry(self, expiry_ts: int) -> DequeSnapshotCache[OptionChainSnapshot]:
-        k = int(expiry_ts)
-        b = self.by_expiry.get(k)
-        if b is None:
-            b = DequeSnapshotCache(maxlen=self._per_expiry_maxlen)
-            self.by_expiry[k] = b
-        return b
 
     # --- SnapshotCache interface (delegates to main) ---
 
     def push(self, s: OptionChainSnapshot) -> None:
         self.main.push(s)
-
-        snap_ts = _snap_ts(s)
-        expiries = _snap_expiries_ms(s)
-        if not expiries:
-            return
-
-        for ex in expiries:
-            tk = _term_key_ms(snap_ts=snap_ts, expiry_ts=int(ex), term_bucket_ms=self.term_bucket_ms)
-            self._bucket_term(tk).push(s)
-            if self._enable_expiry_index:
-                self._bucket_expiry(int(ex)).push(s)
+        s.get_term_keys_ms(self.term_bucket_ms)
 
     def last(self) -> OptionChainSnapshot | None:
         return self.main.last()
@@ -307,54 +247,111 @@ class OptionChainTermBucketedCache(SnapshotCache[OptionChainSnapshot]):
 
     def clear(self) -> None:
         self.main.clear()
-        for b in self.by_term.values():
-            b.clear()
-        self.by_term.clear()
-        for b in self.by_expiry.values():
-            b.clear()
-        self.by_expiry.clear()
 
     # --- Term helpers ---
 
     def term_buckets(self) -> list[int]:
-        return sorted(self.by_term.keys())
+        s = self.last()
+        if s is None:
+            return []
+        snap_ts = _snap_ts(s)
+        expiries = s.get_expiry_keys_ms()
+        return sorted(
+            _term_key_ms(snap_ts=snap_ts, expiry_ts=ex, term_bucket_ms=self.term_bucket_ms)
+            for ex in expiries
+        )
 
     def last_for_term(self, term_key_ms: int) -> OptionChainSnapshot | None:
-        b = self.by_term.get(int(term_key_ms))
-        return b.last() if b is not None else None
+        base = self.main.last()
+        return (
+            None
+            if base is None
+            else OptionChainSnapshotView.for_term_bucket(
+                base=base,
+                term_key_ms=term_key_ms,
+                term_bucket_ms=self.term_bucket_ms,
+            )
+        )
 
     def get_at_or_before_for_term(self, term_key_ms: int, timestamp: int) -> OptionChainSnapshot | None:
-        b = self.by_term.get(int(term_key_ms))
-        return b.get_at_or_before(timestamp) if b is not None else None
+        base = self.main.get_at_or_before(timestamp)
+        return (
+            None
+            if base is None
+            else OptionChainSnapshotView.for_term_bucket(
+                base=base,
+                term_key_ms=term_key_ms,
+                term_bucket_ms=self.term_bucket_ms,
+            )
+        )
 
     def window_for_term(self, term_key_ms: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_term.get(int(term_key_ms))
-        return b.window(n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.window(n):
+            out.append(
+                OptionChainSnapshotView.for_term_bucket(
+                    base=base,
+                    term_key_ms=term_key_ms,
+                    term_bucket_ms=self.term_bucket_ms,
+                )
+            )
+        return out
 
     def get_n_before_for_term(self, term_key_ms: int, timestamp: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_term.get(int(term_key_ms))
-        return b.get_n_before(timestamp, n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.get_n_before(timestamp, n):
+            out.append(
+                OptionChainSnapshotView.for_term_bucket(
+                    base=base,
+                    term_key_ms=term_key_ms,
+                    term_bucket_ms=self.term_bucket_ms,
+                )
+            )
+        return out
 
-    # --- Expiry helpers (optional) ---
+    def window_df_for_term(self, term_key_ms: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_term_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.window_for_term(term_key_ms, k)])
+
+    def get_n_before_df_for_term(self, term_key_ms: int, timestamp: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_term_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.get_n_before_for_term(term_key_ms, timestamp, k)])
+
+    # --- Expiry helpers ---
 
     def expiries(self) -> list[int]:
-        return sorted(self.by_expiry.keys())
+        s = self.last()
+        if s is None:
+            return []
+        return sorted(s.get_expiry_keys_ms())
 
     def last_for_expiry(self, expiry_ts: int) -> OptionChainSnapshot | None:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.last() if b is not None else None
+        base = self.main.last()
+        return None if base is None else OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts)
 
     def get_at_or_before_for_expiry(self, expiry_ts: int, timestamp: int) -> OptionChainSnapshot | None:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.get_at_or_before(timestamp) if b is not None else None
+        base = self.main.get_at_or_before(timestamp)
+        return None if base is None else OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts)
 
     def window_for_expiry(self, expiry_ts: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.window(n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.window(n):
+            out.append(OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts))
+        return out
 
     def get_n_before_for_expiry(self, expiry_ts: int, timestamp: int, n: int) -> Iterable[OptionChainSnapshot]:
-        b = self.by_expiry.get(int(expiry_ts))
-        return b.get_n_before(timestamp, n) if b is not None else []
+        out: list[OptionChainSnapshot] = []
+        for base in self.main.get_n_before(timestamp, n):
+            out.append(OptionChainSnapshotView.for_expiry(base=base, expiry_ts=expiry_ts))
+        return out
+
+    def window_df_for_expiry(self, expiry_ts: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_expiry_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.window_for_expiry(expiry_ts, k)])
+
+    def get_n_before_df_for_expiry(self, expiry_ts: int, timestamp: int, n: int | None = None) -> pd.DataFrame:
+        k = self.default_expiry_window if n is None else int(n)
+        return _concat_frames([s.frame for s in self.get_n_before_for_expiry(expiry_ts, timestamp, k)])
 
 
 # Public aliases (constructors)

@@ -22,8 +22,8 @@ import threading
 from tqdm import tqdm
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.parquet_store import write_raw_snapshot_append_only
-
+# from quant_engine.utils.parquet_store import write_raw_snapshot_append_only
+## Fixme: implement write_raw_snapshot_append_only or equivalent here
 
 _I64_MIN = np.iinfo("int64").min
 POLL_INTERVAL = 60_000*5  # ms
@@ -479,16 +479,17 @@ class TradesParquetStore:
         written: list[Path] = []
         for ts, sub in x.groupby("data_ts", sort=True):
             ts_int = _as_int(ts)
-            out = write_raw_snapshot_append_only(
-                root=Path(self._cfg.root),
-                domain=self._cfg.domain,
-                asset=symbol,
-                interval="trades",
-                data_ts=int(ts_int),
-                df=sub,
-                sort_cols=["data_ts", "agg_trade_id"] if "agg_trade_id" in sub.columns else ["data_ts"],
-                stage=stage,
-            )
+            out = Path()
+            # write_raw_snapshot_append_only(
+            #     root=Path(self._cfg.root),
+            #     domain=self._cfg.domain,
+            #     asset=symbol,
+            #     interval="trades",
+            #     data_ts=int(ts_int),
+            #     df=sub,
+            #     sort_cols=["data_ts", "agg_trade_id"] if "agg_trade_id" in sub.columns else ["data_ts"],
+            #     stage=stage,
+            # )
             written.append(out)
 
         return written

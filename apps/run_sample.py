@@ -23,8 +23,8 @@ from quant_engine.utils.paths import data_root_from_file, repo_root_from_file, s
 STRATEGY_NAME = "EXAMPLE"
 BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
 
-START_TS = 1766966400000 - 30 * 24 * 60 * 60 * 1000  # 2025-11-29 00:00:00 UTC (epoch ms)
-END_TS = 1767052800000 + 3 * 60 * 60 * 1000     # 2025-12-30 00:00:00 UTC (epoch ms) + 3 hours buffer
+START_TS = 1766966400000 - 10 * 24 * 60 * 60 * 1000  # 2025-11-29 00:00:00 UTC (epoch ms)
+END_TS = 1767052800000     # 2025-12-30 00:00:00 UTC (epoch ms) + 3 hours buffer
 
 
 _LOGGER = get_logger(__name__)
@@ -44,12 +44,12 @@ def _sample_overrides() -> dict:
     if not isinstance(soft_cfg, dict):
         soft_cfg = {}
     soft_cfg = dict(soft_cfg)
-    soft_cfg["enabled"] = False
+    soft_cfg["enabled"] = True
     soft_cfg.setdefault(
         "domains",
         ["orderbook", "option_chain", "iv_surface", "sentiment", "trades", "option_trades"],
     )
-    soft_cfg.setdefault("max_staleness_ms", 300000)
+    soft_cfg.setdefault("max_staleness_ms", 300000) # current lack of data should not block execution for 5 minutes
     universe["soft_readiness"] = soft_cfg
     return {"universe": universe, "presets": _load_sample_presets()}
 

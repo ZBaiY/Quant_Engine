@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 import datetime as dt
 import re
@@ -142,6 +142,8 @@ class OptionChainSnapshot(Snapshot):
 
     # normalized chain table
     frame: pd.DataFrame
+    expiry_keys_ms: frozenset[int] | None = None
+    term_keys_ms: dict[int, frozenset[int]] | None = None
 
     @staticmethod
     def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -264,6 +266,16 @@ class OptionChainSnapshot(Snapshot):
 
         frame = cls._normalize_frame(chain)
 
+        expiry_keys_ms: frozenset[int] | None
+        if "expiry_ts" in frame.columns:
+            try:
+                xs = pd.to_numeric(frame["expiry_ts"], errors="coerce").dropna().astype("int64")
+                expiry_keys_ms = frozenset(int(v) for v in xs.unique() if int(v) > 0)
+            except Exception:
+                expiry_keys_ms = frozenset()
+        else:
+            expiry_keys_ms = frozenset()
+
         return cls(
             data_ts=dts,
             symbol=symbol,
@@ -271,6 +283,8 @@ class OptionChainSnapshot(Snapshot):
             domain=domain,
             schema_version=int(schema_version),
             frame=frame,
+            expiry_keys_ms=expiry_keys_ms,
+            term_keys_ms=None,
         )
 
     @classmethod
@@ -303,3 +317,160 @@ class OptionChainSnapshot(Snapshot):
         if not hasattr(self, key):
             raise AttributeError(f"{type(self).__name__} has no attribute {key!r}")
         return getattr(self, key)
+
+    def get_expiry_keys_ms(self) -> frozenset[int]:
+        cached = self.expiry_keys_ms
+        if cached is not None:
+            return cached
+        frame = self.frame
+        if frame is None or frame.empty or "expiry_ts" not in frame.columns:
+            keys = frozenset()
+        else:
+            try:
+                xs = frame["expiry_ts"].dropna().unique()
+                keys = frozenset(int(v) for v in xs if v is not None and int(v) > 0)
+            except Exception:
+                keys = frozenset()
+        object.__setattr__(self, "expiry_keys_ms", keys)
+        return keys
+
+    def get_term_keys_ms(self, term_bucket_ms: int) -> frozenset[int]:
+        tb = int(term_bucket_ms)
+        if tb <= 0:
+            raise ValueError("term_bucket_ms must be > 0")
+        cached = self.term_keys_ms
+        if cached is None:
+            cached = {}
+        if tb in cached:
+            return cached[tb]
+        # term_keys_ms cached against immutable data_ts; data_ts must not change post creation.
+        snap_ts = int(self.data_ts)
+        keys = {
+            (max(0, int(ex) - snap_ts) // tb) * tb
+            for ex in self.get_expiry_keys_ms()
+        }
+        out = frozenset(int(k) for k in keys)
+        cached[tb] = out
+        if len(cached) > 4:
+            cached.pop(next(iter(cached)))
+        object.__setattr__(self, "term_keys_ms", cached)
+        return out
+
+
+def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None:
+        return pd.DataFrame()
+    try:
+        return frame.iloc[0:0].copy()
+    except Exception:
+        return pd.DataFrame(columns=list(frame.columns) if hasattr(frame, "columns") else [])
+
+
+def _slice_frame_for_expiry(frame: pd.DataFrame, *, expiry_ts: int) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return _empty_frame_like(frame)
+    if "expiry_ts" not in frame.columns:
+        return _empty_frame_like(frame)
+    try:
+        mask = pd.to_numeric(frame["expiry_ts"], errors="coerce").fillna(0).astype("int64") == int(expiry_ts)
+        return frame.loc[mask].reset_index(drop=True)
+    except Exception:
+        return _empty_frame_like(frame)
+
+
+def _slice_frame_for_term_bucket(
+    frame: pd.DataFrame,
+    *,
+    snap_ts: int,
+    term_key_ms: int,
+    term_bucket_ms: int,
+) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return _empty_frame_like(frame)
+    if "expiry_ts" not in frame.columns:
+        return _empty_frame_like(frame)
+    try:
+        expiry = pd.to_numeric(frame["expiry_ts"], errors="coerce").fillna(0).astype("int64")
+        term = (expiry - int(snap_ts)).clip(lower=0)
+        key = (term // int(term_bucket_ms)) * int(term_bucket_ms)
+        mask = key == int(term_key_ms)
+        return frame.loc[mask].reset_index(drop=True)
+    except Exception:
+        return _empty_frame_like(frame)
+
+
+class OptionChainSnapshotView(OptionChainSnapshot):
+    """Lazy view over an OptionChainSnapshot frame."""
+
+    _base: OptionChainSnapshot
+    _frame_filter: Callable[[pd.DataFrame], pd.DataFrame]
+    _frame_cache: pd.DataFrame | None
+
+    def __init__(self, *, base: OptionChainSnapshot, frame_filter: Callable[[pd.DataFrame], pd.DataFrame]):
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "_frame_filter", frame_filter)
+        object.__setattr__(self, "_frame_cache", None)
+
+        object.__setattr__(self, "data_ts", base.data_ts)
+        object.__setattr__(self, "symbol", base.symbol)
+        object.__setattr__(self, "market", base.market)
+        object.__setattr__(self, "domain", base.domain)
+        object.__setattr__(self, "schema_version", base.schema_version)
+
+        # Preserve optional fields (e.g., arrival_ts) when present on the base snapshot.
+        for k, v in getattr(base, "__dict__", {}).items():
+            if k in {"data_ts", "symbol", "market", "domain", "schema_version", "frame"}:
+                continue
+            if k.startswith("_"):
+                continue
+            try:
+                object.__setattr__(self, k, v)
+            except Exception:
+                pass
+
+    @property
+    def frame(self) -> pd.DataFrame:
+        cached = getattr(self, "_frame_cache", None)
+        if cached is None:
+            try:
+                view = self._frame_filter(self._base.frame)
+            except Exception:
+                view = self._base.frame
+            view = view.copy()
+            view["snapshot_data_ts"] = int(self._base.data_ts)
+            arrival_ts = getattr(self._base, "arrival_ts", None)
+            if arrival_ts is not None:
+                view["snapshot_arrival_ts"] = int(arrival_ts)
+            object.__setattr__(self, "_frame_cache", view)
+            return view
+        return cached
+
+    @classmethod
+    def for_expiry(cls, *, base: OptionChainSnapshot, expiry_ts: int) -> "OptionChainSnapshotView":
+        ex = int(expiry_ts)
+        if ex not in base.get_expiry_keys_ms():
+            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f))
+        return cls(base=base, frame_filter=lambda f: _slice_frame_for_expiry(f, expiry_ts=ex))
+
+    @classmethod
+    def for_term_bucket(
+        cls,
+        *,
+        base: OptionChainSnapshot,
+        term_key_ms: int,
+        term_bucket_ms: int,
+    ) -> "OptionChainSnapshotView":
+        snap_ts = int(base.data_ts)
+        tk = int(term_key_ms)
+        tb = int(term_bucket_ms)
+        if tk not in base.get_term_keys_ms(tb):
+            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f))
+        return cls(
+            base=base,
+            frame_filter=lambda f: _slice_frame_for_term_bucket(
+                f,
+                snap_ts=snap_ts,
+                term_key_ms=tk,
+                term_bucket_ms=tb,
+            ),
+        )

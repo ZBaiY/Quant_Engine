@@ -45,7 +45,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
     Config mapping (Strategy.DATA.*.option_chain):
       - source: origin identifier (e.g., "DERIBIT") (kept for metadata/routing)
       - cache.maxlen: global snapshot cache maxlen (note: each snapshot can be large)
-      - cache.per_expiry_maxlen: per-expiry bucket maxlen (stores snapshot refs)
+      - cache.default_expiry_window: default n for expiry window helpers
+      - cache.default_term_window: default n for term window helpers
       - columns: dataframe view columns for `chain_df()`
     """
 
@@ -109,40 +110,33 @@ class OptionChainDataHandler(RealTimeDataHandler):
         # cache kind: simple | expiry | term
         kind = str(self.cache_cfg.get("kind") or self.cache_cfg.get("type") or "expiry").lower()
 
-        if kind in {"simple", "deque"}:
+        default_expiry_window = int(self.cache_cfg.get("default_expiry_window", kwargs.get("default_expiry_window", 5)))
+        default_term_window = int(self.cache_cfg.get("default_term_window", kwargs.get("default_term_window", 5)))
+        if default_expiry_window <= 0:
+            raise ValueError("option_chain cache.default_expiry_window must be > 0")
+        if default_term_window <= 0:
+            raise ValueError("option_chain cache.default_term_window must be > 0")
 
+        if kind in {"simple", "deque"}:
             self.cache = OptionChainSimpleCache(maxlen=maxlen)
-            per_expiry_maxlen = None
-            per_term_maxlen = None
             term_bucket_ms = None
         elif kind in {"term", "term_bucket", "bucketed"}:
-            per_term_maxlen = int(self.cache_cfg.get("per_term_maxlen", kwargs.get("per_term_maxlen", 256)))
             term_bucket_ms = int(self.cache_cfg.get("term_bucket_ms", kwargs.get("term_bucket_ms", 86_400_000)))
-            if per_term_maxlen <= 0:
-                raise ValueError("option_chain cache.per_term_maxlen must be > 0")
             if term_bucket_ms <= 0:
                 raise ValueError("option_chain cache.term_bucket_ms must be > 0")
-
-            # optional expiry index inside term cache
-            enable_expiry_index = bool(self.cache_cfg.get("enable_expiry_index", True))
-            per_expiry_maxlen = self.cache_cfg.get("per_expiry_maxlen", kwargs.get("per_expiry_maxlen"))
-            per_expiry_maxlen_i = int(per_expiry_maxlen) if per_expiry_maxlen is not None else None
-
             self.cache = OptionChainTermBucketedCache(
                 maxlen=maxlen,
-                per_term_maxlen=per_term_maxlen,
                 term_bucket_ms=term_bucket_ms,
-                per_expiry_maxlen=per_expiry_maxlen_i,
-                enable_expiry_index=enable_expiry_index,
+                default_term_window=default_term_window,
+                default_expiry_window=default_expiry_window,
             )
         else:
-            # default: expiry-indexed cache
-            per_expiry_maxlen = int(self.cache_cfg.get("per_expiry_maxlen", kwargs.get("per_expiry_maxlen", 256)))
-            if per_expiry_maxlen <= 0:
-                raise ValueError("option_chain cache.per_expiry_maxlen must be > 0")
-            per_term_maxlen = None
+            # default: expiry helper cache
             term_bucket_ms = None
-            self.cache = OptionChainExpiryCache(maxlen=maxlen, per_expiry_maxlen=per_expiry_maxlen)
+            self.cache = OptionChainExpiryCache(
+                maxlen=maxlen,
+                default_expiry_window=default_expiry_window,
+            )
 
         # dataframe view columns only (storage keeps full record dicts)
         self.columns = kwargs.get(
@@ -204,8 +198,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             source=self.source,
             cache_kind=kind,
             maxlen=maxlen,
-            per_expiry_maxlen=per_expiry_maxlen,
-            per_term_maxlen=per_term_maxlen,
+            default_expiry_window=default_expiry_window,
+            default_term_window=default_term_window,
             term_bucket_ms=term_bucket_ms,
         )
 

@@ -106,6 +106,11 @@ class RSIADXSidewaysStrategy(StrategyBase):
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
+        "soft_readiness": { ## New field to specify data domains that are "soft" requirements, i.e. non-blocking if missing
+            "enabled": False,
+            "domains": ["orderbook", "option_chain", "iv_surface", "sentiment"],
+            "max_staleness_ms": 300000,
+        },
     }
 
     DATA = {
@@ -200,6 +205,11 @@ class RSIADXSidewaysStrategyFractional(StrategyBase):
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
+        "soft_readiness": { ## New field to specify data domains that are "soft" requirements, i.e. non-blocking if missing
+            "enabled": False,
+            "domains": ["orderbook", "option_chain", "iv_surface", "sentiment"],
+            "max_staleness_ms": 300000,
+        },
     }
 
     DATA = {
