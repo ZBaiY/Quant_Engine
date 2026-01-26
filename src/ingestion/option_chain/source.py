@@ -29,6 +29,47 @@ _RPC_ID = itertools.count(1)
 records: list[Mapping[str, Any]] = []
 _UNIVERSE_LOCKS: dict[Path, threading.Lock] = {}
 
+_RAW_OPTION_CHAIN_COLUMNS: list[str] = [
+    "instrument_name",
+    "expiration_timestamp",
+    "strike",
+    "option_type",
+    "state",
+    "is_active",
+    "instrument_id",
+    "settlement_currency",
+    "base_currency",
+    "quote_currency",
+    "contract_size",
+    "tick_size",
+    "min_trade_amount",
+    "kind",
+    "instrument_type",
+    "price_index",
+    "counter_currency",
+    "settlement_period",
+    "tick_size_steps",
+    "bid_price",
+    "ask_price",
+    "mid_price",
+    "last",
+    "mark_price",
+    "open_interest",
+    "volume_24h",
+    "volume_usd_24h",
+    "mark_iv",
+    "high",
+    "low",
+    "price_change",
+    "market_ts",
+    "underlying_price",
+    "underlying_index",
+    "estimated_delivery_price",
+    "interest_rate",
+    "arrival_ts",
+    "aux",
+]
+
 class OptionChainWriteError(RuntimeError):
     """Raised for non-recoverable option-chain parquet write failures."""
 
@@ -177,6 +218,90 @@ def _bootstrap_existing(
         )
 
 
+def _align_raw(df: pd.DataFrame, *, allowed_cols: list[str], path: Path) -> pd.DataFrame:
+    if "instrument_name" not in df.columns:
+        df = df.copy()
+        df["instrument_name"] = None
+    extra = sorted({c for c in df.columns if c not in allowed_cols})
+    if extra:
+        # Pack unknown columns into aux; extras win on key collisions.
+        df = _pack_aux(df, set(extra))
+        log_warn(
+            _LOG,
+            "option_chain.raw.schema_drift.packed_to_aux",
+            extra_cols=extra,
+            path=str(path),
+            n_rows=int(len(df)),
+        )
+    missing = [c for c in allowed_cols if c not in df.columns]
+    if missing:
+        df = df.copy()
+        for c in missing:
+            df[c] = None
+    return df[allowed_cols]
+
+
+def _register_writer(
+    path: Path,
+    writer: pq.ParquetWriter,
+    schema: pa.Schema,
+    used_paths: set[Path],
+) -> None:
+    with DeribitOptionChainRESTSource._global_lock:
+        DeribitOptionChainRESTSource._global_writers[path] = writer
+        DeribitOptionChainRESTSource._global_schemas[path] = schema
+        DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+    used_paths.add(path)
+
+
+def _get_raw_writer_and_schema(
+    path: Path,
+    df: pd.DataFrame,
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema]:
+    with DeribitOptionChainRESTSource._global_lock:
+        writer = DeribitOptionChainRESTSource._global_writers.get(path)
+        if writer is not None:
+            if path not in used_paths:
+                DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+                used_paths.add(path)
+            return writer, DeribitOptionChainRESTSource._global_schemas[path]
+
+    if path.exists():
+        return _bootstrap_existing_raw(path, df, used_paths)
+
+    aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
+    table = pa.Table.from_pandas(aligned, preserve_index=False)
+    writer = pq.ParquetWriter(path, table.schema)
+    _register_writer(path, writer, table.schema, used_paths)
+    return writer, table.schema
+
+
+def _bootstrap_existing_raw(
+    path: Path,
+    df: pd.DataFrame,
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema]:
+    bak_path = path.with_suffix(".parquet.bak")
+    os.replace(path, bak_path)
+    try:
+        table = pq.read_table(bak_path)
+        table_df = table.to_pandas()
+        table_df = _align_raw(table_df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
+        schema = pa.Table.from_pandas(table_df, preserve_index=False).schema
+        table = pa.Table.from_pandas(table_df, schema=schema, preserve_index=False)
+        writer = pq.ParquetWriter(path, schema)
+        writer.write_table(table)
+        _register_writer(path, writer, schema, used_paths)
+        os.remove(bak_path)
+        return writer, schema
+    except Exception as exc:
+        raise OptionChainWriteError(
+            f"Failed to bootstrap parquet writer for {path}; "
+            f"backup retained at {bak_path}: {exc}"
+        )
+
+
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
     cols = list(schema.names)
     # Only map fetch_step_ts -> step_ts when the stored schema strictly requires it.
@@ -241,8 +366,8 @@ def _write_raw_snapshot(
             wait_ms=int(waited_s * 1000.0),
         )
     try:
-        writer, schema = _get_writer_and_schema(path, df, used_paths)
-        aligned = _align_to_schema(df, schema, path)
+        writer, schema = _get_raw_writer_and_schema(path, df, used_paths)
+        aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
         table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
         writer.write_table(table)
         if write_counter is not None:
@@ -629,6 +754,11 @@ class DeribitOptionChainRESTSource(Source):
                         "creation_timestamp_quote",
                         "base_currency_quote",
                         "quote_currency_quote",
+                        "maker_commission",
+                        "taker_commission",
+                        "block_trade_commission",
+                        "block_trade_min_trade_amount",
+                        "block_trade_tick_size",
                         "row_data_ts",
                         "fetch_step_ts",
                         "arrival_ts",
