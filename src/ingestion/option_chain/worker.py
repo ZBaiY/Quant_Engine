@@ -144,7 +144,7 @@ class OptionChainWorker(IngestWorker):
 
         def _persist_payload(payload: Any, *, data_ts: int | None = None) -> None:
             if isinstance(payload, Mapping):
-                ts_any = payload.get("data_ts") or payload.get("timestamp") or data_ts
+                ts_any = payload.get("data_ts") or data_ts
                 ts = option_chain_source._coerce_epoch_ms(ts_any) if ts_any is not None else option_chain_source._now_ms()
                 records = payload.get("records") or payload.get("chain") or payload.get("frame") or []
                 if isinstance(records, option_chain_source.pd.DataFrame):
@@ -176,10 +176,7 @@ class OptionChainWorker(IngestWorker):
         for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
             raw_for_norm: Any = raw
             if isinstance(raw, Mapping):
-                raw_map = dict(raw)
-                if "data_ts" not in raw_map and "timestamp" not in raw_map:
-                    raw_map["data_ts"] = int(anchor_ts)
-                raw_for_norm = raw_map
+                raw_for_norm = dict(raw)
             tick = self._normalize(raw_for_norm)
             if tick is None:
                 continue

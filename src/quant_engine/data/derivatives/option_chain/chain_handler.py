@@ -138,29 +138,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 default_expiry_window=default_expiry_window,
             )
 
-        # dataframe view columns only (storage keeps full record dicts)
-        self.columns = kwargs.get(
-            "columns",
-            [
-                "data_ts",
-                "instrument_name",
-                "expiry_ts",
-                "strike",
-                "cp",
-                "bid",
-                "ask",
-                "mark",
-                "index_price",
-                # fetched IVs are under aux with *_fetch suffix (schema v2)
-                "mark_iv_fetch",
-                "bid_iv_fetch",
-                "ask_iv_fetch",
-                "iv_fetch",
-                # optional carry-through
-                "oi",
-                "volume",
-            ],
-        )
+        cols_any = kwargs.get("columns")
+        self.columns = list(cols_any) if cols_any is not None else None
 
         self.market = ensure_market_spec(
             kwargs.get("market"),
@@ -280,13 +259,30 @@ class OptionChainDataHandler(RealTimeDataHandler):
             return
         payload = dict(tick.payload)
         if "data_ts" not in payload:
-            payload["data_ts"] = int(tick.data_ts)
+            log_warn(
+                self._logger,
+                "option_chain.missing_data_ts",
+                symbol=self.display_symbol,
+                instrument_symbol=self.symbol,
+                source_id=getattr(tick, "source_id", None),
+            )
+            return
         snap = _build_snapshot_from_payload(payload, symbol=self.display_symbol, market=self.market)
         if snap is None:
             return
+        last = self.cache.last()
+        if last is not None and int(snap.data_ts) < int(last.data_ts):
+            log_warn(
+                self._logger,
+                "option_chain.out_of_order_arrival",
+                symbol=self.display_symbol,
+                last_data_ts=int(last.data_ts),
+                snap_data_ts=int(snap.data_ts),
+                source_id=getattr(tick, "source_id", None),
+            )
+            return
 
         # update market gap classification (best-effort)
-        last = self.cache.last()
         last_ts = int(last.data_ts) if last is not None else None
         self._set_gap_market(snap, last_ts=last_ts)
 
@@ -297,7 +293,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             symbol=self.display_symbol,
             instrument_symbol=self.symbol,
             data_ts=int(snap.data_ts),
-            n_rows=int(len(snap.frame)),
+            n_rows=int(len(snap.chain_frame)),
         )
 
     # ------------------------------------------------------------------
@@ -386,41 +382,82 @@ class OptionChainDataHandler(RealTimeDataHandler):
     # Views
     # ------------------------------------------------------------------
 
-    def chain_df(self, ts: int | None = None, *, columns: list[str] | None = None) -> pd.DataFrame:
+    def chain_df(
+        self,
+        ts: int | None = None,
+        *,
+        columns: list[str] | None = None,
+        include_underlying: bool = False,
+        include_aux: bool = False,
+    ) -> pd.DataFrame:
         """Return a DataFrame view of the chain at time ts.
 
-        `OptionChainSnapshot` stores a normalized `frame` with an `aux` dict per row.
-        This view can surface aux keys as columns on demand.
+        Default view is chain_frame left-joined with quote_frame.
         """
         snap = self.get_snapshot(ts)
         if snap is None:
             return pd.DataFrame()
 
-        base = snap.frame
+        base = snap.chain_frame
         if base is None or len(base) == 0:
             return pd.DataFrame()
 
+        merged = base
+        quote = snap.quote_frame
+        if quote is not None and not quote.empty:
+            merged = merged.merge(quote, on="instrument_name", how="left", suffixes=("", "_quote"))
+
         cols = self.columns if columns is None else columns
+        col_set = set(cols) if cols is not None else set()
+
+        need_underlying = bool(include_underlying)
+        need_aux = bool(include_aux)
+        if cols is not None:
+            if snap.underlying_frame is not None and any(c in snap.underlying_frame.columns for c in col_set):
+                need_underlying = True
+            if snap.aux_frame is not None and any(c in snap.aux_frame.columns for c in col_set):
+                need_aux = True
+
+        if need_underlying and snap.underlying_frame is not None and not snap.underlying_frame.empty:
+            extra_cols = [
+                c for c in snap.underlying_frame.columns
+                if c != "instrument_name" and c not in merged.columns
+            ]
+            if extra_cols:
+                merged = merged.merge(
+                    snap.underlying_frame[["instrument_name"] + extra_cols],
+                    on="instrument_name",
+                    how="left",
+                )
+
+        if need_aux and snap.aux_frame is not None and not snap.aux_frame.empty:
+            extra_cols = [
+                c for c in snap.aux_frame.columns
+                if c != "instrument_name" and c not in merged.columns
+            ]
+            if extra_cols:
+                merged = merged.merge(
+                    snap.aux_frame[["instrument_name"] + extra_cols],
+                    on="instrument_name",
+                    how="left",
+                )
+
         if cols is None:
-            out = base.copy()
-            out.insert(0, "data_ts", int(snap.data_ts))
+            out = merged.copy()
+            if "data_ts" not in out.columns:
+                out.insert(0, "data_ts", int(snap.data_ts))
+            else:
+                out["data_ts"] = int(snap.data_ts)
             return out
 
-        out = pd.DataFrame({"data_ts": [int(snap.data_ts)] * len(base)})
-        aux_series = base["aux"] if "aux" in base.columns else None
-
+        out = pd.DataFrame({"data_ts": [int(snap.data_ts)] * len(merged)})
         for c in cols:
             if c == "data_ts":
                 out[c] = int(snap.data_ts)
-                continue
-            if c in base.columns:
-                out[c] = base[c]
-                continue
-            if aux_series is not None:
-                out[c] = aux_series.map(lambda d, key=c: d.get(key) if isinstance(d, dict) else None)
+            elif c in merged.columns:
+                out[c] = merged[c]
             else:
                 out[c] = None
-
         return out
 
     # ------------------------------------------------------------------
@@ -697,15 +734,15 @@ def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: st
 
 
 def _infer_data_ts(payload: Mapping[str, Any]) -> int:
-    ts_any = payload.get("data_ts") or payload.get("timestamp")
+    ts_any = payload.get("data_ts")
     if ts_any is None:
-        raise ValueError("Option chain payload missing data_ts/timestamp for backfill")
+        raise ValueError("Option chain payload missing required data_ts (arrival-time authority)")
     return _coerce_epoch_ms(ts_any)
 
 
 def _persist_option_chain_payload(persist, payload: Any, target_ts: int) -> None:
     if isinstance(payload, Mapping):
-        data_ts_any = payload.get("data_ts") or payload.get("timestamp") or target_ts
+        data_ts_any = payload.get("data_ts") or target_ts
         records = payload.get("records") or payload.get("chain") or payload.get("frame") or []
         if isinstance(records, pd.DataFrame):
             df = records
@@ -726,8 +763,10 @@ def _persist_option_chain_payload(persist, payload: Any, target_ts: int) -> None
 def _build_snapshot_from_payload(payload: Mapping[str, Any], *, symbol: str, market: MarketSpec) -> OptionChainSnapshot | None:
     d = {str(k): v for k, v in payload.items()}
 
-    ts_any = d.get("data_ts") or d.get("timestamp")
-    ts = int(ts_any) if ts_any is not None else _now_ms()
+    ts_any = d.get("data_ts")
+    if ts_any is None:
+        return None
+    ts = int(ts_any)
 
     chain = d.get("chain")
     if chain is None:
@@ -747,7 +786,7 @@ def _build_snapshot_from_payload(payload: Mapping[str, Any], *, symbol: str, mar
             chain=chain,
             symbol=symbol,
             market=market,
-            schema_version=int(d.get("schema_version") or 2),
+            schema_version=int(d.get("schema_version") or 3),
         )
     except Exception:
         return None

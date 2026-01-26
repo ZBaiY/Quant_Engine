@@ -107,8 +107,8 @@ async def test_replay_semantics_ohlcv_15m_btcusdt(monkeypatch: pytest.MonkeyPatc
         snap = handler.get_snapshot(anchor_ts)
         assert snap is None or snap.data_ts <= anchor_ts
         dfw = handler.window(anchor_ts, n=10)
-        if not dfw.empty and "data_ts" in dfw.columns:
-            assert int(dfw["data_ts"].max()) <= anchor_ts
+        if not dfw.empty and "arrival_ts" in dfw.columns:
+            assert int(dfw["arrival_ts"].max()) <= anchor_ts
 
 
 @pytest.mark.local
@@ -366,8 +366,8 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
                 snap = ohlcv_handler.get_snapshot(a)
                 assert snap is None or int(snap.data_ts) <= a
                 dfw = ohlcv_handler.window(a, n=5)
-                if not dfw.empty and "data_ts" in dfw.columns:
-                    assert int(dfw["data_ts"].max()) <= a
+                if not dfw.empty and "arrival_ts" in dfw.columns:
+                    assert int(dfw["arrival_ts"].max()) <= a
 
             # cooperative yield
             await orig_sleep(0)

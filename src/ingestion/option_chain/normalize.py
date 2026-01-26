@@ -122,23 +122,24 @@ class DeribitOptionChainNormalizer(Normalizer):
         if isinstance(raw, pd.DataFrame):
             df = raw.copy()
             if "data_ts" in df.columns:
-                ts = int(df["data_ts"].dropna().iloc[0]) if not df["data_ts"].dropna().empty else _now_ms()
+                if df["data_ts"].dropna().empty:
+                    raise ValueError("Option chain raw DataFrame has empty data_ts")
+                ts = int(df["data_ts"].dropna().iloc[0])
                 df = df.drop(columns=["data_ts"], errors="ignore")
                 return ts, df
-            return _now_ms(), df
+            raise ValueError("Option chain raw DataFrame missing required data_ts")
 
         if isinstance(raw, Mapping):
             d = {str(k): v for k, v in raw.items()}
-            ts_any = d.get("data_ts") or d.get("timestamp")
-            ts = _coerce_epoch_ms(ts_any) if ts_any is not None else _now_ms()
+            ts_any = d.get("data_ts")
+            if ts_any is None:
+                raise ValueError("Option chain raw payload missing required data_ts")
+            ts = _coerce_epoch_ms(ts_any)
             frame_any = d.get("frame") or d.get("records") or d.get("raw")
             if isinstance(frame_any, pd.DataFrame):
                 return ts, frame_any.copy()
             if isinstance(frame_any, list):
                 return ts, pd.DataFrame(frame_any)
-
-        if isinstance(raw, list):
-            return _now_ms(), pd.DataFrame(raw)
 
         raise ValueError("Unsupported option chain raw payload type")
 

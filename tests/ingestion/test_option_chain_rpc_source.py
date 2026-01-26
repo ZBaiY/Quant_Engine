@@ -54,12 +54,14 @@ def test_option_chain_rpc_quote_volume_rename_and_market_ts_nan(
     step_ts = 1_700_000_000_000
     root = tmp_path / "raw" / "option_chain"
     quote_root = tmp_path / "raw" / "option_quote"
+    universe_root = tmp_path / "raw" / "option_universe"
     src = DeribitOptionChainRESTSource(
         currency="BTC",
         interval="1m",
         poll_interval_ms=60_000,
         root=root,
         quote_root=quote_root,
+        universe_root=universe_root,
         chain_ttl_s=0,
     )
 
@@ -76,6 +78,7 @@ def test_option_chain_rpc_quote_volume_rename_and_market_ts_nan(
     assert "fetch_step_ts" in df.columns
     assert "step_ts" not in df.columns
     assert "market_ts" in df.columns
+    assert str(df["market_ts"].dtype) == "Int64"
     assert pd.isna(df.loc[0, "market_ts"])
 
 
@@ -110,25 +113,29 @@ def test_option_chain_rpc_left_join_preserves_chain_rows(
     step_ts = 1_700_000_000_000
     root = tmp_path / "raw" / "option_chain"
     quote_root = tmp_path / "raw" / "option_quote"
+    universe_root = tmp_path / "raw" / "option_universe"
     src = DeribitOptionChainRESTSource(
         currency="BTC",
         interval="1m",
         poll_interval_ms=60_000,
         root=root,
         quote_root=quote_root,
+        universe_root=universe_root,
         chain_ttl_s=0,
     )
 
     try:
-        src.fetch_step(step_ts=step_ts)
+        payloads = src.fetch_step(step_ts=step_ts)
     finally:
         src._close_writers()
 
-    chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=step_ts)
+    assert payloads is not None and len(payloads) == 1
+    data_ts = int(payloads[0]["data_ts"])
+    chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=data_ts)
     df = pd.read_parquet(chain_path)
     assert set(df["instrument_name"].tolist()) == {"BTC-1JAN24-10000-C", "BTC-1JAN24-10000-P"}
-    assert "fetch_step_ts" in df.columns
-    assert "step_ts" not in df.columns
+    assert "arrival_ts" in df.columns
+    assert "data_ts" not in df.columns
     missing_row = df[df["instrument_name"] == "BTC-1JAN24-10000-P"].iloc[0]
     assert pd.isna(missing_row["bid_price"])
 
@@ -160,21 +167,28 @@ def test_option_chain_rpc_path_partitioning(
     step_ts = 1_700_000_000_000
     root = tmp_path / "raw" / "option_chain"
     quote_root = tmp_path / "raw" / "option_quote"
+    universe_root = tmp_path / "raw" / "option_universe"
     src = DeribitOptionChainRESTSource(
         currency="BTC",
         interval="1m",
         poll_interval_ms=60_000,
         root=root,
         quote_root=quote_root,
+        universe_root=universe_root,
         chain_ttl_s=0,
     )
 
     try:
-        src.fetch_step(step_ts=step_ts)
+        payloads = src.fetch_step(step_ts=step_ts)
     finally:
         src._close_writers()
 
-    chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=step_ts)
+    assert payloads is not None and len(payloads) == 1
+    data_ts = int(payloads[0]["data_ts"])
+    chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=data_ts)
     quote_path = _date_path(quote_root, currency="BTC", interval="1m", step_ts=step_ts)
+    dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
+    universe_path = tmp_path / "raw" / "option_universe" / "BTC" / dt.strftime("%Y") / f"{dt.strftime('%Y_%m_%d')}.parquet"
     assert chain_path.exists()
     assert quote_path.exists()
+    assert universe_path.exists()

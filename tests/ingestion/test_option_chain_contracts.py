@@ -11,6 +11,7 @@ from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 def test_option_chain_normalizer_coerces_data_ts_and_preserves_input() -> None:
     raw = {
         "data_ts": 1_700_000_000,  # seconds
+        "arrival_ts": 1_700_000_000,  # legacy alias for arrival authority
         "records": [
             {
                 "instrument_name": "BTC-1JAN24-10000-C",

@@ -27,6 +27,7 @@ _RPC_URL = "https://www.deribit.com/api/v2"
 _RPC_ID = itertools.count(1)
 
 records: list[Mapping[str, Any]] = []
+_UNIVERSE_LOCKS: dict[Path, threading.Lock] = {}
 
 class OptionChainWriteError(RuntimeError):
     """Raised for non-recoverable option-chain parquet write failures."""
@@ -72,6 +73,21 @@ def _flatten_object_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
+    present = [c for c in cols_to_aux if c in df.columns]
+    if not present:
+        return df
+    out = df.copy()
+    if "aux" not in out.columns:
+        out["aux"] = [{} for _ in range(len(out))]
+    else:
+        out["aux"] = out["aux"].map(lambda v: dict(v) if isinstance(v, dict) else {})
+    out["aux"] = out.apply(
+        lambda row: {**row["aux"], **{c: row[c] for c in present}},
+        axis=1,
+    )
+    return out.drop(columns=present)
+
 def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
     year = dt.strftime("%Y")
@@ -92,6 +108,15 @@ def _get_lock(path: Path) -> threading.Lock:
         if lock is None:
             lock = threading.Lock()
             DeribitOptionChainRESTSource._global_locks[path] = lock
+        return lock
+
+
+def _get_universe_lock(path: Path) -> threading.Lock:
+    with DeribitOptionChainRESTSource._global_lock:
+        lock = _UNIVERSE_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _UNIVERSE_LOCKS[path] = lock
         return lock
 
 
@@ -154,6 +179,7 @@ def _bootstrap_existing(
 
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
     cols = list(schema.names)
+    # Only map fetch_step_ts -> step_ts when the stored schema strictly requires it.
     if "fetch_step_ts" in df.columns and "fetch_step_ts" not in cols and "step_ts" in cols:
         df = df.copy()
         df["step_ts"] = df["fetch_step_ts"]
@@ -197,9 +223,9 @@ def _write_raw_snapshot(
 ) -> None:
     path = _date_path(root, interval=interval, asset=asset, data_ts=data_ts)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if "data_ts" not in df.columns:
+    if "arrival_ts" not in df.columns:
         df = df.copy()
-        df["data_ts"] = int(data_ts)
+        df["arrival_ts"] = int(data_ts)
 
     lock = _get_lock(path)
     write_start = time.monotonic()
@@ -229,6 +255,67 @@ def _write_raw_snapshot(
                 _LOG,
                 "ingestion.write_sample",
                 component="option_chain",
+                path=str(path),
+                rows=int(len(df)),
+                write_ms=int((time.monotonic() - write_start) * 1000),
+                write_seq=write_count,
+            )
+    except Exception as exc:
+        raise OptionChainWriteError(str(exc)) from exc
+    finally:
+        lock.release()
+
+def _universe_date_path(root: Path, *, asset: str, data_ts: int) -> Path:
+    dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
+    year = dt.strftime("%Y")
+    ymd = dt.strftime("%Y_%m_%d")
+    return root / asset / year / f"{ymd}.parquet"
+
+def _write_universe_snapshot(
+    *,
+    root: Path,
+    asset: str,
+    df: pd.DataFrame,
+    data_ts: int,
+    used_paths: set[Path],
+    write_counter: list[int] | None = None,
+) -> None:
+    path = _universe_date_path(root, asset=asset, data_ts=data_ts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "data_ts" not in df.columns:
+        df = df.copy()
+        df["data_ts"] = int(data_ts)
+
+    lock = _get_universe_lock(path)
+    write_start = time.monotonic()
+    start = time.monotonic()
+    lock.acquire()
+    waited_s = time.monotonic() - start
+    if waited_s > _LOCK_WARN_S:
+        log_debug(
+            _LOG,
+            "ingestion.lock_wait",
+            component="option_universe",
+            path=str(path),
+            wait_ms=int(waited_s * 1000.0),
+        )
+    try:
+        tmp_path = path.with_suffix(".parquet.tmp")
+        if tmp_path.exists():
+            os.remove(tmp_path)
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        pq.write_table(table, tmp_path)
+        os.replace(tmp_path, path)
+        if write_counter is not None:
+            write_counter[0] += 1
+            write_count = write_counter[0]
+        else:
+            write_count = None
+        if write_count is not None and write_count % _WRITE_LOG_EVERY == 0:
+            log_debug(
+                _LOG,
+                "ingestion.write_sample",
+                component="option_universe",
                 path=str(path),
                 rows=int(len(df)),
                 write_ms=int((time.monotonic() - write_start) * 1000),
@@ -373,24 +460,27 @@ class OptionChainFileSource(Source):
             df = pd.read_parquet(fp)
             if df is None or df.empty:
                 continue
-            if "data_ts" not in df.columns:
-                raise ValueError(f"Parquet file {fp} missing data_ts column")
+            if "arrival_ts" not in df.columns:
+                if "data_ts" in df.columns:
+                    df["arrival_ts"] = df["data_ts"]
+                else:
+                    raise ValueError(f"Parquet file {fp} missing arrival_ts column")
 
-            df["data_ts"] = df["data_ts"].map(_coerce_epoch_ms)
+            df["arrival_ts"] = df["arrival_ts"].map(_coerce_epoch_ms)
             if self._start_ts is not None:
-                df = df[df["data_ts"] >= int(self._start_ts)]
+                df = df[df["arrival_ts"] >= int(self._start_ts)]
             if self._end_ts is not None:
-                df = df[df["data_ts"] <= int(self._end_ts)]
+                df = df[df["arrival_ts"] <= int(self._end_ts)]
             if df.empty:
                 continue
-            df = df.sort_values(["data_ts"], kind="stable")
-            df["data_ts"] = df["data_ts"].astype("int64", copy=False)
-            for ts, sub in df.groupby("data_ts", sort=True):
+            df = df.sort_values(["arrival_ts"], kind="stable")
+            df["arrival_ts"] = df["arrival_ts"].astype("int64", copy=False)
+            for ts, sub in df.groupby("arrival_ts", sort=True):
                 snap = sub.reset_index(drop=True)
                 # Source contract: yield a Mapping[str, Any]
                 assert isinstance(ts, (int, float)), f"data_ts must be int/float, got {type(ts)!r}"
                 records = snap.to_dict(orient="records")
-                yield {"data_ts": int(ts), "records": records}
+                yield {"arrival_ts": int(ts), "data_ts": int(ts), "records": records}
 
 
 class DeribitOptionChainRESTSource(Source):
@@ -419,6 +509,7 @@ class DeribitOptionChainRESTSource(Source):
         timeout: float = 10.0,
         root: str | Path = DATA_ROOT / "raw" / "option_chain",
         quote_root: str | Path = DATA_ROOT / "raw" / "option_quote",
+        universe_root: str | Path = DATA_ROOT / "raw" / "option_universe",
         kind: str = "option",
         expired: bool = False,
         chain_ttl_s: float | None = 3600.0,
@@ -438,8 +529,10 @@ class DeribitOptionChainRESTSource(Source):
         self._expired = bool(expired)
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._quote_root = resolve_under_root(DATA_ROOT, quote_root, strip_prefix="data")
+        self._universe_root = resolve_under_root(DATA_ROOT, universe_root, strip_prefix="data")
         self._root.mkdir(parents=True, exist_ok=True)
         self._quote_root.mkdir(parents=True, exist_ok=True)
+        self._universe_root.mkdir(parents=True, exist_ok=True)
         self._max_retries = int(max_retries)
         self._backoff_s = float(backoff_s)
         self._backoff_max_s = float(backoff_max_s)
@@ -447,6 +540,7 @@ class DeribitOptionChainRESTSource(Source):
         self._used_paths: set[Path] = set()
         self._write_count = 0
         self._quote_write_count = 0
+        self._universe_write_count = 0
         self._chain_ttl_ms = int(round(float(chain_ttl_s) * 1000.0)) if chain_ttl_s is not None else 0
         self._chain_cache: pd.DataFrame | None = None
         self._chain_cache_step_ts: int | None = None
@@ -504,6 +598,11 @@ class DeribitOptionChainRESTSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
 
+        # step_ts: rounded ingestion sampling anchor (cadence clock), not exchange time.
+        # data_ts: local arrival time when this snapshot is received/assembled.
+        # arrival_ts: receive time for each RPC response within the step.
+        # market_ts: exchange-provided timestamp if available, else NaN.
+        # fetch_step_ts: explicit column carrying the sampling anchor for alignment.
         anchor_ts = _coerce_epoch_ms(step_ts) if step_ts is not None else _now_ms()
         backoff = self._backoff_s
         for _ in range(self._max_retries):
@@ -523,12 +622,42 @@ class DeribitOptionChainRESTSource(Source):
                 )
                 if merged is not None and not merged.empty:
                     merged = _flatten_object_columns(merged)
-                    merged["data_ts"] = int(anchor_ts)
-                    self._write_raw_snapshot(df=merged, data_ts=int(anchor_ts))
+                    if "data_ts" in merged.columns:
+                        merged = merged.rename(columns={"data_ts": "row_data_ts"})
+                    aux_cols = {
+                        "creation_timestamp",
+                        "creation_timestamp_quote",
+                        "base_currency_quote",
+                        "quote_currency_quote",
+                        "row_data_ts",
+                        "fetch_step_ts",
+                        "arrival_ts",
+                        "aux_chain_data_ts",
+                        "aux_chain_arrival_ts",
+                    }
+                    quote_cols = {
+                        "bid_price",
+                        "ask_price",
+                        "mid_price",
+                        "last",
+                        "mark_price",
+                        "open_interest",
+                        "volume_24h",
+                        "volume_usd_24h",
+                        "mark_iv",
+                        "high",
+                        "low",
+                        "price_change",
+                        "market_ts",
+                    }
+                    aux_cols |= {c for c in merged.columns if c.endswith("_quote") and c not in quote_cols}
+                    merged = _pack_aux(merged, aux_cols)
+                    merged["arrival_ts"] = int(quote_arrival_ts)
+                    self._write_raw_snapshot(df=merged, data_ts=int(quote_arrival_ts))
                     records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]
 
                 # Source contract: return Mapping[str, Any] items
-                return [{"data_ts": int(anchor_ts), "records": records}]
+                return [{"data_ts": int(quote_arrival_ts), "records": records}]
             except Exception as exc:
                 log_warn(
                     _LOG,
@@ -569,6 +698,18 @@ class DeribitOptionChainRESTSource(Source):
         )
         self._quote_write_count = write_counter[0]
 
+    def _write_universe_snapshot(self, *, df: pd.DataFrame, data_ts: int) -> None:
+        write_counter = [self._universe_write_count]
+        _write_universe_snapshot(
+            root=self._universe_root,
+            asset=self._currency,
+            df=df,
+            data_ts=int(data_ts),
+            used_paths=self._used_paths,
+            write_counter=write_counter,
+        )
+        self._universe_write_count = write_counter[0]
+
     def _should_refresh_chain(self, step_ts: int) -> bool:
         if self._chain_ttl_ms <= 0:
             return True
@@ -606,6 +747,8 @@ class DeribitOptionChainRESTSource(Source):
         if df.empty:
             return df, arrival_ts
         df = _flatten_object_columns(df)
+        df["fetch_step_ts"] = int(step_ts)
+        self._write_universe_snapshot(df=df, data_ts=int(arrival_ts))
         df["aux_chain_data_ts"] = int(step_ts)
         df["aux_chain_arrival_ts"] = int(arrival_ts)
         return df, arrival_ts
@@ -635,19 +778,34 @@ class DeribitOptionChainRESTSource(Source):
                 "volume_usd": "volume_usd_24h",
             }
         )
-        # Only populate market_ts when Deribit returns a real timestamp field.
-        if "timestamp" in df.columns:
-            def _safe_market_ts(x: Any) -> float:
-                if x is None:
-                    return float("nan")
-                try:
-                    return float(_coerce_epoch_ms(x))
-                except Exception:
-                    return float("nan")
+        def _safe_market_ts(x: Any) -> int | None:
+            if x is None:
+                return None
+            try:
+                return int(_coerce_epoch_ms(x))
+            except Exception:
+                return None
 
-            df["market_ts"] = df["timestamp"].map(_safe_market_ts)
+        market_ts_source = None
+        if "timestamp" in df.columns:
+            market_ts_source = "timestamp"
+            market_ts_list = df["timestamp"].map(_safe_market_ts).tolist()
+        elif "creation_timestamp" in df.columns:
+            market_ts_source = "creation_timestamp"
+            market_ts_list = df["creation_timestamp"].map(_safe_market_ts).tolist()
+        elif "creation_timestamp_quote" in df.columns:
+            market_ts_source = "creation_timestamp_quote"
+            market_ts_list = df["creation_timestamp_quote"].map(_safe_market_ts).tolist()
         else:
-            df["market_ts"] = float("nan")
+            market_ts_list = [pd.NA] * len(df)
+
+        df["market_ts"] = pd.Series(market_ts_list, dtype="Int64")
+        if market_ts_source is not None:
+            log_debug(
+                _LOG,
+                "option_quote.market_ts_source",
+                source=market_ts_source,
+            )
         df["fetch_step_ts"] = int(step_ts)
         df["arrival_ts"] = int(arrival_ts)
         return df, arrival_ts
@@ -664,7 +822,6 @@ class DeribitOptionChainRESTSource(Source):
             return pd.DataFrame()
         chain_frame = chain_df.copy()
         chain_frame["fetch_step_ts"] = int(step_ts)
-        chain_frame["arrival_ts"] = int(quote_arrival_ts)
         if "aux_chain_data_ts" not in chain_frame.columns:
             chain_frame["aux_chain_data_ts"] = int(step_ts)
         if "aux_chain_arrival_ts" not in chain_frame.columns:

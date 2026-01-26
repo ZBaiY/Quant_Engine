@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict
 
 import datetime as dt
+import os
 import re
 
 import pandas as pd
@@ -16,6 +17,18 @@ def to_ms_int(x: Any) -> int:
     """Coerce a timestamp-like value to epoch milliseconds as int."""
     return int(to_float(x))
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    val = raw.strip().lower()
+    if val in {"1", "true", "yes", "y", "on"}:
+        return True
+    if val in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+DROP_AUX_DEFAULT = _env_bool("OPTION_CHAIN_DROP_AUX", default=True)
 
 # --- Deribit helpers (temporary fallback) ---
 # Instrument example: BTC-28JUN24-60000-C
@@ -97,27 +110,53 @@ _GREEK_COLS = {
 }
 
 
-# Minimal, IV-surface-relevant columns we keep in the main frame.
-# Everything else goes into `aux` per row.
-_SURFACE_KEEP_COLS = {
+_CHAIN_COLS = {
     "instrument_name",
+    "expiration_timestamp",
     "expiry_ts",
     "strike",
+    "option_type",
     "cp",
-    # optional: if you later join quotes/marks into the same frame
-    "bid",
-    "ask",
-    "mid",
-    "mark",
+    "state",
+    "is_active",
+    "instrument_id",
+    "settlement_currency",
+    "base_currency",
+    "quote_currency",
+    "contract_size",
+    "tick_size",
+    "min_trade_amount",
+    "kind",
+    "instrument_type",
+    "price_index",
+    "counter_currency",
+    "settlement_period",
+    "tick_size_steps",
+}
+
+_QUOTE_COLS = {
+    "instrument_name",
+    "bid_price",
+    "ask_price",
+    "mid_price",
+    "last",
     "mark_price",
-    "index_price",
-    "underlying_price",
-    "forward_price",
-    "oi",
     "open_interest",
-    "volume",
-    # aux holder
-    "aux",
+    "volume_24h",
+    "volume_usd_24h",
+    "mark_iv",
+    "high",
+    "low",
+    "market_ts",
+    "price_change",
+}
+
+_UNDERLYING_COLS = {
+    "instrument_name",
+    "underlying_price",
+    "underlying_index",
+    "estimated_delivery_price",
+    "interest_rate",
 }
 
 
@@ -125,13 +164,11 @@ _SURFACE_KEEP_COLS = {
 class OptionChainSnapshot(Snapshot):
     """Immutable option chain snapshot.
 
-    Schema v2:
-      - the chain payload is stored as a pandas DataFrame (`frame`).
-      - the frame is *lean*: only IV-surface relevant columns are kept.
-      - all other incoming columns are moved into a per-row dict column `aux`.
-      - any fetched IV/greeks columns are treated as non-canonical and moved into aux as `*_fetch`.
-
-    Canonical IV lives in iv_handler; greeks are computed in features.
+    Schema v3:
+      - chain_frame: instrument identity & lifecycle
+      - quote_frame: core quotes
+      - underlying_frame: underlying fields
+      - aux_frame: all remaining fields
     """
 
     data_ts: int
@@ -140,113 +177,87 @@ class OptionChainSnapshot(Snapshot):
     domain: str
     schema_version: int
 
-    # normalized chain table
-    frame: pd.DataFrame
+    chain_frame: pd.DataFrame
+    quote_frame: pd.DataFrame
+    underlying_frame: pd.DataFrame
+    aux_frame: pd.DataFrame
     expiry_keys_ms: frozenset[int] | None = None
     term_keys_ms: dict[int, frozenset[int]] | None = None
+    _frame_cache: pd.DataFrame | None = field(default=None, init=False, repr=False)
 
     @staticmethod
-    def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+    def _sort_frame(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=["instrument_name", "expiry_ts", "strike", "cp", "aux"])
+            return pd.DataFrame(columns=list(df.columns) if df is not None else [])
+        order: list[str] = []
+        if "expiration_timestamp" in df.columns:
+            order.append("expiration_timestamp")
+        elif "expiry_ts" in df.columns:
+            order.append("expiry_ts")
+        if "strike" in df.columns:
+            order.append("strike")
+        if "cp" in df.columns:
+            order.append("cp")
+        elif "option_type" in df.columns:
+            order.append("option_type")
+        if "instrument_name" in df.columns:
+            order.append("instrument_name")
+        if order:
+            try:
+                return df.sort_values(order, kind="stable").reset_index(drop=True)
+            except Exception:
+                pass
+        if "instrument_name" in df.columns:
+            try:
+                return df.sort_values("instrument_name", kind="stable").reset_index(drop=True)
+            except Exception:
+                pass
+        return df.reset_index(drop=True)
+
+    @staticmethod
+    def _split_frames(
+        df: pd.DataFrame,
+        *,
+        drop_aux: bool,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        if df is None or df.empty:
+            empty = pd.DataFrame(columns=["instrument_name"])
+            return empty, empty, empty, empty
 
         x = df.copy()
+        if "instrument_name" not in x.columns:
+            x["instrument_name"] = None
 
-        # Map Deribit instrument metadata: expiration_timestamp -> expiry_ts
-        if "expiry_ts" not in x.columns and "expiration_timestamp" in x.columns:
-            x["expiry_ts"] = x["expiration_timestamp"]
+        def _select(cols: set[str]) -> pd.DataFrame:
+            wanted = [c for c in x.columns if c in cols]
+            if "instrument_name" not in wanted:
+                wanted = ["instrument_name"] + wanted
+            return x[wanted].copy()
 
-        # Coerce expiry_ts (ms-int)
-        if "expiry_ts" in x.columns:
-            x["expiry_ts"] = pd.to_numeric(x["expiry_ts"], errors="coerce").fillna(0).astype("int64")
+        chain_frame = _select(_CHAIN_COLS)
+        quote_frame = _select(_QUOTE_COLS)
+        underlying_frame = _select(_UNDERLYING_COLS)
 
-        # Coerce strike
-        if "strike" in x.columns:
-            x["strike"] = pd.to_numeric(x["strike"], errors="coerce")
+        if "expiration_timestamp" in chain_frame.columns and "expiry_ts" not in chain_frame.columns:
+            chain_frame["expiry_ts"] = pd.to_numeric(chain_frame["expiration_timestamp"], errors="coerce")
+        if "option_type" in chain_frame.columns and "cp" not in chain_frame.columns:
+            chain_frame["cp"] = chain_frame["option_type"].map(_coerce_cp)
 
-        # Derive cp: option_type -> cp, else instrument_name fallback
-        if "cp" not in x.columns:
-            if "option_type" in x.columns:
-                x["cp"] = x["option_type"].map(_coerce_cp)
-            else:
-                x["cp"] = None
-
-        if "instrument_name" in x.columns:
-            miss = x["cp"].isna() | (x["cp"].astype("string") == "")
-            if bool(miss.any()):
-                x.loc[miss, "cp"] = x.loc[miss, "instrument_name"].map(
-                    lambda s: _parse_deribit_cp(str(s)) if s is not None else None
-                )
-
-        # Final fallback expiry_ts from instrument_name if still missing/zero
-        if "expiry_ts" in x.columns and "instrument_name" in x.columns:
-            miss_exp = (x["expiry_ts"].isna()) | (x["expiry_ts"].astype("int64") <= 0)
-            if bool(miss_exp.any()):
-                def _fallback_exp(v: Any) -> int | None:
-                    try:
-                        return _parse_deribit_expiry_ts_ms(str(v))
-                    except Exception:
-                        return None
-
-                x.loc[miss_exp, "expiry_ts"] = x.loc[miss_exp, "instrument_name"].map(_fallback_exp)
-                x["expiry_ts"] = pd.to_numeric(x["expiry_ts"], errors="coerce").fillna(0).astype("int64")
-
-        # Ensure aux exists
-        if "aux" not in x.columns:
-            x["aux"] = [{} for _ in range(len(x))]
+        if drop_aux:
+            aux_frame = pd.DataFrame({"instrument_name": x["instrument_name"]})
         else:
-            # normalize aux values to dict
-            x["aux"] = x["aux"].map(lambda v: dict(v) if isinstance(v, dict) else {})
+            used = set(chain_frame.columns) | set(quote_frame.columns) | set(underlying_frame.columns)
+            aux_cols = [c for c in x.columns if c not in used]
+            if "instrument_name" not in aux_cols:
+                aux_cols = ["instrument_name"] + aux_cols
+            aux_frame = x[aux_cols].copy() if aux_cols else x[["instrument_name"]].copy()
 
-        # Move fetched IV/greeks columns into aux as *_fetch (non-canonical)
-        cols = list(x.columns)
-        for c in cols:
-            if not isinstance(c, str):
-                continue
-            lc = c.lower()
-            if lc == "aux":
-                continue
-            if lc.endswith("_fetch") or _is_iv_col(c) or lc in _GREEK_COLS:
-                def _move(v: Any, col: str = c) -> None:
-                    # handled below via apply
-                    return None
+        chain_frame = OptionChainSnapshot._sort_frame(chain_frame)
+        quote_frame = OptionChainSnapshot._sort_frame(quote_frame)
+        underlying_frame = OptionChainSnapshot._sort_frame(underlying_frame)
+        aux_frame = OptionChainSnapshot._sort_frame(aux_frame)
 
-                # vectorized-ish: apply per row
-                x["aux"] = x.apply(
-                    lambda row, col=c: {**(row["aux"] if isinstance(row["aux"], dict) else {}), f"{col}_fetch" if not str(col).lower().endswith("_fetch") else str(col): row[col]},
-                    axis=1,
-                )
-                x = x.drop(columns=[c])
-
-        # Now move all non-surface columns into aux
-        keep = set(_SURFACE_KEEP_COLS)
-        for c in list(x.columns):
-            if c in keep:
-                continue
-            # move into aux then drop
-            x["aux"] = x.apply(
-                lambda row, col=c: {**(row["aux"] if isinstance(row["aux"], dict) else {}), str(col): row[col]},
-                axis=1,
-            )
-            x = x.drop(columns=[c])
-
-        # Ensure required columns exist (even if None)
-        for c in ("instrument_name", "expiry_ts", "strike", "cp"):
-            if c not in x.columns:
-                x[c] = None
-
-        # Stable order
-        order = [c for c in ("instrument_name", "expiry_ts", "strike", "cp", "aux") if c in x.columns]
-        rest = [c for c in x.columns if c not in order]
-        x = x[order + rest]
-
-        # Sort for deterministic downstream processing
-        try:
-            x = x.sort_values(["expiry_ts", "strike", "cp", "instrument_name"], kind="stable")
-        except Exception:
-            pass
-
-        return x.reset_index(drop=True)
+        return chain_frame, quote_frame, underlying_frame, aux_frame
 
     @classmethod
     def from_chain_aligned(
@@ -256,7 +267,8 @@ class OptionChainSnapshot(Snapshot):
         symbol: str,
         market: MarketSpec | None = None,
         chain: pd.DataFrame,
-        schema_version: int = 2,
+        drop_aux: bool | None = None,
+        schema_version: int = 3,
         domain: str = "option_chain",
     ) -> "OptionChainSnapshot":
         dts = to_ms_int(data_ts)
@@ -264,12 +276,20 @@ class OptionChainSnapshot(Snapshot):
         if not isinstance(chain, pd.DataFrame):
             raise TypeError("OptionChainSnapshot.from_chain_aligned expects `chain` as a pandas DataFrame")
 
-        frame = cls._normalize_frame(chain)
+        if drop_aux is None:
+            drop_aux = DROP_AUX_DEFAULT
+        chain_frame, quote_frame, underlying_frame, aux_frame = cls._split_frames(chain, drop_aux=bool(drop_aux))
+
+        expiry_series = None
+        if "expiration_timestamp" in chain_frame.columns:
+            expiry_series = pd.to_numeric(chain_frame["expiration_timestamp"], errors="coerce")
+        elif "expiry_ts" in chain_frame.columns:
+            expiry_series = pd.to_numeric(chain_frame["expiry_ts"], errors="coerce")
 
         expiry_keys_ms: frozenset[int] | None
-        if "expiry_ts" in frame.columns:
+        if expiry_series is not None:
             try:
-                xs = pd.to_numeric(frame["expiry_ts"], errors="coerce").dropna().astype("int64")
+                xs = expiry_series.dropna().astype("int64")
                 expiry_keys_ms = frozenset(int(v) for v in xs.unique() if int(v) > 0)
             except Exception:
                 expiry_keys_ms = frozenset()
@@ -282,7 +302,10 @@ class OptionChainSnapshot(Snapshot):
             market=ensure_market_spec(market),
             domain=domain,
             schema_version=int(schema_version),
-            frame=frame,
+            chain_frame=chain_frame,
+            quote_frame=quote_frame,
+            underlying_frame=underlying_frame,
+            aux_frame=aux_frame,
             expiry_keys_ms=expiry_keys_ms,
             term_keys_ms=None,
         )
@@ -322,12 +345,17 @@ class OptionChainSnapshot(Snapshot):
         cached = self.expiry_keys_ms
         if cached is not None:
             return cached
-        frame = self.frame
-        if frame is None or frame.empty or "expiry_ts" not in frame.columns:
+        frame = self.chain_frame
+        if frame is None or frame.empty:
             keys = frozenset()
         else:
             try:
-                xs = frame["expiry_ts"].dropna().unique()
+                if "expiration_timestamp" in frame.columns:
+                    xs = frame["expiration_timestamp"].dropna().unique()
+                elif "expiry_ts" in frame.columns:
+                    xs = frame["expiry_ts"].dropna().unique()
+                else:
+                    xs = []
                 keys = frozenset(int(v) for v in xs if v is not None and int(v) > 0)
             except Exception:
                 keys = frozenset()
@@ -356,6 +384,23 @@ class OptionChainSnapshot(Snapshot):
         object.__setattr__(self, "term_keys_ms", cached)
         return out
 
+    @property
+    def frame(self) -> pd.DataFrame:
+        cached = getattr(self, "_frame_cache", None)
+        if cached is not None:
+            return cached
+        base = self.chain_frame
+        if base is None or base.empty:
+            merged = pd.DataFrame()
+        else:
+            quote = self.quote_frame
+            if quote is None or quote.empty:
+                merged = base.copy()
+            else:
+                merged = base.merge(quote, on="instrument_name", how="left", suffixes=("", "_quote"))
+        object.__setattr__(self, "_frame_cache", merged)
+        return merged
+
 
 def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None:
@@ -369,10 +414,11 @@ def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:
 def _slice_frame_for_expiry(frame: pd.DataFrame, *, expiry_ts: int) -> pd.DataFrame:
     if frame is None or frame.empty:
         return _empty_frame_like(frame)
-    if "expiry_ts" not in frame.columns:
+    if "expiry_ts" not in frame.columns and "expiration_timestamp" not in frame.columns:
         return _empty_frame_like(frame)
     try:
-        mask = pd.to_numeric(frame["expiry_ts"], errors="coerce").fillna(0).astype("int64") == int(expiry_ts)
+        col = "expiry_ts" if "expiry_ts" in frame.columns else "expiration_timestamp"
+        mask = pd.to_numeric(frame[col], errors="coerce").fillna(0).astype("int64") == int(expiry_ts)
         return frame.loc[mask].reset_index(drop=True)
     except Exception:
         return _empty_frame_like(frame)
@@ -387,10 +433,11 @@ def _slice_frame_for_term_bucket(
 ) -> pd.DataFrame:
     if frame is None or frame.empty:
         return _empty_frame_like(frame)
-    if "expiry_ts" not in frame.columns:
+    if "expiry_ts" not in frame.columns and "expiration_timestamp" not in frame.columns:
         return _empty_frame_like(frame)
     try:
-        expiry = pd.to_numeric(frame["expiry_ts"], errors="coerce").fillna(0).astype("int64")
+        col = "expiry_ts" if "expiry_ts" in frame.columns else "expiration_timestamp"
+        expiry = pd.to_numeric(frame[col], errors="coerce").fillna(0).astype("int64")
         term = (expiry - int(snap_ts)).clip(lower=0)
         key = (term // int(term_bucket_ms)) * int(term_bucket_ms)
         mask = key == int(term_key_ms)
@@ -419,7 +466,7 @@ class OptionChainSnapshotView(OptionChainSnapshot):
 
         # Preserve optional fields (e.g., arrival_ts) when present on the base snapshot.
         for k, v in getattr(base, "__dict__", {}).items():
-            if k in {"data_ts", "symbol", "market", "domain", "schema_version", "frame"}:
+            if k in {"data_ts", "symbol", "market", "domain", "schema_version"}:
                 continue
             if k.startswith("_"):
                 continue

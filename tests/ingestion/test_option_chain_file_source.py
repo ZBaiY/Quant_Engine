@@ -27,7 +27,7 @@ def test_option_chain_file_source_single_file_coerces_seconds(
     df = pd.DataFrame(
         [
             {
-                "data_ts": 1_700_000_000,
+                "arrival_ts": 1_700_000_000,
                 "instrument_name": "BTC-1JAN24-10000-C",
                 "expiry_ts": 1_700_100_000_000,
                 "strike": 10_000,
@@ -35,7 +35,7 @@ def test_option_chain_file_source_single_file_coerces_seconds(
                 "delta": 0.5,
             },
             {
-                "data_ts": 1_700_000_001.5,
+                "arrival_ts": 1_700_000_001.5,
                 "instrument_name": "BTC-1JAN24-10000-P",
                 "expiry_ts": 1_700_100_000_000,
                 "strike": 10_000,
@@ -49,8 +49,9 @@ def test_option_chain_file_source_single_file_coerces_seconds(
     src = OptionChainFileSource(root=root, asset=asset, interval=interval)
     rows = list(src)
 
+    assert [r["arrival_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_500]
     assert [r["data_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_500]
-    assert all(isinstance(r["data_ts"], int) for r in rows)
+    assert all(isinstance(r["arrival_ts"], int) for r in rows)
     assert any("delta" in rec for rec in rows[0]["records"])
     assert all(not isinstance(r, IngestionTick) for r in rows)
 
@@ -67,7 +68,7 @@ def test_option_chain_file_source_multiple_files_monotonic(
     df_2023 = pd.DataFrame(
         [
             {
-                "data_ts": 1_700_000_000_000,
+                "arrival_ts": 1_700_000_000_000,
                 "instrument_name": "BTC-1JAN24-10000-C",
                 "expiry_ts": 1_700_100_000_000,
                 "strike": 10_000,
@@ -78,7 +79,7 @@ def test_option_chain_file_source_multiple_files_monotonic(
     df_2024 = pd.DataFrame(
         [
             {
-                "data_ts": 1_700_000_001_000,
+                "arrival_ts": 1_700_000_001_000,
                 "instrument_name": "BTC-1JAN24-10000-P",
                 "expiry_ts": 1_700_100_000_000,
                 "strike": 10_000,
@@ -92,8 +93,8 @@ def test_option_chain_file_source_multiple_files_monotonic(
     src = OptionChainFileSource(root=root, asset=asset, interval=interval)
     rows = list(src)
 
-    assert [r["data_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_000]
-    assert [r["data_ts"] for r in rows] == sorted(r["data_ts"] for r in rows)
+    assert [r["arrival_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_000]
+    assert [r["arrival_ts"] for r in rows] == sorted(r["arrival_ts"] for r in rows)
 
 
 def test_option_chain_file_source_missing_data_ts_raises(
@@ -118,7 +119,7 @@ def test_option_chain_file_source_missing_data_ts_raises(
     _write_parquet(df, base / "2024.parquet")
 
     src = OptionChainFileSource(root=root, asset=asset, interval=interval)
-    with pytest.raises(ValueError, match="missing data_ts"):
+    with pytest.raises(ValueError, match="missing arrival_ts"):
         list(src)
 
 
@@ -134,7 +135,7 @@ def test_option_chain_file_source_invalid_data_ts_raises(
     df = pd.DataFrame(
         [
             {
-                "data_ts": None,
+                "arrival_ts": None,
                 "instrument_name": "BTC-1JAN24-10000-C",
                 "expiry_ts": 1_700_100_000_000,
                 "strike": 10_000,

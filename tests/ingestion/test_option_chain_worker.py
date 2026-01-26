@@ -33,14 +33,14 @@ async def test_option_chain_worker_run_emits_ticks_in_order(
     df = pd.DataFrame(
         [
             {
-                "data_ts": 1_700_000_000_000,
+                "arrival_ts": 1_700_000_000_000,
                 "instrument_name": "BTC-1JAN24-10000-C",
                 "expiration_timestamp": 1_700_100_000_000,
                 "strike": 10_000,
                 "option_type": "call",
             },
             {
-                "data_ts": 1_700_000_001_000,
+                "arrival_ts": 1_700_000_001_000,
                 "instrument_name": "BTC-1JAN24-10000-P",
                 "expiration_timestamp": 1_700_100_000_000,
                 "strike": 10_000,

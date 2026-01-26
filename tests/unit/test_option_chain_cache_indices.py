@@ -13,9 +13,9 @@ def _make_snapshot(data_ts: int, expiries: list[int], symbol: str = "BTC") -> Op
         rows.append(
             {
                 "instrument_name": f"{symbol}-{i}-{ex}",
-                "expiry_ts": int(ex),
+                "expiration_timestamp": int(ex),
                 "strike": 10_000 + i,
-                "cp": "C",
+                "option_type": "call",
             }
         )
     df = pd.DataFrame(rows)
@@ -134,10 +134,13 @@ def test_by_expiry_eviction_and_get_at_or_before() -> None:
     cache.push(_make_snapshot(1000, [expiry]))
     cache.push(_make_snapshot(2000, [expiry]))
     cache.push(_make_snapshot(3000, [expiry]))
-
     assert cache.get_at_or_before_for_expiry(expiry, 1500) is None
-    assert cache.get_at_or_before_for_expiry(expiry, 2500).data_ts == 2000
-    assert cache.get_at_or_before_for_expiry(expiry, 3500).data_ts == 3000
+    cache_1 = cache.get_at_or_before_for_expiry(expiry, 2500)
+    assert cache_1 is not None
+    assert cache_1.data_ts == 2000
+    cache_2 = cache.get_at_or_before_for_expiry(expiry, 3500)
+    assert cache_2 is not None
+    assert cache_2.data_ts == 3000
 
 
 def test_cache_requires_main_capacity_for_expiry_index() -> None:
@@ -162,3 +165,36 @@ def test_cache_requires_main_capacity_for_term_index() -> None:
     cache.push(_make_snapshot(3000, [expiry]))
     df = cache.window_df_for_term(15_000)
     assert set(df["snapshot_data_ts"].unique()) == {2000, 3000}
+
+
+def test_cache_ordering_ignores_fetch_step_ts() -> None:
+    cache = OptionChainExpiryIndexedCache(maxlen=10)
+    df_a = pd.DataFrame(
+        [
+            {
+                "instrument_name": "BTC-0-1000",
+                "expiration_timestamp": 20_000,
+                "strike": 10_000,
+                "option_type": "call",
+                "fetch_step_ts": 9_999,
+            }
+        ]
+    )
+    df_b = pd.DataFrame(
+        [
+            {
+                "instrument_name": "BTC-1-2000",
+                "expiration_timestamp": 20_000,
+                "strike": 10_001,
+                "option_type": "call",
+                "fetch_step_ts": 1,
+            }
+        ]
+    )
+    s1 = OptionChainSnapshot.from_chain_aligned(data_ts=1000, symbol="BTC", chain=df_a, drop_aux=False)
+    s2 = OptionChainSnapshot.from_chain_aligned(data_ts=2000, symbol="BTC", chain=df_b, drop_aux=False)
+    cache.push(s2)
+    cache.push(s1)
+    snap = cache.get_at_or_before(1500)
+    assert snap is not None
+    assert snap.data_ts == 1000
