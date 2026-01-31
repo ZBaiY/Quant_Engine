@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, Iterable, Mapping, cast, TYPE_CHECKING
 
 import pandas as pd
 
@@ -11,6 +11,9 @@ from quant_engine.data.contracts.snapshot import MarketSpec
 from quant_engine.runtime.modes import EngineMode
 
 from .snapshot import OptionChainSnapshot
+
+if TYPE_CHECKING:
+    from .chain_handler import OptionChainDataHandler
 
 
 def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: str | None = None) -> IngestionTick:
