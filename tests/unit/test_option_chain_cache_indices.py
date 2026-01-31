@@ -75,15 +75,38 @@ def test_by_term_dedup_same_snapshot_in_bucket() -> None:
 
 
 def test_snapshot_view_frame_tags_and_slice() -> None:
-    base = _make_snapshot(1234, [11_111, 22_222])
-    object.__setattr__(base, "arrival_ts", 1300)
+    df = pd.DataFrame(
+        [
+            {
+                "instrument_name": "BTC-0-11111",
+                "expiration_timestamp": 11_111,
+                "strike": 10_000,
+                "option_type": "call",
+                "bid_price": 1.0,
+                "ask_price": 1.1,
+                "market_ts": 1200,
+            },
+            {
+                "instrument_name": "BTC-1-22222",
+                "expiration_timestamp": 22_222,
+                "strike": 10_100,
+                "option_type": "call",
+                "bid_price": 1.0,
+                "ask_price": 1.1,
+                "market_ts": 1250,
+            },
+        ]
+    )
+    base = OptionChainSnapshot.from_chain_aligned(data_ts=1234, symbol="BTC", chain=df)
     view = OptionChainSnapshotView.for_expiry(base=base, expiry_ts=11_111)
 
     frame = view.frame
     assert "snapshot_data_ts" in frame.columns
     assert set(frame["snapshot_data_ts"].unique()) == {1234}
-    assert "snapshot_arrival_ts" in frame.columns
-    assert set(frame["snapshot_arrival_ts"].unique()) == {1300}
+    assert "snapshot_market_ts" in frame.columns
+    assert set(frame["snapshot_market_ts"].unique()) == {1225}
+    assert set(frame["slice_kind"].unique()) == {"expiry"}
+    assert set(frame["slice_key"].unique()) == {11_111}
     assert set(frame["expiry_ts"].unique()) == {11_111}
     assert "snapshot_data_ts" not in base.frame.columns
 

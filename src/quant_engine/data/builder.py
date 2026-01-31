@@ -82,7 +82,8 @@ def build_multi_symbol_handlers(
     option_chain_handlers: Dict[str, OptionChainDataHandler] = {}
 
     if "option_chain" in primary:
-        cfg = primary["option_chain"]
+        cfg = dict(primary["option_chain"])
+        cfg.setdefault("preset", "option_chain")
         symbol = kwargs.get("primary_symbol")
         if symbol is None:
             raise ValueError("primary_symbol must be provided for primary option_chain")
@@ -95,10 +96,12 @@ def build_multi_symbol_handlers(
     for sec_symbol, sec_cfg in secondary.items():
         if "option_chain" not in sec_cfg:
             continue
+        cfg = dict(sec_cfg["option_chain"])
+        cfg.setdefault("preset", "option_chain")
         option_chain_handlers[sec_symbol] = OptionChainDataHandler(
             symbol=sec_symbol,
             mode=mode,
-            **sec_cfg["option_chain"],
+            **cfg,
         )
 
     iv_surface_handlers: Dict[str, IVSurfaceDataHandler] = {}

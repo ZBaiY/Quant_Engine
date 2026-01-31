@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, cast
+from typing import Any, Iterable, Mapping, cast
+import copy
 
 import pandas as pd
-import time
+import numpy as np
 
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception, log_throttle, throttle_key
-from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
+from ingestion.contracts.tick import IngestionTick
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.contracts.snapshot import (
     MarketSpec,
@@ -25,7 +26,38 @@ from .cache import (
     OptionChainExpiryCache,
     OptionChainTermBucketedCache,
 )
-from .snapshot import OptionChainSnapshot
+from .snapshot import OptionChainSnapshot, OptionChainSnapshotView
+from .helpers import (
+    _tick_from_payload,
+    _infer_data_ts,
+    _build_snapshot_from_payload,
+    _coerce_lookback_ms,
+    _coerce_lookback_bars,
+    _coerce_engine_mode,
+    _resolve_source_id,
+    _deep_merge,
+    _resolve_option_chain_config,
+    _validate_option_chain_config,
+    _coerce_cp,
+    _market_ts_ref,
+    _market_ts_ref_info,
+    _resolve_underlying,
+    _apply_quality_checks,
+    _coerce_quality_mode,
+    _severity_for,
+    _empty_meta,
+    _clone_meta,
+    _merge_meta,
+    _add_reason,
+    _finalize_meta,
+    _set_selection_context,
+    _apply_selection_slice,
+    _select_point_from_slice,
+    _iter_ts,
+    _empty_df_like,
+    _to_float_scalar,
+    _to_int_scalar,
+)
 
 
 class OptionChainDataHandler(RealTimeDataHandler):
@@ -62,6 +94,14 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
     cache_cfg: dict[str, Any]
     cache: OptionChainCache
+    term_bucket_ms: int
+    quality_mode: str
+    quality_cfg: dict[str, Any]
+    coords_cfg: dict[str, Any]
+    selection_cfg: dict[str, Any]
+    market_ts_ref_method: str
+    config: dict[str, Any]
+    reason_severity: dict[str, dict[str, str]]
 
     _anchor_ts: int | None
     _logger: Any
@@ -69,10 +109,58 @@ class OptionChainDataHandler(RealTimeDataHandler):
     _backfill_emit: Any | None
     _engine_mode: EngineMode | None
     _data_root: Any
+    _coords_cache: dict[tuple[Any, ...], tuple[pd.DataFrame, dict[str, Any]]]
+    _coords_aux_cache: dict[tuple[Any, ...], dict[str, Any]]
+    _select_tau_cache: dict[tuple[Any, ...], dict[str, Any]]
 
     def __init__(self, symbol: str, **kwargs: Any):
         self.symbol = symbol
         self.source = str(kwargs.get("source") or "DERIBIT")
+
+        preset = kwargs.pop("preset", None)
+        config = kwargs.pop("config", None)
+        coord_override = {
+            k: kwargs.pop(k)
+            for k in ("tau_def", "x_axis", "atm_def", "underlying_field", "price_field", "cp_policy")
+            if k in kwargs
+        }
+        if "coords" in kwargs:
+            raw_coords = kwargs.pop("coords")
+            if isinstance(raw_coords, dict):
+                coord_override = _deep_merge(raw_coords, coord_override) if coord_override else dict(raw_coords)
+            else:
+                raise TypeError("option_chain coords must be a dict")
+        selection_override = {}
+        if "selection_method" in kwargs:
+            selection_override["method"] = kwargs.pop("selection_method")
+        if "selection_interp" in kwargs:
+            selection_override["interp"] = kwargs.pop("selection_interp")
+        quality_override = kwargs.pop("quality", None) if "quality" in kwargs else None
+        quality_mode_override = kwargs.pop("quality_mode", None) if "quality_mode" in kwargs else None
+        cache_override = kwargs.pop("cache", None) if "cache" in kwargs else None
+        market_ts_ref_method_override = kwargs.pop("market_ts_ref_method", None) if "market_ts_ref_method" in kwargs else None
+        term_bucket_override = kwargs.pop("term_bucket_ms", None) if "term_bucket_ms" in kwargs else None
+        config_override: dict[str, Any] = {}
+        if cache_override is not None:
+            config_override["cache"] = cache_override
+        if quality_override is not None:
+            config_override["quality"] = quality_override
+        if quality_mode_override is not None:
+            config_override["quality_mode"] = quality_mode_override
+        if coord_override:
+            config_override["coords"] = coord_override
+        if "selection" in kwargs:
+            raw_sel = kwargs.pop("selection")
+            if isinstance(raw_sel, dict):
+                selection_override = _deep_merge(raw_sel, selection_override) if selection_override else dict(raw_sel)
+            else:
+                raise TypeError("option_chain selection must be a dict")
+        if selection_override:
+            config_override["selection"] = selection_override
+        if market_ts_ref_method_override is not None:
+            config_override["market_ts_ref_method"] = market_ts_ref_method_override
+        if term_bucket_override is not None:
+            config_override["term_bucket_ms"] = term_bucket_override
 
         interval = kwargs.get("interval")
         if interval is not None and (not isinstance(interval, str) or not interval):
@@ -80,6 +168,14 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self.interval = interval
         interval_ms = to_interval_ms(self.interval) if self.interval is not None else None
         self.interval_ms = int(interval_ms) if interval_ms is not None else None
+
+        resolved_cfg = _resolve_option_chain_config(
+            preset=preset,
+            config=config,
+            override=config_override,
+            interval_ms=self.interval_ms,
+        )
+        self.config = resolved_cfg
 
         asset_any = kwargs.get("asset") or kwargs.get("currency") or kwargs.get("underlying")
         self.asset = base_asset_from_symbol(str(asset_any)) if asset_any is not None else base_asset_from_symbol(symbol)
@@ -97,21 +193,28 @@ class OptionChainDataHandler(RealTimeDataHandler):
             source=self.source,
         )
 
-        cache = kwargs.get("cache") or {}
+        cache = resolved_cfg.get("cache") or {}
         if not isinstance(cache, dict):
             raise TypeError("option_chain 'cache' must be a dict")
         self.cache_cfg = dict(cache)
         self.bootstrap_cfg = kwargs.get("bootstrap") or None
 
-        maxlen = int(self.cache_cfg.get("maxlen", kwargs.get("maxlen", 512)))
+        maxlen_any = self.cache_cfg.get("maxlen")
+        if maxlen_any is None:
+            raise ValueError("option_chain cache.maxlen must be provided")
+        maxlen = int(maxlen_any)
         if maxlen <= 0:
             raise ValueError("option_chain cache.maxlen must be > 0")
 
         # cache kind: simple | expiry | term
         kind = str(self.cache_cfg.get("kind") or self.cache_cfg.get("type") or "expiry").lower()
 
-        default_expiry_window = int(self.cache_cfg.get("default_expiry_window", kwargs.get("default_expiry_window", 5)))
-        default_term_window = int(self.cache_cfg.get("default_term_window", kwargs.get("default_term_window", 5)))
+        default_expiry_any = self.cache_cfg.get("default_expiry_window")
+        default_term_any = self.cache_cfg.get("default_term_window")
+        if default_expiry_any is None or default_term_any is None:
+            raise ValueError("option_chain cache default windows must be provided")
+        default_expiry_window = int(default_expiry_any)
+        default_term_window = int(default_term_any)
         if default_expiry_window <= 0:
             raise ValueError("option_chain cache.default_expiry_window must be > 0")
         if default_term_window <= 0:
@@ -121,7 +224,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
             self.cache = OptionChainSimpleCache(maxlen=maxlen)
             term_bucket_ms = None
         elif kind in {"term", "term_bucket", "bucketed"}:
-            term_bucket_ms = int(self.cache_cfg.get("term_bucket_ms", kwargs.get("term_bucket_ms", 86_400_000)))
+            term_bucket_any = self.cache_cfg.get("term_bucket_ms")
+            if term_bucket_any is None:
+                raise ValueError("option_chain cache.term_bucket_ms must be provided")
+            term_bucket_ms = int(term_bucket_any)
             if term_bucket_ms <= 0:
                 raise ValueError("option_chain cache.term_bucket_ms must be > 0")
             self.cache = OptionChainTermBucketedCache(
@@ -140,6 +246,30 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         cols_any = kwargs.get("columns")
         self.columns = list(cols_any) if cols_any is not None else None
+        if term_bucket_ms is None:
+            term_bucket_any = self.cache_cfg.get("term_bucket_ms")
+            if term_bucket_any is None:
+                raise ValueError("option_chain cache.term_bucket_ms must be provided")
+            term_bucket_ms = int(term_bucket_any)
+        self.term_bucket_ms = int(term_bucket_ms)
+        if self.term_bucket_ms <= 0:
+            raise ValueError("option_chain term_bucket_ms must be > 0")
+
+        self.quality_mode = _coerce_quality_mode(resolved_cfg.get("quality_mode"))
+        quality_cfg = resolved_cfg.get("quality") or {}
+        if not isinstance(quality_cfg, dict):
+            raise TypeError("option_chain 'quality' must be a dict")
+        self.quality_cfg = dict(quality_cfg)
+        self.reason_severity = dict(self.quality_cfg.get("reason_severity") or {})
+        coords_cfg = resolved_cfg.get("coords") or {}
+        if not isinstance(coords_cfg, dict):
+            raise TypeError("option_chain 'coords' must be a dict")
+        self.coords_cfg = dict(coords_cfg)
+        selection_cfg = resolved_cfg.get("selection") or {}
+        if not isinstance(selection_cfg, dict):
+            raise TypeError("option_chain 'selection' must be a dict")
+        self.selection_cfg = dict(selection_cfg)
+        self.market_ts_ref_method = str(resolved_cfg.get("market_ts_ref_method"))
 
         self.market = ensure_market_spec(
             kwargs.get("market"),
@@ -168,6 +298,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._backfill_emit = None
         self._anchor_ts = None
         self._logger = get_logger(__name__)
+        self._coords_cache = {}
+        self._coords_aux_cache = {}
+        self._select_tau_cache = {}
 
         log_debug(
             self._logger,
@@ -180,6 +313,13 @@ class OptionChainDataHandler(RealTimeDataHandler):
             default_expiry_window=default_expiry_window,
             default_term_window=default_term_window,
             term_bucket_ms=term_bucket_ms,
+        )
+        log_debug(
+            self._logger,
+            "option_chain.config_resolved",
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
+            config=self.config,
         )
 
     def set_external_source(self, worker: Any | None, *, emit: Any | None = None) -> None:
@@ -270,6 +410,16 @@ class OptionChainDataHandler(RealTimeDataHandler):
         snap = _build_snapshot_from_payload(payload, symbol=self.display_symbol, market=self.market)
         if snap is None:
             return
+        if snap.chain_frame is None or snap.chain_frame.empty:
+            if self.quality_mode != "STRICT":
+                log_debug(
+                    self._logger,
+                    "option_chain.empty_snapshot_skip",
+                    symbol=self.display_symbol,
+                    instrument_symbol=self.symbol,
+                    data_ts=int(snap.data_ts),
+                )
+                return
         last = self.cache.last()
         if last is not None and int(snap.data_ts) < int(last.data_ts):
             log_warn(
@@ -287,6 +437,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._set_gap_market(snap, last_ts=last_ts)
 
         self.cache.push(snap)
+        self._prune_caches()
         log_debug(
             self._logger,
             "OptionChainDataHandler.on_new_tick",
@@ -369,15 +520,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
             return None
         return self.cache.get_at_or_before_for_term(int(term_key_ms), t)  # type: ignore[attr-defined]
 
-    def window_for_term(self, *, term_key_ms: int, n: int = 1) -> list[OptionChainSnapshot]:
-        ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
-        if ts is None:
-            return []
-        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
-        if not hasattr(self.cache, "get_n_before_for_term"):
-            return []
-        return list(self.cache.get_n_before_for_term(int(term_key_ms), t, int(n)))  # type: ignore[attr-defined]
-
     # ------------------------------------------------------------------
     # Views
     # ------------------------------------------------------------------
@@ -398,14 +540,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if snap is None:
             return pd.DataFrame()
 
-        base = snap.chain_frame
-        if base is None or len(base) == 0:
+        base = snap.frame
+        if base is None or base.empty:
             return pd.DataFrame()
 
         merged = base
-        quote = snap.quote_frame
-        if quote is not None and not quote.empty:
-            merged = merged.merge(quote, on="instrument_name", how="left", suffixes=("", "_quote"))
 
         cols = self.columns if columns is None else columns
         col_set = set(cols) if cols is not None else set()
@@ -472,6 +611,722 @@ class OptionChainDataHandler(RealTimeDataHandler):
             instrument_symbol=self.symbol,
         )
         self.cache.clear()
+        self._coords_cache.clear()
+        self._coords_aux_cache.clear()
+        self._select_tau_cache.clear()
+
+    def _coords_frame_uncached(
+        self,
+        snap: OptionChainSnapshot,
+        *,
+        tau_def: str,
+        x_axis: str,
+        atm_def: str,
+        price_field: str,
+        quality_mode: str,
+        drop_aux: bool,
+    ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+        data_ts = int(snap.data_ts)
+        base = snap.frame
+        if base is None or base.empty:
+            meta = _empty_meta(snapshot_data_ts=data_ts, snapshot_market_ts=None, quality_mode=quality_mode)
+            _add_reason(meta, "EMPTY_CHAIN", _severity_for("EMPTY_CHAIN", quality_mode, self.reason_severity), {})
+            _finalize_meta(meta, quality_mode)
+            return pd.DataFrame(), meta, {}
+
+        df = base.copy()
+        if snap.underlying_frame is not None and not snap.underlying_frame.empty:
+            extra_cols = [c for c in snap.underlying_frame.columns if c not in df.columns]
+            if extra_cols:
+                df = df.merge(
+                    snap.underlying_frame[["instrument_name"] + extra_cols],
+                    on="instrument_name",
+                    how="left",
+                )
+        if not drop_aux and snap.aux_frame is not None and not snap.aux_frame.empty:
+            extra_cols = [c for c in snap.aux_frame.columns if c not in df.columns]
+            if extra_cols:
+                df = df.merge(
+                    snap.aux_frame[["instrument_name"] + extra_cols],
+                    on="instrument_name",
+                    how="left",
+                )
+
+        if "expiry_ts" not in df.columns and "expiration_timestamp" in df.columns:
+            df["expiry_ts"] = pd.to_numeric(df["expiration_timestamp"], errors="coerce")
+        if "expiry_ts" not in df.columns:
+            df["expiry_ts"] = pd.NA
+        df["expiry_ts"] = pd.to_numeric(df["expiry_ts"], errors="coerce")
+
+        if "strike" not in df.columns:
+            df["strike"] = pd.NA
+        df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
+
+        if "cp" not in df.columns:
+            if "option_type" in df.columns:
+                df["cp"] = df["option_type"].map(_coerce_cp)
+            else:
+                df["cp"] = pd.NA
+
+        market_ts_ref, market_ts_ref_method = _market_ts_ref_info(
+            df,
+            snap,
+            method=str(self.market_ts_ref_method),
+        )
+        snapshot_market_ts = int(market_ts_ref) if market_ts_ref is not None else None
+
+        underlying_field = self.coords_cfg.get("underlying_field") or atm_def
+        underlying_ref = _resolve_underlying(df, str(underlying_field))
+        atm_ref = _resolve_underlying(df, str(atm_def))
+
+        if tau_def == "data_ts" or snapshot_market_ts is None:
+            tau_anchor = data_ts
+        else:
+            tau_anchor = snapshot_market_ts
+        tau_ms = pd.to_numeric(df["expiry_ts"], errors="coerce") - int(tau_anchor)
+        tau_ms = tau_ms.clip(lower=0)
+        df["tau_ms"] = tau_ms
+
+        if atm_ref is None or atm_ref == 0 or np.isnan(float(atm_ref)):
+            df["x"] = pd.NA
+        else:
+            if x_axis == "moneyness":
+                df["x"] = df["strike"] / float(atm_ref) - 1.0
+            else:
+                df["x"] = np.log(df["strike"] / float(atm_ref))
+        df["x_axis"] = str(x_axis)
+        df["atm_ref"] = atm_ref
+        df["underlying_ref"] = underlying_ref
+        df["snapshot_data_ts"] = int(data_ts)
+        df["snapshot_market_ts"] = snapshot_market_ts
+
+        meta = _empty_meta(snapshot_data_ts=data_ts, snapshot_market_ts=snapshot_market_ts, quality_mode=quality_mode)
+        meta["tau_anchor_ts"] = int(tau_anchor)
+        meta["tau_def"] = str(tau_def)
+        meta["market_ts_ref_method"] = market_ts_ref_method
+        if tau_def == "market_ts" and snapshot_market_ts is None:
+            _add_reason(meta, "MISSING_MARKET_TS", _severity_for("MISSING_MARKET_TS", quality_mode, self.reason_severity), {})
+        _set_selection_context(
+            meta,
+            tau_def=tau_def,
+            x_axis=x_axis,
+            atm_def=atm_def,
+            price_field=price_field,
+        )
+        _apply_quality_checks(self, df, meta, quality_mode, self.reason_severity)
+        _finalize_meta(meta, quality_mode)
+
+        aux = {"expiry_tau": df.groupby("expiry_ts")["tau_ms"].median()}
+        return df, meta, aux
+
+    def _min_n_per_slice(self) -> int:
+        return int(self.quality_cfg["min_n_per_slice"])
+
+    def _prune_caches(self) -> None:
+        buffer = getattr(self.cache, "buffer", None)
+        if buffer is None:
+            return
+        live = {int(s.data_ts) for s in buffer if s is not None}
+        for cache in (self._coords_cache, self._coords_aux_cache, self._select_tau_cache):
+            stale = [k for k in cache.keys() if int(k[0]) not in live]
+            for k in stale:
+                cache.pop(k, None)
+
+    # ------------------------------------------------------------------
+    # vNext selection + coord APIs
+    # ------------------------------------------------------------------
+
+    def coords_frame(
+        self,
+        ts: int | None = None,
+        *,
+        tau_def: str | None = None,
+        x_axis: str | None = None,
+        atm_def: str | None = None,
+        price_field: str | None = None,
+        quality_mode: str | None = None,
+        drop_aux: bool | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        snap = self.get_snapshot(ts)
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        if snap is None:
+            meta = _empty_meta(snapshot_data_ts=None, snapshot_market_ts=None, quality_mode=mode)
+            _add_reason(meta, "MISSING_FRAME", _severity_for("MISSING_FRAME", mode, self.reason_severity), {})
+            _finalize_meta(meta, mode)
+            return pd.DataFrame(), meta
+        tau_def = tau_def or self.coords_cfg.get("tau_def")
+        x_axis = x_axis or self.coords_cfg.get("x_axis")
+        atm_def = atm_def or self.coords_cfg.get("atm_def")
+        price_field = price_field or self.coords_cfg.get("price_field")
+        if tau_def is None or x_axis is None or atm_def is None or price_field is None:
+            raise ValueError("option_chain coords config missing required fields")
+        tau_def_s = str(tau_def)
+        x_axis_s = str(x_axis)
+        atm_def_s = str(atm_def)
+        price_field_s = str(price_field)
+        use_drop_aux = True if drop_aux is None else bool(drop_aux)
+        key = (int(snap.data_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
+        cached = self._coords_cache.get(key)
+        if cached is not None:
+            return cached
+        coords_df, meta, aux = self._coords_frame_uncached(
+            snap,
+            tau_def=tau_def_s,
+            x_axis=x_axis_s,
+            atm_def=atm_def_s,
+            price_field=price_field_s,
+            quality_mode=mode,
+            drop_aux=use_drop_aux,
+        )
+        self._coords_cache[key] = (coords_df, meta)
+        self._coords_aux_cache[key] = aux
+        return coords_df, meta
+
+    def select_tau(
+        self,
+        ts: int | None = None,
+        *,
+        tau_ms: int,
+        method: str | None = None,
+        quality_mode: str | None = None,
+        tau_def: str | None = None,
+        term_bucket_ms: int | None = None,
+        max_bucket_hops: int | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        method = method or self.selection_cfg.get("method")
+        tau_def = tau_def or self.coords_cfg.get("tau_def")
+        if method is None or tau_def is None:
+            raise ValueError("option_chain selection config missing required fields")
+        method_s = str(method)
+        tau_def_s = str(tau_def)
+        tb = int(term_bucket_ms) if term_bucket_ms is not None else int(self.term_bucket_ms)
+        hops = int(max_bucket_hops) if max_bucket_hops is not None else int(self.quality_cfg["max_bucket_hops"])
+        coords_df, base_meta = self.coords_frame(
+            ts,
+            tau_def=tau_def_s,
+            x_axis=self.coords_cfg.get("x_axis"),
+            atm_def=self.coords_cfg.get("atm_def"),
+            price_field=self.coords_cfg.get("price_field"),
+            quality_mode=mode,
+        )
+        meta = _clone_meta(base_meta)
+        _set_selection_context(meta, method=method_s, tau_ms=int(tau_ms), term_bucket_ms=tb, tau_def=tau_def_s)
+        if coords_df is None or coords_df.empty:
+            _add_reason(meta, "EMPTY_CHAIN", _severity_for("EMPTY_CHAIN", mode, self.reason_severity), {})
+            _finalize_meta(meta, mode)
+            return pd.DataFrame(), meta
+
+        snap_ts = meta.get("snapshot_data_ts")
+        if snap_ts is None:
+            snap_ts = int(getattr(self.get_snapshot(ts), "data_ts", 0) or 0)
+        cache_key = (int(snap_ts), int(tau_ms), method_s, tb, mode, tau_def_s)
+        cached_sel = self._select_tau_cache.get(cache_key)
+        if cached_sel is not None:
+            return _apply_selection_slice(
+                coords_df,
+                meta,
+                cached_sel,
+                mode,
+                min_n_per_slice=self._min_n_per_slice(),
+                reason_severity=self.reason_severity,
+            )
+
+        aux_key = (
+            int(snap_ts),
+            tau_def_s,
+            "log_moneyness",
+            "underlying_price",
+            "mark_price",
+            True,
+            mode,
+        )
+        aux = self._coords_aux_cache.get(aux_key, {})
+        expiry_tau = aux.get("expiry_tau")
+        if expiry_tau is None:
+            expiry_tau = coords_df.groupby("expiry_ts")["tau_ms"].median()
+
+        expiry_tau = expiry_tau.dropna()
+        if expiry_tau.empty:
+            _add_reason(
+                meta,
+                "EXPIRY_SELECTION_AMBIGUOUS",
+                _severity_for("EXPIRY_SELECTION_AMBIGUOUS", mode, self.reason_severity),
+                {},
+            )
+            _finalize_meta(meta, mode)
+            return pd.DataFrame(), meta
+
+        target_tau = int(tau_ms)
+        bucket_key = (target_tau // tb) * tb if tb > 0 else 0
+        bucketed = ((expiry_tau // tb) * tb) if tb > 0 else expiry_tau * 0
+        candidate_mask = bucketed == bucket_key
+        if not bool(candidate_mask.any()):
+            if hops > 0 and tb > 0:
+                for hop in range(1, hops + 1):
+                    lower = bucket_key - hop * tb
+                    upper = bucket_key + hop * tb
+                    candidate_mask = (bucketed == lower) | (bucketed == upper)
+                    if bool(candidate_mask.any()):
+                        break
+        candidates = expiry_tau[candidate_mask] if bool(candidate_mask.any()) else expiry_tau
+
+        selected_expiries: list[int] = []
+        weights: list[float] = []
+        if method == "bracket":
+            below = candidates[candidates <= target_tau]
+            above = candidates[candidates >= target_tau]
+            lower_tau = below.max() if not below.empty else None
+            upper_tau = above.min() if not above.empty else None
+            if lower_tau is None and upper_tau is None:
+                _add_reason(
+                    meta,
+                    "EXPIRY_SELECTION_AMBIGUOUS",
+                    _severity_for("EXPIRY_SELECTION_AMBIGUOUS", mode, self.reason_severity),
+                    {},
+                )
+                _finalize_meta(meta, mode)
+                return pd.DataFrame(), meta
+            if lower_tau is None:
+                selected_expiries = [int(above.idxmin())]
+                weights = [1.0]
+            elif upper_tau is None:
+                selected_expiries = [int(below.idxmax())]
+                weights = [1.0]
+            else:
+                lower_expiry = int(below.idxmax())
+                upper_expiry = int(above.idxmin())
+                if upper_expiry == lower_expiry or int(upper_tau) == int(lower_tau):
+                    selected_expiries = [lower_expiry]
+                    weights = [1.0]
+                else:
+                    w_upper = (target_tau - int(lower_tau)) / float(int(upper_tau) - int(lower_tau))
+                    w_upper = max(0.0, min(1.0, w_upper))
+                    w_lower = 1.0 - w_upper
+                    selected_expiries = [lower_expiry, upper_expiry]
+                    weights = [w_lower, w_upper]
+        else:
+            nearest = (candidates - target_tau).abs()
+            expiry = int(nearest.idxmin())
+            selected_expiries = [expiry]
+            weights = [1.0]
+
+        tau_errors = [abs(int(expiry_tau.loc[ex]) - target_tau) for ex in selected_expiries]
+        max_tau_error_ms = int(self.quality_cfg["max_tau_error_ms"])
+        if tau_errors and max(tau_errors) > max_tau_error_ms:
+            _add_reason(
+                meta,
+                "EXPIRY_SELECTION_AMBIGUOUS",
+                _severity_for("EXPIRY_SELECTION_AMBIGUOUS", mode, self.reason_severity),
+                {"max_tau_error_ms": max_tau_error_ms, "tau_error_ms": max(tau_errors)},
+            )
+
+        selection = {
+            "selected_expiries": selected_expiries,
+            "weights": weights,
+            "tau_target_ms": int(target_tau),
+        }
+        self._select_tau_cache[cache_key] = selection
+        return _apply_selection_slice(
+            coords_df,
+            meta,
+            selection,
+            mode,
+            min_n_per_slice=self._min_n_per_slice(),
+            reason_severity=self.reason_severity,
+        )
+
+    def select_point(
+        self,
+        ts: int | None = None,
+        *,
+        tau_ms: int,
+        x: float,
+        x_axis: str | None = None,
+        method: str | None = None,
+        interp: str | None = None,
+        cp_policy: str | None = None,
+        quality_mode: str | None = None,
+        price_field: str | None = None,
+        atm_def: str | None = None,
+        tau_def: str | None = None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        cp_policy = cp_policy or self.coords_cfg.get("cp_policy")
+        if cp_policy not in {"same", "either"}:
+            cp_policy = "same"
+        method = method or self.selection_cfg.get("method")
+        interp = interp or self.selection_cfg.get("interp")
+        if interp is None:
+            raise ValueError("option_chain selection config missing interp")
+        x_axis = x_axis or self.coords_cfg.get("x_axis")
+        price_field = price_field or self.coords_cfg.get("price_field")
+        atm_def = atm_def or self.coords_cfg.get("atm_def")
+        tau_def = tau_def or self.coords_cfg.get("tau_def")
+        if method is None or interp is None or x_axis is None or price_field is None or atm_def is None or tau_def is None:
+            raise ValueError("option_chain selection/coords config missing required fields")
+        method_s = str(method)
+        interp_s = str(interp)
+        x_axis_s = str(x_axis)
+        price_field_s = str(price_field)
+        atm_def_s = str(atm_def)
+        tau_def_s = str(tau_def)
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        coords_df, meta = self.coords_frame(
+            ts,
+            tau_def=tau_def_s,
+            x_axis=x_axis_s,
+            atm_def=atm_def_s,
+            price_field=price_field_s,
+            quality_mode=mode,
+        )
+        if coords_df is None or coords_df.empty:
+            _add_reason(meta, "EMPTY_CHAIN", _severity_for("EMPTY_CHAIN", mode, self.reason_severity), {})
+            _finalize_meta(meta, mode)
+            return None, meta
+        tau_slice, meta_tau = self.select_tau(
+            ts,
+            tau_ms=int(tau_ms),
+            method=method_s,
+            quality_mode=mode,
+            tau_def=tau_def_s,
+        )
+        meta = _merge_meta(meta, meta_tau)
+        if tau_slice is None or tau_slice.empty:
+            _add_reason(
+                meta,
+                "COVERAGE_LOW",
+                _severity_for("COVERAGE_LOW", mode, self.reason_severity),
+                {"min_n": self._min_n_per_slice()},
+            )
+            _finalize_meta(meta, mode)
+            return None, meta
+        point, meta_point = _select_point_from_slice(
+            tau_slice,
+            x=float(x),
+            x_axis=x_axis_s,
+            interp=interp_s,
+            price_field=price_field_s,
+            cp_policy=cp_policy,
+        )
+        meta = _merge_meta(meta, meta_point)
+        _finalize_meta(meta, mode)
+        return point, meta
+
+    def available_terms(
+        self,
+        ts: int | None = None,
+        *,
+        term_bucket_ms: int | None = None,
+        quality_mode: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        tb = int(term_bucket_ms) if term_bucket_ms is not None else int(self.term_bucket_ms)
+        coords_df, meta = self.coords_frame(ts, quality_mode=mode)
+        if coords_df is None or coords_df.empty:
+            _add_reason(meta, "EMPTY_CHAIN", _severity_for("EMPTY_CHAIN", mode, self.reason_severity), {})
+            _finalize_meta(meta, mode)
+            return pd.DataFrame(), meta
+        grouped = coords_df.groupby("expiry_ts")
+        rows = []
+        for expiry_ts, group in grouped:
+            tau_ms = int(pd.to_numeric(group["tau_ms"], errors="coerce").dropna().median()) if not group.empty else 0
+            term_key = (tau_ms // tb) * tb if tb > 0 else 0
+            expiry_val = _to_int_scalar(expiry_ts)
+            rows.append(
+                {
+                    "expiry_ts": expiry_val,
+                    "tau_ms": int(tau_ms),
+                    "term_key_ms": int(term_key),
+                    "n_contracts": int(len(group)),
+                    "coverage_ratio": 1.0 if len(group) > 0 else 0.0,
+                    "tradable_ratio": 1.0 if meta.get("tradable") else 0.0,
+                    "staleness_ms": meta.get("staleness_ms"),
+                }
+            )
+        df = pd.DataFrame(rows)
+        _finalize_meta(meta, mode)
+        return df, meta
+
+    def resolve_underlying(
+        self,
+        ts: int | None = None,
+        *,
+        field: str | None = None,
+        quality_mode: str | None = None,
+    ) -> tuple[float | None, dict[str, Any]]:
+        field = field or str(self.coords_cfg.get("underlying_field"))
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        snap = self.get_snapshot(ts)
+        if snap is None:
+            meta = _empty_meta(snapshot_data_ts=None, snapshot_market_ts=None, quality_mode=mode)
+            _add_reason(meta, "MISSING_FRAME", _severity_for("MISSING_FRAME", mode, self.reason_severity), {})
+            _finalize_meta(meta, mode)
+            return None, meta
+        df = snap.frame
+        value = _resolve_underlying(df, field)
+        market_ts, market_ts_ref_method = _market_ts_ref_info(df, snap, method=str(self.market_ts_ref_method))
+        meta = _empty_meta(snapshot_data_ts=int(snap.data_ts), snapshot_market_ts=market_ts, quality_mode=mode)
+        meta["market_ts_ref_method"] = market_ts_ref_method
+        meta["reference"] = {"field": field}
+        if value is None:
+            _add_reason(
+                meta,
+                "MISSING_UNDERLYING_REF",
+                _severity_for("MISSING_UNDERLYING_REF", mode, self.reason_severity),
+                {"field": field},
+            )
+        _finalize_meta(meta, mode)
+        return value, meta
+
+    def resolve_atm(
+        self,
+        ts: int | None = None,
+        *,
+        atm_def: str | None = None,
+        underlying_field: str | None = None,
+        quality_mode: str | None = None,
+    ) -> tuple[float | None, dict[str, Any]]:
+        atm_def = atm_def or str(self.coords_cfg.get("atm_def"))
+        field = underlying_field or atm_def
+        value, meta = self.resolve_underlying(ts, field=field, quality_mode=quality_mode)
+        meta["reference"] = {"atm_def": atm_def, "field": field}
+        return value, meta
+
+    def window_for_term(
+        self,
+        term_key_ms: int,
+        n: int = 1,
+        *,
+        ts: int | None = None,
+        annotate: bool = True,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        ts = self._anchor_ts if ts is None and self._anchor_ts is not None else ts
+        base_ts = self.last_timestamp() if ts is None else int(ts)
+        if base_ts is None:
+            meta = _empty_meta(snapshot_data_ts=None, snapshot_market_ts=None, quality_mode=self.quality_mode)
+            _add_reason(meta, "MISSING_FRAME", _severity_for("MISSING_FRAME", self.quality_mode, self.reason_severity), {})
+            _finalize_meta(meta, self.quality_mode)
+            return pd.DataFrame(), meta
+        frames: list[pd.DataFrame] = []
+        meta = _empty_meta(snapshot_data_ts=base_ts, snapshot_market_ts=None, quality_mode=self.quality_mode)
+        if hasattr(self.cache, "window_for_term"):
+            for snap in self.cache.window_for_term(int(term_key_ms), int(n)):  # type: ignore[attr-defined]
+                if not annotate:
+                    frames.append(snap.frame)
+                else:
+                    view = OptionChainSnapshotView.for_term_bucket(
+                        base=snap,
+                        term_key_ms=int(term_key_ms),
+                        term_bucket_ms=int(self.term_bucket_ms),
+                    )
+                    frames.append(view.frame)
+        out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        _finalize_meta(meta, self.quality_mode)
+        return out, meta
+
+    def snapshot_view(
+        self,
+        *,
+        kind: str,
+        key: int,
+        ts: int | None = None,
+        annotate: bool = True,
+    ) -> OptionChainSnapshotView | None:
+        snap = self.get_snapshot(ts)
+        if snap is None:
+            return None
+        if kind == "expiry":
+            view = OptionChainSnapshotView.for_expiry(base=snap, expiry_ts=int(key))
+        elif kind == "term_bucket":
+            view = OptionChainSnapshotView.for_term_bucket(
+                base=snap,
+                term_key_ms=int(key),
+                term_bucket_ms=int(self.term_bucket_ms),
+            )
+        else:
+            return OptionChainSnapshotView(
+                base=snap,
+                frame_filter=lambda f: f,
+                slice_kind=str(kind),
+                slice_key=int(key),
+            )
+        return view if annotate else OptionChainSnapshotView(base=snap, frame_filter=lambda f: f)
+
+    def window_for_tau(
+        self,
+        ts_start: int,
+        ts_end: int,
+        *,
+        tau_ms: int,
+        step_ms: int,
+        method: str | None = None,
+        quality_mode: str | None = None,
+    ) -> list[OptionChainSnapshotView]:
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        method = method or self.selection_cfg.get("method")
+        out: list[OptionChainSnapshotView] = []
+        for ts in _iter_ts(int(ts_start), int(ts_end), int(step_ms)):
+            snap = self.get_snapshot(ts)
+            if snap is None:
+                continue
+            coords_df, meta = self.select_tau(ts, tau_ms=int(tau_ms), method=method, quality_mode=mode)
+            selection = meta.get("selection") or {}
+            selected = selection.get("selected_expiries") or []
+            view = OptionChainSnapshotView(
+                base=snap,
+                frame_filter=lambda f, xs=selected: f.loc[f["expiry_ts"].isin(xs)] if xs else _empty_df_like(f),
+                slice_kind="tau",
+                slice_key=int(tau_ms),
+                selection=selection,
+            )
+            out.append(view)
+        return out
+
+    def track_tau_point(
+        self,
+        *,
+        tau_ms: int,
+        x: float,
+        x_axis: str,
+        ts_start: int,
+        ts_end: int,
+        step_ms: int,
+        method: str | None = None,
+        interp: str | None = None,
+        quality_mode: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        method = method or self.selection_cfg.get("method")
+        interp = interp or self.selection_cfg.get("interp")
+        rows: list[dict[str, Any]] = []
+        roll_count = 0
+        missing = 0
+        prev_expiry = None
+        first_hard_ts = None
+        max_error = 0
+        for ts in _iter_ts(int(ts_start), int(ts_end), int(step_ms)):
+            point, meta = self.select_point(
+                ts,
+                tau_ms=int(tau_ms),
+                x=float(x),
+                x_axis=x_axis,
+                method=method,
+                interp=interp,
+                quality_mode=mode,
+            )
+            expiry_ts = point.get("expiry_ts") if point else None
+            tau_realized = point.get("tau_realized_ms") if point else None
+            tau_error = abs(int(tau_realized) - int(tau_ms)) if tau_realized is not None else None
+            if expiry_ts is not None and prev_expiry is not None and int(expiry_ts) != int(prev_expiry):
+                roll_count += 1
+            if expiry_ts is not None:
+                prev_expiry = int(expiry_ts)
+            if tau_error is not None:
+                max_error = max(max_error, int(tau_error))
+            if meta.get("state") == "HARD_FAIL" and first_hard_ts is None:
+                first_hard_ts = int(ts)
+            if point is None:
+                missing += 1
+            selection = meta.get("selection") or {}
+            selected_expiries = selection.get("selected_expiries") or []
+            weights = selection.get("weights") or []
+            selection_weight = None
+            if expiry_ts is not None and selected_expiries and weights:
+                try:
+                    idx = selected_expiries.index(int(expiry_ts))
+                    selection_weight = float(weights[idx]) if idx < len(weights) else None
+                except Exception:
+                    selection_weight = None
+            missing_reason = None
+            if point is None and meta.get("reasons"):
+                missing_reason = meta["reasons"][0].get("reason_code")
+            rows.append(
+                {
+                    "ts": int(ts),
+                    "expiry_ts_used": expiry_ts,
+                    "tau_ms_target": int(tau_ms),
+                    "tau_ms_actual": tau_realized,
+                    "selection_weight": selection_weight,
+                    "quality_state": meta.get("state"),
+                    "missing_reason": missing_reason,
+                    "tau_target_ms": int(tau_ms),
+                    "expiry_ts": expiry_ts,
+                    "tau_realized_ms": tau_realized,
+                    "tau_error_ms": tau_error,
+                    "x": float(x),
+                    "state": meta.get("state"),
+                    "tradable": meta.get("tradable"),
+                }
+            )
+        meta_out = {
+            "roll_count": roll_count,
+            "missing_steps": missing,
+            "max_tau_error_ms": max_error,
+            "first_hard_fail_ts": first_hard_ts,
+        }
+        return pd.DataFrame(rows), meta_out
+
+    def track_expiry_point(
+        self,
+        *,
+        expiry_ts: int,
+        x: float,
+        x_axis: str,
+        ts_start: int,
+        ts_end: int,
+        step_ms: int,
+        interp: str | None = None,
+        quality_mode: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        interp = interp or self.selection_cfg.get("interp")
+        rows: list[dict[str, Any]] = []
+        missing = 0
+        first_hard_ts = None
+        for ts in _iter_ts(int(ts_start), int(ts_end), int(step_ms)):
+            coords_df, meta = self.coords_frame(ts, quality_mode=mode)
+            if coords_df is None or coords_df.empty:
+                missing += 1
+                rows.append(
+                    {
+                        "ts": int(ts),
+                        "expiry_ts": int(expiry_ts),
+                        "tau_realized_ms": None,
+                        "x": float(x),
+                        "state": meta.get("state"),
+                        "tradable": meta.get("tradable"),
+                    }
+                )
+                continue
+            slice_df = coords_df.loc[coords_df["expiry_ts"] == int(expiry_ts)]
+            point, meta_point = _select_point_from_slice(
+                slice_df,
+                x=float(x),
+                x_axis=x_axis,
+                interp=str(interp),
+                price_field="mark_price",
+                cp_policy=str(self.coords_cfg.get("cp_policy")),
+            )
+            meta = _merge_meta(meta, meta_point)
+            if meta.get("state") == "HARD_FAIL" and first_hard_ts is None:
+                first_hard_ts = int(ts)
+            if point is None:
+                missing += 1
+            rows.append(
+                {
+                    "ts": int(ts),
+                    "expiry_ts": int(expiry_ts),
+                    "tau_realized_ms": point.get("tau_realized_ms") if point else None,
+                    "x": float(x),
+                    "state": meta.get("state"),
+                    "tradable": meta.get("tradable"),
+                }
+            )
+        meta_out = {"missing_steps": missing, "first_hard_fail_ts": first_hard_ts}
+        return pd.DataFrame(rows), meta_out
+
+    def track_point(self, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
+        return self.track_tau_point(**kwargs)
 
     def _set_gap_market(self, snap: OptionChainSnapshot, *, last_ts: int | None) -> None:
         # We do not mutate snapshot.market (snap is frozen). Gap classification is best-effort
@@ -711,161 +1566,3 @@ class OptionChainDataHandler(RealTimeDataHandler):
             ))
         )
 
-
-# ----------------------------------------------------------------------
-# helpers
-# ----------------------------------------------------------------------
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: str | None = None) -> IngestionTick:
-    data_ts = _infer_data_ts(payload)
-    return IngestionTick(
-        timestamp=int(data_ts),
-        data_ts=int(data_ts),
-        domain="option_chain",
-        symbol=symbol,
-        payload=payload,
-        source_id=source_id,
-    )
-
-
-def _infer_data_ts(payload: Mapping[str, Any]) -> int:
-    ts_any = payload.get("data_ts")
-    if ts_any is None:
-        raise ValueError("Option chain payload missing required data_ts (arrival-time authority)")
-    return _coerce_epoch_ms(ts_any)
-
-
-def _persist_option_chain_payload(persist, payload: Any, target_ts: int) -> None:
-    if isinstance(payload, Mapping):
-        data_ts_any = payload.get("data_ts") or target_ts
-        # Prefer frame (FileSource) then chain, then records (legacy REST) while avoiding DataFrame truthiness.
-        selected = None
-        saw_key = False
-        for key in ("frame", "chain", "records"):
-            if key in payload:
-                saw_key = True
-                selected = payload.get(key)
-                if selected is not None:
-                    break
-        if not saw_key or selected is None:
-            return
-        if isinstance(selected, list):
-            if len(selected) == 0:
-                return
-            df = pd.DataFrame(selected)
-        elif isinstance(selected, pd.DataFrame):
-            if selected.empty:
-                return
-            cols = list(selected.columns)
-            if set(cols).issubset({"arrival_ts", "data_ts", "fetch_step_ts"}) and not bool(selected.notna().any().any()):
-                return
-            df = selected
-        else:
-            df = pd.DataFrame(selected)
-        persist(df=df, data_ts=int(data_ts_any))
-        return
-    if isinstance(payload, pd.DataFrame):
-        persist(df=payload, data_ts=int(target_ts))
-        return
-    try:
-        df = pd.DataFrame(payload)
-    except Exception:
-        df = pd.DataFrame([])
-    persist(df=df, data_ts=int(target_ts))
-
-
-def _build_snapshot_from_payload(payload: Mapping[str, Any], *, symbol: str, market: MarketSpec) -> OptionChainSnapshot | None:
-    d = {str(k): v for k, v in payload.items()}
-
-    ts_any = d.get("data_ts")
-    if ts_any is None:
-        return None
-    ts = int(ts_any)
-
-    chain = d.get("chain")
-    if chain is None:
-        chain = d.get("frame")
-    if chain is None:
-        chain = d.get("records")
-
-    if isinstance(chain, list):
-        chain = pd.DataFrame(chain)
-
-    if not isinstance(chain, pd.DataFrame):
-        return None
-
-    try:
-        return OptionChainSnapshot.from_chain_aligned(
-            data_ts=ts,
-            chain=chain,
-            symbol=symbol,
-            market=market,
-            schema_version=int(d.get("schema_version") or 3),
-        )
-    except Exception:
-        return None
-
-
-def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
-    if lookback is None:
-        return None
-    if isinstance(lookback, dict):
-        window_ms = lookback.get("window_ms")
-        if window_ms is not None:
-            return int(window_ms)
-        bars = lookback.get("bars")
-        if bars is not None and interval_ms is not None:
-            return int(float(bars) * int(interval_ms))
-        return None
-    if isinstance(lookback, (int, float)):
-        if interval_ms is not None:
-            return int(float(lookback) * int(interval_ms))
-        return int(float(lookback))
-    if isinstance(lookback, str):
-        ms = to_interval_ms(lookback)
-        return int(ms) if ms is not None else None
-    return None
-
-
-def _coerce_lookback_bars(lookback: Any, interval_ms: int | None, max_bars: int | None) -> int | None:
-    if interval_ms is None or interval_ms <= 0:
-        return None
-    window_ms = _coerce_lookback_ms(lookback, interval_ms)
-    if window_ms is None:
-        return None
-    bars = max(1, int(math.ceil(int(window_ms) / int(interval_ms))))
-    if max_bars is not None:
-        bars = min(bars, int(max_bars))
-    return bars
-
-
-def _coerce_engine_mode(mode: Any) -> EngineMode | None:
-    if isinstance(mode, EngineMode):
-        return mode
-    if isinstance(mode, str):
-        try:
-            return EngineMode(mode)
-        except Exception:
-            return None
-    return None
-
-
-def _resolve_source_id(
-    *,
-    source_id: Any | None,
-    mode: EngineMode | None,
-    data_root: Any | None,
-    source: Any | None,
-) -> str | None:
-    if source_id is not None:
-        return str(source_id)
-    if mode == EngineMode.BACKTEST and data_root is not None:
-        return str(data_root)
-    if source is not None:
-        return str(source)
-    return None

@@ -44,11 +44,10 @@ class DummyDecision(DecisionBase):
 class DummyExecutionEngine(ExecutionEngineProto):
     def execute(
         self,
-        *,
-        target_position: float,
-        portfolio_state: dict,
-        primary_snapshots: dict,
         timestamp: int,
+        target_position: float,
+        portfolio_state: dict[str, object],
+        primary_snapshots: dict[str, object] | None,
     ) -> list[dict]:
         return []
 

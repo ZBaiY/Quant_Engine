@@ -7,7 +7,7 @@ from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 
 
 def test_option_chain_fuzzy_symbol_matching() -> None:
-    handler = OptionChainDataHandler(symbol="BTCUSDT", interval="1m", asset="BTC")
+    handler = OptionChainDataHandler(symbol="BTCUSDT", interval="1m", asset="BTC", preset="option_chain")
     ts1 = 1_700_000_000_000
     df = pd.DataFrame(
         [

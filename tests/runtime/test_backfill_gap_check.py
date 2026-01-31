@@ -353,6 +353,7 @@ def test_iv_surface_backfill_is_skipped() -> None:
         symbol="BTCUSDT",
         interval="5m",
         mode=EngineMode.MOCK,
+        preset="option_chain",
     )
     iv_handler = IVSurfaceDataHandler(
         symbol="BTCUSDT",

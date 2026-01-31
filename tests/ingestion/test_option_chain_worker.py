@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -9,7 +10,7 @@ import pytest
 import ingestion.option_chain.source as option_chain_source
 from ingestion.contracts.tick import IngestionTick
 from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
-from ingestion.option_chain.source import OptionChainFileSource
+from ingestion.option_chain.source import OptionChainFileSource, DeribitOptionChainRESTSource
 from ingestion.option_chain.worker import OptionChainWorker
 from ingestion.contracts.tick import _to_interval_ms
 
@@ -109,7 +110,7 @@ def test_option_chain_worker_backfill_persists_frame_payload(
     worker = OptionChainWorker(
         normalizer=normalizer,
         source=source,
-        fetch_source=_FetchSource(),
+        fetch_source=cast(DeribitOptionChainRESTSource, _FetchSource()),
         symbol=asset,
         interval=interval,
     )
@@ -144,7 +145,7 @@ def test_option_chain_worker_backfill_skips_empty_records(
     worker = OptionChainWorker(
         normalizer=normalizer,
         source=source,
-        fetch_source=_FetchSource(),
+        fetch_source=cast(DeribitOptionChainRESTSource, _FetchSource()),
         symbol=asset,
         interval=interval,
     )
@@ -177,7 +178,7 @@ def test_option_chain_worker_backfill_skips_empty_frame(
     worker = OptionChainWorker(
         normalizer=normalizer,
         source=source,
-        fetch_source=_FetchSource(),
+        fetch_source=cast(DeribitOptionChainRESTSource, _FetchSource()),
         symbol=asset,
         interval=interval,
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, cast
 
 import pytest
@@ -182,8 +182,8 @@ class DummyExecution:
         self,
         timestamp: int,
         target_position: float,
-        portfolio_state: dict,
-        primary_snapshots: dict | None,
+        portfolio_state: dict[str, Any],
+        primary_snapshots: dict[str, Any] | None,
     ) -> list:
         _record(self._trace, "execution")
         self.last_call = (int(timestamp), float(target_position), dict(portfolio_state))
@@ -259,13 +259,13 @@ class SpyEngine(StrategyEngine):
             interval="1m",
             symbol="BTCUSDT",
         )
-        self.ohlcv_handlers: dict[str, OHLCVHandlerProto] = {}
-        self.orderbook_handlers: dict[str, RealTimeDataHandler] = {}
-        self.option_chain_handlers: dict[str, RealTimeDataHandler] = {}
-        self.iv_surface_handlers: dict[str, RealTimeDataHandler] = {}
-        self.sentiment_handlers: dict[str, RealTimeDataHandler] = {}
-        self.trades_handlers: dict[str, RealTimeDataHandler] = {}
-        self.option_trades_handlers: dict[str, RealTimeDataHandler] = {}
+        self.ohlcv_handlers: Mapping[str, OHLCVHandlerProto] = {}
+        self.orderbook_handlers: Mapping[str, RealTimeDataHandler] = {}
+        self.option_chain_handlers: Mapping[str, RealTimeDataHandler] = {}
+        self.iv_surface_handlers: Mapping[str, RealTimeDataHandler] = {}
+        self.sentiment_handlers: Mapping[str, RealTimeDataHandler] = {}
+        self.trades_handlers: Mapping[str, RealTimeDataHandler] = {}
+        self.option_trades_handlers: Mapping[str, RealTimeDataHandler] = {}
         self.engine_snapshot = EngineSnapshot(
             timestamp=0,
             mode=EngineMode.BACKTEST,

@@ -204,7 +204,7 @@ async def test_replay_semantics_option_chain_1m_btc_parallel_stability(
 
     #### Test anti-lookahead for option chain handler ####
     
-    chain_handler = OptionChainDataHandler("BTC")
+    chain_handler = OptionChainDataHandler("BTC", preset="option_chain")
     anchors = [
         option_emitted[0].data_ts,
         option_emitted[len(option_emitted) // 2].data_ts,
@@ -291,7 +291,7 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
     monkeypatch.setattr(asyncio, "sleep", fast_sleep)
 
     # --- runtime handlers under test (production classes) ---
-    chain_handler = OptionChainDataHandler("BTC")
+    chain_handler = OptionChainDataHandler("BTC", preset="option_chain")
     ohlcv_handler = OHLCVDataHandler("BTCUSDT", interval="15m", cache={"maxlen": 10_000})
 
     # --- shared anchors updated by emit callbacks ---

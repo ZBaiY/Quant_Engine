@@ -27,7 +27,7 @@ class DummyDecision(DecisionBase):
 
 
 class DummyRisk(RiskBase):
-    def adjust(self, size: float, context: dict) -> float:
+    def adjust(self, size: float, context: dict[str, Any]) -> float:
         return float(size)
 
 

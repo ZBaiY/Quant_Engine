@@ -184,6 +184,7 @@ class OptionChainSnapshot(Snapshot):
     expiry_keys_ms: frozenset[int] | None = None
     term_keys_ms: dict[int, frozenset[int]] | None = None
     _frame_cache: pd.DataFrame | None = field(default=None, init=False, repr=False)
+    _market_ts_ref: int | None = field(default=None, init=False, repr=False)
 
     @staticmethod
     def _sort_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -384,6 +385,20 @@ class OptionChainSnapshot(Snapshot):
         object.__setattr__(self, "term_keys_ms", cached)
         return out
 
+    def get_market_ts_ref(self) -> int | None:
+        cached = getattr(self, "_market_ts_ref", None)
+        if cached is not None:
+            return cached
+        quote = self.quote_frame
+        if quote is None or quote.empty or "market_ts" not in quote.columns:
+            return None
+        xs = pd.to_numeric(quote["market_ts"], errors="coerce").dropna()
+        if xs.empty:
+            return None
+        ref = int(xs.median())
+        object.__setattr__(self, "_market_ts_ref", ref)
+        return ref
+
     @property
     def frame(self) -> pd.DataFrame:
         cached = getattr(self, "_frame_cache", None)
@@ -453,7 +468,16 @@ class OptionChainSnapshotView(OptionChainSnapshot):
     _frame_filter: Callable[[pd.DataFrame], pd.DataFrame]
     _frame_cache: pd.DataFrame | None
 
-    def __init__(self, *, base: OptionChainSnapshot, frame_filter: Callable[[pd.DataFrame], pd.DataFrame]):
+    def __init__(
+        self,
+        *,
+        base: OptionChainSnapshot,
+        frame_filter: Callable[[pd.DataFrame], pd.DataFrame],
+        slice_kind: str | None = None,
+        slice_key: int | None = None,
+        snapshot_market_ts: int | None = None,
+        selection: dict[str, Any] | None = None,
+    ):
         object.__setattr__(self, "_base", base)
         object.__setattr__(self, "_frame_filter", frame_filter)
         object.__setattr__(self, "_frame_cache", None)
@@ -464,7 +488,6 @@ class OptionChainSnapshotView(OptionChainSnapshot):
         object.__setattr__(self, "domain", base.domain)
         object.__setattr__(self, "schema_version", base.schema_version)
 
-        # Preserve optional fields (e.g., arrival_ts) when present on the base snapshot.
         for k, v in getattr(base, "__dict__", {}).items():
             if k in {"data_ts", "symbol", "market", "domain", "schema_version"}:
                 continue
@@ -474,6 +497,12 @@ class OptionChainSnapshotView(OptionChainSnapshot):
                 object.__setattr__(self, k, v)
             except Exception:
                 pass
+        object.__setattr__(self, "slice_kind", slice_kind)
+        object.__setattr__(self, "slice_key", slice_key)
+        if snapshot_market_ts is None:
+            snapshot_market_ts = base.get_market_ts_ref()
+        object.__setattr__(self, "snapshot_market_ts", snapshot_market_ts)
+        object.__setattr__(self, "selection", selection)
 
     @property
     def frame(self) -> pd.DataFrame:
@@ -485,9 +514,17 @@ class OptionChainSnapshotView(OptionChainSnapshot):
                 view = self._base.frame
             view = view.copy()
             view["snapshot_data_ts"] = int(self._base.data_ts)
-            arrival_ts = getattr(self._base, "arrival_ts", None)
-            if arrival_ts is not None:
-                view["snapshot_arrival_ts"] = int(arrival_ts)
+            view["snapshot_market_ts"] = getattr(self, "snapshot_market_ts", None)
+            view["slice_kind"] = getattr(self, "slice_kind", None)
+            view["slice_key"] = getattr(self, "slice_key", None)
+            selection = getattr(self, "selection", None)
+            if selection:
+                selected = selection.get("selected_expiries") or []
+                weights = selection.get("weights") or []
+                if selected:
+                    weight_map = {int(ex): float(w) for ex, w in zip(selected, weights)}
+                    if "expiry_ts" in view.columns:
+                        view["selection_weight"] = view["expiry_ts"].map(weight_map).astype("float64")
             object.__setattr__(self, "_frame_cache", view)
             return view
         return cached
@@ -496,8 +533,8 @@ class OptionChainSnapshotView(OptionChainSnapshot):
     def for_expiry(cls, *, base: OptionChainSnapshot, expiry_ts: int) -> "OptionChainSnapshotView":
         ex = int(expiry_ts)
         if ex not in base.get_expiry_keys_ms():
-            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f))
-        return cls(base=base, frame_filter=lambda f: _slice_frame_for_expiry(f, expiry_ts=ex))
+            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f), slice_kind="expiry", slice_key=ex)
+        return cls(base=base, frame_filter=lambda f: _slice_frame_for_expiry(f, expiry_ts=ex), slice_kind="expiry", slice_key=ex)
 
     @classmethod
     def for_term_bucket(
@@ -511,7 +548,7 @@ class OptionChainSnapshotView(OptionChainSnapshot):
         tk = int(term_key_ms)
         tb = int(term_bucket_ms)
         if tk not in base.get_term_keys_ms(tb):
-            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f))
+            return cls(base=base, frame_filter=lambda f: _empty_frame_like(f), slice_kind="term_bucket", slice_key=tk)
         return cls(
             base=base,
             frame_filter=lambda f: _slice_frame_for_term_bucket(
@@ -520,4 +557,6 @@ class OptionChainSnapshotView(OptionChainSnapshot):
                 term_key_ms=tk,
                 term_bucket_ms=tb,
             ),
+            slice_kind="term_bucket",
+            slice_key=tk,
         )

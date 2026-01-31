@@ -1,0 +1,371 @@
+OptionChainDataHandler: Required Capabilities (vNext)
+====================================================
+
+Scope
+-----
+OptionChainDataHandler is a coordinate-indexing and slicing layer, not a curve/IV computation layer.
+All numerical construction (implied vol, smile, surface, skew, interpolation/smoothing, arbitrage checks)
+belongs in IV handlers (e.g., IVSurfaceDataHandler).
+
+OptionChainDataHandler responsibilities:
+- Normalize per-snapshot data into a coordinate table (tau/x/etc.) once per snapshot.
+- Provide deterministic selection + slicing APIs (tau selection, point selection, windowing).
+- Provide time-series tracking for economic coordinates across snapshots.
+- Emit auditable metadata (coverage/staleness/tradability/state + reason codes).
+
+
+1) Authoritative contracts
+-------------------------
+
+1.1 Raw ingest payload (normalizer/handler input)
+
+Supported raw payload shapes:
+A) Mapping with DataFrame:
+  {"data_ts": int, "frame": pd.DataFrame}
+B) Mapping with records:
+  {"data_ts": int, "records": list[dict]}
+Legacy/compat:
+  "chain" may appear as an alias of "frame"/"records"; prefer migrating to "frame".
+
+Hard requirements:
+- data_ts:int MUST exist (ordering / replay key; also the snapshot timestamp used by the engine).
+- data_ts == snapshot_data_ts.
+- One of frame/records/chain MUST exist and may be empty (empty is valid).
+
+
+Raw DataFrame minimal columns:
+- instrument_name (required; otherwise the row is unusable)
+- expiry: at least one of {expiration_timestamp, expiry_ts} (required for tau/term)
+- strike and cp identity: strike + one of {cp, option_type} (required for typical x-axis mapping)
+
+Other columns (quotes/greeks/underlying) are optional; missingness must be surfaced via quality gate.
+
+
+1.2 Snapshot schema (OptionChainSnapshot internal fact standard)
+
+The snapshot split is authoritative:
+- chain_frame contains _CHAIN_COLS
+- quote_frame contains _QUOTE_COLS
+- underlying_frame contains _UNDERLYING_COLS
+- aux_frame contains all remaining columns (unless drop_aux)
+
+Snapshot invariants:
+- data_ts:int is the ordering key (snapshot_data_ts).
+- frame objects exist (may be empty) and are pandas DataFrames.
+- chain_frame includes instrument_name column (possibly all None if upstream is broken).
+
+Market event-time is carried in quote_frame.market_ts and aggregated as market_ts_ref for computations (economic time for tau/term/IV).
+
+Recommended audit attributes (as snapshot attrs or injected view columns):
+- source_id:str? (optional)
+
+
+1.3 coords_frame output (OptionChainDataHandler -> IV handlers)
+
+coords_frame(ts, ...) returns (coords_df, meta) where coords_df is produced once per snapshot and cached.
+
+coords_df minimal columns:
+- instrument_name
+- expiry_ts (canonical column name; derived from expiration_timestamp if needed)
+- tau_ms (defined by tau_def)
+- strike
+- cp ("C"/"P")
+- x (defined by x_axis)
+- atm_ref (defined by atm_def)
+- snapshot_data_ts (authoritative injected column)
+
+coords_df recommended pass-through columns for IV usage (avoid extra merges):
+- bid_price, ask_price, mid_price, mark_price, last
+- mark_iv
+- open_interest
+- volume_24h, volume_usd_24h
+- market_ts
+- underlying_price, underlying_index
+
+meta MUST include:
+- state: OK | SOFT_DEGRADED | HARD_FAIL
+- reasons: list[reason objects]
+- coverage summary
+- staleness summary
+- tradability flags
+- selection_context (x_axis/atm_def/tau_def/price_field/quality_mode)
+- timestamps:
+  - snapshot_data_ts (required; ordering / anti-lookahead anchor)
+  - market_ts_ref (optional; aggregated market event-time used for tau/IV computations)
+
+Reason object shape (recommended):
+- reason_code: str
+- severity: HARD|SOFT
+- details: dict (numeric thresholds, counts, etc.)
+
+
+2) Quality gate
+---------------
+
+2.1 quality_mode
+
+quality_mode controls gate strictness and skip behavior:
+- STRICT: auditing/backtests; do not silently skip; missingness escalates quickly.
+- TRADING: production-like; may proceed with SOFT_DEGRADED but must mark tradable=False.
+- RESEARCH: exploratory; prefer returning empty outputs with meta over raising.
+
+2.2 State + tradability
+
+state in {OK, SOFT_DEGRADED, HARD_FAIL}
+tradable in {True, False} (not equivalent to state)
+
+Recommended composition:
+- Any HARD reason -> state=HARD_FAIL
+- Else any SOFT reason -> state=SOFT_DEGRADED
+- Else state=OK
+
+tradable recommended default:
+- tradable = (state==OK) AND not(WIDE_SPREAD) AND not(ZOMBIE_QUOTE) AND not(NO_QUOTES)
+
+2.3 Reason codes, triggers, thresholds, and priority
+
+All thresholds MUST be configurable (defaults below are initial safe values).
+
+Core reason_code set (vNext minimum):
+
+- MISSING_FRAME (HARD)
+  Trigger: raw payload has a selector key (frame/chain/records/raw) but its value is None, or payload has none of these keys.
+
+- EMPTY_CHAIN (SOFT; skippable)
+  Trigger: selected DataFrame/list exists but results in 0 rows after basic coercion.
+
+- MISSING_UNDERLYING (HARD in TRADING/STRICT; SOFT in RESEARCH)
+  Trigger: underlying_price missing or all-NaN in the snapshot (or cannot derive atm_ref by atm_def).
+
+- STALE_UNDERLYING (SOFT)
+  Trigger: snapshot_data_ts - market_ts_ref > stale_ms.
+  Default: stale_ms = 2 * interval_ms.
+  market_ts_ref default: median(market_ts) over rows with market_ts.
+
+- NO_QUOTES (HARD in TRADING/STRICT; SOFT in RESEARCH)
+  Trigger: all of {bid_price, ask_price, mid_price, mark_price} are missing/all-NaN across relevant slice.
+
+- WIDE_SPREAD (SOFT; sets tradable=False)
+  Trigger: for rows with bid and ask, spread_ratio = (ask-bid)/max(mid, eps) > spread_max.
+  Default: spread_max=0.05, eps=1e-12.
+
+- OI_ZERO (SOFT)
+  Trigger: open_interest==0 for > oi_zero_ratio of rows.
+  Default: oi_zero_ratio=0.95.
+
+- ZOMBIE_QUOTE (SOFT; may be HARD in STRICT)
+  Trigger: bid/ask present but (mid≈0 or mark_price≈0) AND open_interest≈0.
+  Default: mid_eps=1e-12, oi_eps=1e-12.
+
+- COVERAGE_LOW (SOFT; HARD in STRICT)
+  Trigger: for a selection request (tau/x), the slice has < min_n usable rows.
+  Default: min_n=20.
+
+- EXPIRY_SELECTION_AMBIGUOUS (SOFT; HARD in STRICT)
+  Trigger: select_tau cannot find expiries within max_tau_error_ms.
+  Default: max_tau_error_ms = 2 * term_bucket_ms.
+
+Priority / escalation:
+- HARD reasons dominate state.
+- SOFT reasons may accumulate; meta MUST carry all reasons.
+
+2.4 Skip behavior (performance + semantics)
+
+Empty payloads are common in option chains; skipping is allowed but must be auditable.
+
+Recommended policy:
+- If EMPTY_CHAIN occurs:
+  - TRADING/RESEARCH: allow skip (do not persist; do not push to cache), but emit lightweight log/meta event.
+  - STRICT: do not skip by default; return empty output with HARD_FAIL or raise only if explicitly configured.
+
+
+3) Coordinate definitions
+-------------------------
+
+3.1 tau_def
+
+Allowed:
+- tau_def="market_ts" (default): tau_ms = max(0, expiry_ts - market_ts_ref), with market_ts_ref recorded in meta
+- tau_def="data_ts": tau_ms = max(0, expiry_ts - snapshot_data_ts) (fallback / audit only)
+
+3.2 atm_def
+
+Allowed:
+- atm_def="underlying_price" (default)
+- atm_def="underlying_index"
+- atm_def="mid_underlying" (optional; discouraged; expensive)
+
+3.3 x_axis (minimum)
+
+Allowed:
+- x_axis="log_moneyness": x = log(strike / atm_ref)
+- x_axis="moneyness": x = strike/atm_ref - 1
+
+Delta-based x_axis = "delta" is deferred unless greeks are guaranteed reliable; if enabled, it must be treated as an optional fast-path.
+
+
+4) Selection algorithms (minimum spec)
+--------------------------------------
+
+4.1 select_tau(ts, tau_ms, method, quality_mode) -> (slice_df, meta)
+
+Two-stage model:
+- Pre-filter: use term_bucket_ms to find candidate expiries near tau_ms.
+- Selection: choose 1 expiry (nearest) or 2 expiries (bracket) and optionally weights.
+
+Minimum methods:
+- method="nearest_bucket": choose nearest term bucket, then nearest expiry within it.
+- method="bracket": choose the nearest expiry below tau and above tau, returning weights.
+
+Failure behavior:
+- If no expiries found within max_bucket_hops or max_tau_error_ms:
+  - TRADING/RESEARCH: return empty df + meta with COVERAGE_LOW/EXPIRY_SELECTION_AMBIGUOUS; caller may skip.
+  - STRICT: return empty df + meta with HARD_FAIL.
+
+4.2 select_point(ts, tau_ms, x, x_axis, method, interp, quality_mode) -> (point_or_None, meta)
+
+Pipeline:
+- coords = coords_frame(ts, ...)
+- tau_slice = select_tau(ts, tau_ms, ...)
+- Within tau_slice, select nearest x point(s) and interpolate.
+
+Minimum interp modes:
+- interp="nearest": choose nearest x.
+- interp="linear_x": linear interpolation between two bracketing x points (same cp by default).
+
+Return contract:
+- Never return a bare scalar.
+- Return (point_dict_or_None, meta).
+- point_dict should include at least: ts, expiry_ts, tau_target_ms, tau_realized_ms, x, value_fields.
+
+
+5) Cross-snapshot term tracking (time-axis semantics)
+-----------------------------------------------------
+
+Two distinct tracking APIs are required.
+
+5.1 Economic coordinate tracking (fixed tau; expiry may roll)
+
+track_tau_point(*, tau_ms, x, x_axis, ts_start, ts_end, step_ms, method, interp, quality_mode)
+- For each time step ts:
+  - call select_point(ts, tau_ms, x, ...)
+  - record selected expiry_ts, tau_realized_ms, tau_error_ms, roll_flag
+
+Output df recommended columns:
+- ts
+- tau_target_ms
+- expiry_ts
+- tau_realized_ms
+- tau_error_ms
+- x
+- value (iv/price/etc. filled by IV layer; handler may return quote/mark_iv fields)
+- state
+- tradable
+
+5.2 Contract/expiry tracking (fixed expiry; tau decays)
+
+track_expiry_point(*, expiry_ts, x, x_axis, ts_start, ts_end, step_ms, interp, quality_mode)
+- For each time step ts:
+  - slice the snapshot by expiry_ts, then select/interp on x
+  - tau_ms is derived output: max(0, expiry_ts - ts_ref)
+
+
+6) Cache keys and invalidation
+------------------------------
+
+6.1 coords_frame cache
+
+coords_frame MUST be cached per snapshot to avoid O(grid) recomputation.
+
+Recommended cache key:
+- (snapshot_data_ts, tau_def, x_axis, atm_def, price_field, drop_aux)
+If coords_frame includes filtering dependent on quality_mode, include quality_mode in the key.
+
+Invalidation:
+- When the snapshot falls out of the main snapshot cache (maxlen eviction), delete coords cache entries for that snapshot_data_ts.
+
+6.2 selection cache (optional)
+
+If surface/term-structure building calls select_tau repeatedly, cache:
+- key: (snapshot_data_ts, tau_ms, method, tau_def)
+- value: selected_expiries + weights + meta_stub
+Invalidate with snapshot eviction.
+
+
+7) Slice identity and provenance
+--------------------------------
+
+Any slice returned to consumers MUST carry identity.
+
+Required identity fields (as injected columns or meta):
+- snapshot_data_ts
+- slice_kind ("expiry" | "term_bucket" | "tau" | "point")
+- slice_key (expiry_ts or term_key_ms or tau_ms/x)
+- selected_expiries + weights when selection is involved
+
+This avoids the failure mode: "filter frame then lose which snapshot/selection produced it".
+
+
+8) Boundary with IVSurfaceDataHandler (call graph + meta propagation)
+--------------------------------------------------------------------
+
+IVSurfaceDataHandler is the numerical construction layer.
+It consumes only OptionChainDataHandler contracts and must propagate meta unchanged.
+
+Typical IV APIs:
+- iv_at(ts, *, tau_ms, x, x_axis, method, interp, quality_mode) -> (float|None, meta)
+- iv_smile(ts, *, tau_ms, x_axis, grid, method, interp, quality_mode) -> (pd.DataFrame, meta)
+- iv_term_structure(ts, *, x, x_axis, tau_grid_ms, method, interp, quality_mode) -> (pd.DataFrame, meta)
+
+Call order requirements:
+
+iv_at(...):
+- calls handler.select_point(...)
+  - select_point may call handler.select_tau(...) then handler.coords_frame(...)
+- IV layer computes numeric IV from selected row(s) (e.g., uses mark_iv or derives from price)
+- returns (iv_value_or_None, merged_meta) where merged_meta preserves all handler meta fields.
+
+iv_smile(...):
+- calls handler.select_tau(...)
+- calls handler.coords_frame(...) once (cached)
+- fills grid using handler.select_point(...) or IV-side vectorized interpolation over coords_df
+- returns (df_smile, meta) including selection drift/missingness.
+
+iv_term_structure(...):
+- loops tau in tau_grid_ms:
+  - calls handler.select_point(...)
+- stacks results; meta includes per-tau selection summary (expiries/weights) for audit.
+
+Meta propagation rule:
+- Handler meta is immutable provenance.
+- IV layer may add fields under a separate namespace (e.g., iv_meta.*) but MUST NOT overwrite/drop handler keys.
+
+
+9) Performance hazards (must be avoided)
+----------------------------------------
+
+These are common "bad habits" that silently slow the system or blow memory.
+They should be explicitly prohibited in code review and tests.
+
+- Avoid df.to_dict(orient="records") on large frames in hot paths (object storm; major slowdown).
+- Avoid boolean truthiness on DataFrames (raises; also hides selection bugs).
+  Use explicit is None checks.
+- Avoid repeated pd.concat in loops; collect slices then concat once.
+- Avoid repeated pd.to_numeric / dtype coercion inside per-point loops; do coercion once in coords_frame.
+- Avoid copying whole frames in selectors; copy only final outputs or small slices.
+- Avoid repeated merges; snapshot.frame should merge once and cache; coords_frame should reuse it.
+- Avoid per-row Python loops over the chain for selection; use vectorized filters/sorts.
+- Avoid logging full DataFrames; log only summarized shapes/dtypes/head and meta.
+- Avoid cross-thread mutation of shared DataFrame objects; treat yielded frames as immutable (especially when iterated via asyncio.to_thread).
+
+
+Appendix: Default config values (initial)
+-----------------------------------------
+
+- term_bucket_ms: 86_400_000 (1 day)
+- stale_ms: 2 * interval_ms
+- spread_max: 0.05
+- min_n_per_slice: 20
+- oi_zero_ratio: 0.95
+- max_tau_error_ms: 2 * term_bucket_ms
+- eps: 1e-12

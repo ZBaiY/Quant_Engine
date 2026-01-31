@@ -1,12 +1,335 @@
-OptionChainSnapshot   
-        ↓
-IVSurfaceHandler      
-  ├── SSVI.fit()
-  ├── SABR.fit()
-        ↓
-IVSurfaceSnapshot    
-        ↓
-Feature Layer
-  ├── MC_IV_Feature
-  ├── SkewStressFeature
-  ├── RegimeFeature
+OptionChainDataHandler: Required Capabilities (vNext)
+-----------------------------------------------------
+
+The OptionChainDataHandler is a *coordinate-indexing and slicing layer*, not a curve/IV computation layer. All numerical construction (such as implied volatility, smile, or surface calculations) lives in the IV handlers. OptionChainDataHandler is responsible only for mapping, selecting, and slicing option chain data according to coordinate and time queries, and for propagating relevant metadata.
+
+Required Functions
+------------------
+
+1. `coords_frame(ts, *, tau_def, x_axis, atm_def, price_field, quality_mode) -> (pd.DataFrame, dict)`
+   - Describe: generate per-snapshot coordinate-normalized table (tau, x, moneyness/delta), cached per snapshot; returns meta with coverage/staleness.
+
+2. `select_tau(ts, *, tau_ms, method, quality_mode) -> (pd.DataFrame, dict)`
+   - Describe: select expiry candidates for a target tau (may be 1–2 expiries with weights); term_bucket is only a coarse prefilter.
+
+3. `select_point(ts, *, tau_ms, x, x_axis, method, interp, quality_mode) -> (dict | None, dict)`
+   - Describe: select or interpolate a single coordinate point; never returns a bare scalar.
+
+4. `track_point(*, tau_ms, x, x_axis, ts_start, ts_end, step_ms, method, interp, quality_mode) -> (pd.DataFrame, dict)`
+   - Describe: time-series tracking of a fixed coordinate; meta records selection drift and missingness.
+
+5. `window_for_term(term_key_ms, n, *, annotate=True) -> (pd.DataFrame, dict)`
+   - Describe: candidate retrieval only; does not define term semantics.
+
+6. `snapshot_view(*, kind, key, annotate=True) -> OptionChainSnapshotView`
+   - Describe: every slice carries identity (`slice_kind`, `slice_key`, `snapshot_data_ts`).
+
+Term semantics
+--------------
+- `term_key_ms` is an acceleration index, not an economic definition.
+- Economic tau is defined by selection rules per snapshot.
+- Term tracking is implemented as repeated `select_tau` over time.
+
+Quality & audit contract
+------------------------
+Mandatory meta fields include:
+- timestamps: `snapshot_data_ts` (engine event-time; ingestion event-time anchor), `snapshot_market_ts` (quote event-time from frame column `market_ts`)
+- selection: expiries, weights
+- coverage metrics
+- staleness metrics
+- tradability flags
+- state enum: `OK | SOFT_DEGRADED | HARD_FAIL` with reason codes
+
+Boundary with IVSurfaceDataHandler
+----------------------------------
+- OptionChainDataHandler never computes IV, smiles, or surfaces.
+- IV handlers consume only the above contracts.
+- All numeric outputs must propagate meta unchanged.
+
+
+Boundary with IVSurfaceDataHandler
+----------------------------------
+The IV layer is the *numerical construction* layer. It consumes *only* the
+OptionChainDataHandler contracts (data + meta) and emits numeric outputs that
+carry meta forward unchanged.
+
+Naming note
+-----------
+Below we refer to typical IVSurfaceDataHandler-style APIs:
+- `iv_at(ts, *, tau_ms, x, x_axis, method, interp, quality_mode) -> (float|None, dict)`
+- `iv_smile(ts, *, tau_ms, x_axis, grid, method, interp, quality_mode) -> (pd.DataFrame, dict)`
+- `iv_term_structure(ts, *, x, x_axis, tau_grid_ms, method, interp, quality_mode) -> (pd.DataFrame, dict)`
+
+Exact names may differ in code; the dependency graph and call order must match.
+
+How IV functions call OptionChainDataHandler
+--------------------------------------------
+
+1) `iv_at(...)` (single point)
+   - Calls `select_point(ts, tau_ms=..., x=..., x_axis=..., method=..., interp=..., quality_mode=...)`.
+   - `select_point` internally may call:
+     - `select_tau(...)` to choose expiry candidates / weights for the target tau.
+     - `coords_frame(...)` to obtain a coordinate-normalized table for the snapshot.
+   - IV layer computes the numeric value from the selected row(s) (e.g., reads `mark_iv`, or derives IV from price fields if implemented in IV layer).
+   - Output MUST be `(iv_value_or_None, meta)` where `meta` is the handler meta merged with any IV-side numeric meta (but never dropping handler meta).
+
+2) `iv_smile(...)` (smile curve at fixed tau)
+   - Calls `select_tau(ts, tau_ms=..., method=..., quality_mode=...)`.
+   - Then calls `coords_frame(ts, ...)` once (cached per snapshot) and performs:
+     - For each `x` in `grid`: use `select_point(...)` OR vectorized interpolation over the coords table.
+       (Implementation choice is in IV layer; contract guarantees selection+meta.)
+   - Returns a DataFrame with at least columns:
+     - `x`, `iv` (or `iv_mid`), and any diagnostics fields you decide to standardize.
+   - Returns meta capturing:
+     - selection drift (expiry weights used), missing points, quality flags.
+
+3) `iv_term_structure(...)` (term structure at fixed x)
+   - For each `tau_ms` in `tau_grid_ms`:
+     - Call `select_point(ts, tau_ms=..., x=..., x_axis=..., ...)`.
+   - The handler provides *per-tau* selection and quality meta; IV layer stacks results.
+   - Returns a DataFrame with at least:
+     - `tau_ms`, `iv`, and optional diagnostics.
+   - Meta MUST include per-tau selection summary (expiries/weights) so downstream can audit roll/drift.
+
+4) `build_surface(ts, *, tau_grid_ms, x_grid, ...)` (surface snapshot)
+   - Recommended IV-layer pattern:
+     - Call `coords_frame(ts, ...)` once.
+     - For each `tau_ms`: call `select_tau(...)` (or a vectorized selector that reuses coords_frame).
+     - Fill an (tau,x) grid via `select_point(...)` or vectorized interpolation.
+   - The IV layer is responsible for any arbitrage checks / smoothing; the handler is responsible only
+     for consistent coordinate normalization + selection provenance.
+
+5) Time-series tracking (`iv_track_*`)
+   - IV layer uses `track_point(...)` when it needs *a fixed economic coordinate* across time:
+     - Example: `iv_track_point(tau_ms=30D, x=0.0 (ATM), ...)`.
+   - `track_point` returns a time series with meta describing selection drift, missingness,
+     and tradability changes; IV layer then computes any rolling stats/regime labels on top.
+
+What OptionChainDataHandler must provide for IV usage
+-----------------------------------------------------
+- Cheap repeated queries: `coords_frame` MUST be cached per snapshot to avoid O(grid) recomputation.
+- Deterministic selection: `select_tau` and `select_point` MUST be pure functions of
+  (snapshot, query params, quality_mode) and produce auditable meta.
+- Identity propagation: `snapshot_view` / `window_for_term(..., annotate=True)` MUST ensure every
+  sliced frame carries `snapshot_data_ts` and slice identity fields.
+
+Meta propagation rule
+---------------------
+- IV layer must treat handler meta as immutable provenance.
+- IV computations may add fields under a separate namespace (e.g. `iv_meta.*`) but MUST NOT
+  overwrite or drop handler fields like timestamps, selection, coverage, staleness, and state.
+
+Example call graphs (schematic)
+------------------------------
+
+`iv_at(ts,tau,x)`
+  -> handler.select_point(ts,tau,x)
+     -> handler.select_tau(ts,tau)
+     -> handler.coords_frame(ts,...)
+  -> IV numeric (read mark_iv or derive from price)
+  -> return (iv, meta)
+
+`iv_smile(ts,tau,grid)`
+  -> handler.select_tau(ts,tau)
+  -> handler.coords_frame(ts,...)
+  -> fill grid via (handler.select_point OR vectorized interp)
+  -> return (df_smile, meta)
+
+`iv_term_structure(ts,x,tau_grid)`
+  -> loop tau in tau_grid:
+       handler.select_point(ts,tau,x)
+  -> stack results
+  -> return (df_term, meta)
+
+
+Missing Handler Capabilities (Explicit Addendum)
+-----------------------------------------------
+
+This addendum enumerates **concrete handler-level capabilities** that are implied
+by the vNext design but not yet fully specified in the function list above.
+These are *not* IV computations; they are indexing, selection, identity, and
+audit primitives required to support stable cross-snapshot queries.
+
+### A. Term (tau) as a first-class cross-snapshot key
+
+The handler must explicitly support *economic tau tracking* across time, not
+just expiry- or bucket-based slicing.
+
+Required additions:
+
+1. `available_terms(ts, *, term_bucket_ms=None) -> (pd.DataFrame, dict)`
+   - Returns one row per available expiry at snapshot `ts`.
+   - Required columns:
+     - `expiry_ts`
+     - `tau_ms`
+     - `term_key_ms` (if bucketed)
+     - `n_contracts`
+     - `coverage_ratio`
+     - `tradable_ratio`
+     - `staleness_ms`
+   - Purpose: fast discovery of usable tau grid and QC visualization.
+
+2. `window_for_tau(ts_start, ts_end, *, tau_ms, step_ms, method, quality_mode)
+   -> Iterable[OptionChainSnapshotView]`
+   - Repeatedly applies `select_tau` across snapshots.
+   - Guarantees *stable tau intent* while allowing expiry roll.
+   - Each returned view MUST carry slice identity and selection meta.
+
+3. Strengthened `track_point(...)` contract
+   - Returned DataFrame MUST include:
+     - `ts`
+     - `expiry_ts_used`
+     - `tau_ms_target`
+     - `tau_ms_actual`
+     - `selection_weight`
+     - `quality_state`
+     - `missing_reason`
+   - Meta MUST aggregate:
+     - roll count
+     - average / max DTE error
+     - missing-step count
+     - first HARD_FAIL timestamp (if any)
+
+### B. Slice identity as a hard contract
+
+All handler-generated slices MUST preserve identity and provenance.
+
+Required behavior:
+
+- `snapshot_view(..., annotate=True)` MUST ensure the resulting frame includes:
+  - `slice_kind`
+  - `slice_key`
+  - `snapshot_data_ts`
+  - `snapshot_market_ts` (if available; propagated from frame column `market_ts`)
+- Identity fields must be present both:
+  - as DataFrame columns
+  - and as attributes on the `OptionChainSnapshotView` object
+
+This prevents downstream ambiguity when slices are concatenated or logged.
+
+### C. Coordinate normalization contract (coords_frame)
+
+`coords_frame(...)` is the *single authority* for coordinate mapping.
+
+Required guarantees:
+
+- Output DataFrame MUST include standardized coordinate columns:
+  - `expiry_ts`
+  - `tau_ms`
+  - `x`
+  - `x_axis`
+  - `atm_ref`
+  - `underlying_ref`
+- Raw chain/quote fields MUST remain row-aligned and accessible.
+- Result MUST be cached per snapshot (`snapshot_data_ts`) to avoid O(grid) recomputation.
+- Meta MUST include:
+  - coverage metrics
+  - staleness metrics
+  - quality state enum
+
+### D. ATM and reference resolution
+
+Add explicit reference helpers to avoid duplicated logic across IV code:
+
+1. `resolve_atm(ts, *, atm_def, underlying_field) -> (float|None, dict)`
+   - Encapsulates ATM definition (spot / mark / index / delivery).
+   - Meta MUST record reference source and staleness.
+
+2. `resolve_underlying(ts, *, field) -> (float|None, dict)`
+   - Single authority for underlying price selection.
+
+### E. Selection purity and determinism
+
+All selection helpers MUST be:
+
+- Pure functions of:
+  - snapshot data
+  - query parameters
+  - quality_mode
+- Free of side effects.
+- Deterministic under identical inputs.
+
+This is required for reproducibility, auditability, and backtest/live parity.
+
+### F. Quality propagation rules (handler side)
+
+Handler meta MUST always include, at minimum:
+
+- `snapshot_data_ts`
+- `snapshot_market_ts` (optional; from frame `market_ts`)
+- selection summary (expiries, weights)
+- coverage metrics
+- staleness metrics
+- tradability flags
+- state enum: `OK | SOFT_DEGRADED | HARD_FAIL`
+- reason codes
+
+The handler MUST NOT silently drop or coerce missing data; all degradation must
+be explicit in meta.
+
+---
+
+Clarification on term_key_ms
+----------------------------
+
+```
+term_key_ms is an acceleration index only.
+It is never an economic definition of maturity.
+
+Economic maturity (tau_ms) is defined per snapshot via selection rules.
+All cross-time term tracking MUST be implemented as repeated tau selection,
+never as bucket identity matching.
+```
+
+Performance pitfalls (handler/IV boundary)
+-----------------------------------------
+The option-chain path is high-row-count and high-call-frequency. The following patterns tend to
+silently introduce O(N×Q) behavior, excessive copying, or heavy Python-object materialization.
+Treat these as **anti-patterns** unless explicitly justified.
+
+A. Accidental O(N×Q) recomputation
+- Recomputing `coords_frame(...)` inside point/curve loops (e.g. per x-grid point) instead of
+  once per snapshot + cached by `(snapshot_data_ts, tau_def, x_axis, atm_def, price_field, quality_mode)`.
+- Performing `merge`, `sort_values`, `reset_index`, or expensive dtype coercions inside
+  `select_point(...)` / `select_tau(...)` rather than in `coords_frame(...)` (once per snapshot).
+- Calling `window_df_for_*` repeatedly in loops; prefer retrieving snapshots once, then a single concat.
+
+B. Over-copying / over-materialization
+- Converting DataFrames to Python objects (`to_dict(orient="records")`, `list[dict]` round-trips)
+  in hot paths. Keep the DataFrame fast path end-to-end.
+- Cascading `.copy()` / `reset_index(drop=True)` / `sort_values(...).reset_index(...)` across
+  multiple layers. Define the minimal “copy boundary” once (typically in normalizer/snapshot build).
+- Serializing full frames into logs/traces; always summarize (shape/dtypes/preview) for large frames.
+
+C. Non-vectorized pandas usage
+- Row-wise operations (`apply(axis=1)`, `iterrows`, `itertuples`) in coordinate mapping and selection.
+  All tau/x/ATM mapping should be vectorized.
+- Building outputs via incremental `pd.concat` in loops. Collect rows/frames in a list and concat once.
+- Repeating `pd.to_numeric(..., errors="coerce")`, `unique()`, `dropna()`, or `astype(int64)` per query.
+  Perform these once in `coords_frame(...)` and cache.
+
+D. “Fake indexing” pitfalls
+- Treating `term_key_ms` buckets as an economic maturity identity. Buckets are only coarse prefilters;
+  economic tau must be defined by per-snapshot selection rules and tracked via repeated selection.
+- Producing slices that lose identity (no `snapshot_data_ts`, no `slice_kind/slice_key`) causing
+  downstream code to re-join/merge provenance fields.
+
+E. Parsing and string work on hot paths
+- Parsing `instrument_name` (regex/date parsing) during query-time. Parse once during normalize and
+  store structured columns (expiry_ts, strike, cp) for downstream use.
+- Using `datetime.strptime` inside tight loops (file scans, per-step selection). Restrict to setup.
+
+F. Persistence/schema costs
+- Allowing `pa.Table.from_pandas` to infer schema repeatedly (especially with mixed/object columns
+  like dicts in `aux`). Prefer stable schemas and explicit alignment.
+- Writing many small parquet files (per-snapshot) without batching; IO can dominate runtime.
+
+G. Concurrency/lock amplification
+- Holding global writer locks around CPU-heavy transforms. Locks should guard only the minimal IO write.
+- Crossing thread boundaries with frames is OK, but avoid duplicated alignment/copy on both sides.
+
+Rule of thumb
+-------------
+If an operation is “once per snapshot” (merge/sort/parse/coordinate-map/type-normalize), do it in
+`coords_frame(...)` or snapshot construction and cache it. Never perform it “once per query” or
+“once per grid point”.

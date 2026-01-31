@@ -63,7 +63,7 @@ class WindowAnyFeature(FeatureChannelBase):
             return
         self._values = [float(snap.get_attr("close"))]
 
-    def output(self) -> list[float]:
+    def output(self) -> Any:  # type: ignore[override]
         return list(self._values)
 
 

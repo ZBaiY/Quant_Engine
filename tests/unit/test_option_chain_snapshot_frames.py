@@ -123,7 +123,7 @@ def test_option_chain_snapshot_splits_frames_and_chain_df_merges() -> None:
     assert "fetch_step_ts" in snap.aux_frame.columns
     assert "arrival_ts" in snap.aux_frame.columns
 
-    handler = OptionChainDataHandler(symbol="BTC", interval="1m")
+    handler = OptionChainDataHandler(symbol="BTC", interval="1m", preset="option_chain")
     tick = IngestionTick(
         timestamp=data_ts,
         data_ts=data_ts,

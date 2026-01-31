@@ -2,6 +2,7 @@
 import pytest
 
 from quant_engine.risk.engine import RiskEngine
+from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.rule_full import FullAllocation
 
 
@@ -18,8 +19,11 @@ def test_risk_projection_shortable_allows_negative():
 
 
 def test_risk_rejects_score_space_rule():
-    class DummyScoreRule:
+    class DummyScoreRule(RiskBase):
         RULE_SPACE = "intent"
+
+        def __init__(self, symbol: str = "BTCUSDT") -> None:
+            super().__init__(symbol=symbol)
 
         def adjust(self, size: float, context: dict) -> float:
             return size
