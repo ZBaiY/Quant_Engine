@@ -604,8 +604,7 @@ class OptionChainFileSource(Source):
                 snap = sub.reset_index(drop=True)
                 # Source contract: yield a Mapping[str, Any]
                 assert isinstance(ts, (int, float)), f"data_ts must be int/float, got {type(ts)!r}"
-                records = snap.to_dict(orient="records")
-                yield {"arrival_ts": int(ts), "data_ts": int(ts), "records": records}
+                yield {"arrival_ts": int(ts), "data_ts": int(ts), "frame": snap}
 
 
 class DeribitOptionChainRESTSource(Source):

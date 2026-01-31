@@ -743,11 +743,30 @@ def _infer_data_ts(payload: Mapping[str, Any]) -> int:
 def _persist_option_chain_payload(persist, payload: Any, target_ts: int) -> None:
     if isinstance(payload, Mapping):
         data_ts_any = payload.get("data_ts") or target_ts
-        records = payload.get("records") or payload.get("chain") or payload.get("frame") or []
-        if isinstance(records, pd.DataFrame):
-            df = records
+        # Prefer frame (FileSource) then chain, then records (legacy REST) while avoiding DataFrame truthiness.
+        selected = None
+        saw_key = False
+        for key in ("frame", "chain", "records"):
+            if key in payload:
+                saw_key = True
+                selected = payload.get(key)
+                if selected is not None:
+                    break
+        if not saw_key or selected is None:
+            return
+        if isinstance(selected, list):
+            if len(selected) == 0:
+                return
+            df = pd.DataFrame(selected)
+        elif isinstance(selected, pd.DataFrame):
+            if selected.empty:
+                return
+            cols = list(selected.columns)
+            if set(cols).issubset({"arrival_ts", "data_ts", "fetch_step_ts"}) and not bool(selected.notna().any().any()):
+                return
+            df = selected
         else:
-            df = pd.DataFrame(records)
+            df = pd.DataFrame(selected)
         persist(df=df, data_ts=int(data_ts_any))
         return
     if isinstance(payload, pd.DataFrame):

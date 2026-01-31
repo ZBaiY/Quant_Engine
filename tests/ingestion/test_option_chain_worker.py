@@ -76,3 +76,113 @@ async def test_option_chain_worker_run_emits_ticks_in_order(
 
     assert [tick.data_ts for tick in emitted] == [1_700_000_000_000, 1_700_000_001_000]
     assert all(isinstance(tick, IngestionTick) for tick in emitted)
+
+
+def test_option_chain_worker_backfill_persists_frame_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+
+    asset = "BTC"
+    interval = "1m"
+    df = pd.DataFrame(
+        [
+            {
+                "instrument_name": "BTC-1JAN24-10000-C",
+                "expiration_timestamp": 1_700_100_000_000,
+                "strike": 10_000,
+                "option_type": "call",
+            }
+        ]
+    )
+    data_ts = 1_700_000_000_000
+
+    class _FetchSource:
+        interval = "1m"
+
+        def backfill(self, start_ts: int, end_ts: int):
+            return [{"data_ts": data_ts, "frame": df}]
+
+    source = OptionChainFileSource(root=tmp_path / "raw" / "option_chain", asset=asset, interval=interval)
+    normalizer = DeribitOptionChainNormalizer(symbol=asset)
+    worker = OptionChainWorker(
+        normalizer=normalizer,
+        source=source,
+        fetch_source=_FetchSource(),
+        symbol=asset,
+        interval=interval,
+    )
+
+    count = worker.backfill(start_ts=data_ts, end_ts=data_ts, anchor_ts=data_ts)
+
+    assert count == 1
+
+
+def _count_parquet_files(root: Path) -> int:
+    return len(list(root.rglob("*.parquet"))) if root.exists() else 0
+
+
+def test_option_chain_worker_backfill_skips_empty_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+
+    asset = "BTC"
+    interval = "1m"
+    data_ts = 1_700_000_000_000
+
+    class _FetchSource:
+        interval = "1m"
+
+        def backfill(self, start_ts: int, end_ts: int):
+            return [{"data_ts": data_ts, "records": []}]
+
+    source = OptionChainFileSource(root=tmp_path / "raw" / "option_chain", asset=asset, interval=interval)
+    normalizer = DeribitOptionChainNormalizer(symbol=asset)
+    worker = OptionChainWorker(
+        normalizer=normalizer,
+        source=source,
+        fetch_source=_FetchSource(),
+        symbol=asset,
+        interval=interval,
+    )
+
+    count = worker.backfill(start_ts=data_ts, end_ts=data_ts, anchor_ts=data_ts)
+
+    assert count == 0
+    assert _count_parquet_files(tmp_path / "raw" / "option_chain") == 0
+
+
+def test_option_chain_worker_backfill_skips_empty_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+
+    asset = "BTC"
+    interval = "1m"
+    data_ts = 1_700_000_000_000
+    empty_df = pd.DataFrame([])
+
+    class _FetchSource:
+        interval = "1m"
+
+        def backfill(self, start_ts: int, end_ts: int):
+            return [{"data_ts": data_ts, "frame": empty_df}]
+
+    source = OptionChainFileSource(root=tmp_path / "raw" / "option_chain", asset=asset, interval=interval)
+    normalizer = DeribitOptionChainNormalizer(symbol=asset)
+    worker = OptionChainWorker(
+        normalizer=normalizer,
+        source=source,
+        fetch_source=_FetchSource(),
+        symbol=asset,
+        interval=interval,
+    )
+
+    count = worker.backfill(start_ts=data_ts, end_ts=data_ts, anchor_ts=data_ts)
+
+    assert count == 0
+    assert _count_parquet_files(tmp_path / "raw" / "option_chain") == 0

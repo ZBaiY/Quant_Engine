@@ -17,7 +17,7 @@ from ingestion.option_chain.source import (
 )
 import ingestion.option_chain.source as option_chain_source
 from quant_engine.utils.asyncio import iter_source, source_kind
-from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn, log_throttle, throttle_key
 from ingestion.utils import resolve_poll_interval_ms
 
 _DOMAIN = "option_chain"
@@ -29,6 +29,70 @@ def _as_primitive(x: Any) -> str | int | float | bool | None:
         return str(x)
     except Exception:
         return "<unrepr>"
+
+_EMPTY_PAYLOAD_LOG_EVERY_S = 5.0
+_EMPTY_BOOKKEEPING_COLS = {"arrival_ts", "data_ts", "fetch_step_ts"}
+
+def _select_payload_value(payload: Mapping[str, Any], *, keys: tuple[str, ...]) -> tuple[Any, bool]:
+    selected = None
+    saw_key = False
+    for key in keys:
+        if key in payload:
+            saw_key = True
+            selected = payload.get(key)
+            if selected is not None:
+                break
+    return selected, saw_key
+
+def _is_empty_payload(raw: Any) -> tuple[bool, dict[str, Any]]:
+    info: dict[str, Any] = {
+        "reason": "empty_payload",
+        "kind": None,
+        "shape": None,
+        "columns_sample": None,
+    }
+    if isinstance(raw, Mapping):
+        # Prefer frame (FileSource) then chain, then records (legacy REST).
+        selected, saw_key = _select_payload_value(raw, keys=("frame", "chain", "records"))
+        info["data_ts"] = _as_primitive(raw.get("data_ts"))
+        if not saw_key:
+            return False, info
+        if selected is None:
+            info["kind"] = "none"
+            return True, info
+        if isinstance(selected, list):
+            info["kind"] = "list"
+            info["shape"] = [len(selected)]
+            return len(selected) == 0, info
+        if isinstance(selected, option_chain_source.pd.DataFrame):
+            info["kind"] = "df"
+            info["shape"] = [int(selected.shape[0]), int(selected.shape[1])]
+            cols = list(selected.columns)
+            info["columns_sample"] = [str(c) for c in cols[:6]]
+            if selected.empty:
+                return True, info
+            if set(cols).issubset(_EMPTY_BOOKKEEPING_COLS):
+                has_data = bool(selected.notna().any().any())
+                return not has_data, info
+            return False, info
+        info["kind"] = type(selected).__name__
+        return False, info
+    if isinstance(raw, option_chain_source.pd.DataFrame):
+        info["kind"] = "df"
+        info["shape"] = [int(raw.shape[0]), int(raw.shape[1])]
+        cols = list(raw.columns)
+        info["columns_sample"] = [str(c) for c in cols[:6]]
+        if raw.empty:
+            return True, info
+        if set(cols).issubset(_EMPTY_BOOKKEEPING_COLS):
+            has_data = bool(raw.notna().any().any())
+            return not has_data, info
+        return False, info
+    if isinstance(raw, list):
+        info["kind"] = "list"
+        info["shape"] = [len(raw)]
+        return len(raw) == 0, info
+    return False, info
 
 class OptionChainWorker(IngestWorker):
     """
@@ -146,11 +210,30 @@ class OptionChainWorker(IngestWorker):
             if isinstance(payload, Mapping):
                 ts_any = payload.get("data_ts") or data_ts
                 ts = option_chain_source._coerce_epoch_ms(ts_any) if ts_any is not None else option_chain_source._now_ms()
-                records = payload.get("records") or payload.get("chain") or payload.get("frame") or []
-                if isinstance(records, option_chain_source.pd.DataFrame):
-                    df = records
+                # Prefer frame (FileSource) then chain, then records (legacy REST) while avoiding DataFrame truthiness.
+                selected = None
+                saw_key = False
+                for key in ("frame", "chain", "records"):
+                    if key in payload:
+                        saw_key = True
+                        selected = payload.get(key)
+                        if selected is not None:
+                            break
+                if not saw_key or selected is None:
+                    return
+                if isinstance(selected, list):
+                    if len(selected) == 0:
+                        return
+                    df = option_chain_source.pd.DataFrame(selected)
+                elif isinstance(selected, option_chain_source.pd.DataFrame):
+                    if selected.empty:
+                        return
+                    cols = list(selected.columns)
+                    if set(cols).issubset(_EMPTY_BOOKKEEPING_COLS) and not bool(selected.notna().any().any()):
+                        return
+                    df = selected
                 else:
-                    df = option_chain_source.pd.DataFrame(records)
+                    df = option_chain_source.pd.DataFrame(selected)
             elif isinstance(payload, option_chain_source.pd.DataFrame):
                 ts = int(data_ts) if data_ts is not None else option_chain_source._now_ms()
                 df = payload
@@ -174,6 +257,20 @@ class OptionChainWorker(IngestWorker):
 
         count = 0
         for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
+            is_empty, info = _is_empty_payload(raw)
+            if is_empty:
+                throttle_id = throttle_key("option_chain.empty_payload", self._symbol, "backfill")
+                if log_throttle(throttle_id, _EMPTY_PAYLOAD_LOG_EVERY_S):
+                    log_debug(
+                        self._logger,
+                        "ingestion.empty_payload",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        source=getattr(self, "_source_id", None),
+                        **info,
+                    )
+                continue
             raw_for_norm: Any = raw
             if isinstance(raw, Mapping):
                 raw_for_norm = dict(raw)
@@ -278,6 +375,20 @@ class OptionChainWorker(IngestWorker):
                 context=sync_context,
                 poll_interval_s=poll_interval_s if kind == "fetch" else None,
             ):
+                is_empty, info = _is_empty_payload(raw)
+                if is_empty:
+                    throttle_id = throttle_key("option_chain.empty_payload", self._symbol, "run")
+                    if log_throttle(throttle_id, _EMPTY_PAYLOAD_LOG_EVERY_S):
+                        log_debug(
+                            self._logger,
+                            "ingestion.empty_payload",
+                            worker=self.__class__.__name__,
+                            symbol=self._symbol,
+                            domain=_DOMAIN,
+                            source=getattr(self, "_source_id", None),
+                            **info,
+                        )
+                    continue
                 self._poll_seq += 1
                 tick = self._normalize(raw)
                 await _emit(tick)

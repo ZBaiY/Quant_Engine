@@ -52,7 +52,8 @@ def test_option_chain_file_source_single_file_coerces_seconds(
     assert [r["arrival_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_500]
     assert [r["data_ts"] for r in rows] == [1_700_000_000_000, 1_700_000_001_500]
     assert all(isinstance(r["arrival_ts"], int) for r in rows)
-    assert any("delta" in rec for rec in rows[0]["records"])
+    assert isinstance(rows[0]["frame"], pd.DataFrame)
+    assert "delta" in rows[0]["frame"].columns
     assert all(not isinstance(r, IngestionTick) for r in rows)
 
 

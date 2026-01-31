@@ -135,11 +135,21 @@ class DeribitOptionChainNormalizer(Normalizer):
             if ts_any is None:
                 raise ValueError("Option chain raw payload missing required data_ts")
             ts = _coerce_epoch_ms(ts_any)
-            frame_any = d.get("frame") or d.get("records") or d.get("raw")
+            frame_any = None
+            saw_key = False
+            # Some paths may pass chain as df/list; treat same as frame/records.
+            for key in ("frame", "chain", "records", "raw"):
+                if key in d:
+                    saw_key = True
+                    frame_any = d.get(key)
+                    if frame_any is not None:
+                        break
             if isinstance(frame_any, pd.DataFrame):
                 return ts, frame_any.copy()
             if isinstance(frame_any, list):
                 return ts, pd.DataFrame(frame_any)
+            if saw_key:
+                raise ValueError("Option chain raw payload missing frame/chain/records/raw")
 
         raise ValueError("Unsupported option chain raw payload type")
 
