@@ -70,8 +70,10 @@ class DequeSnapshotCache(Generic[SnapT], SnapshotCache[SnapT]):
             raise ValueError("maxlen must be > 0")
         self.buffer: deque[SnapT] = deque(maxlen=self.maxlen)
 
-    def push(self, s: SnapT) -> None:
+    def push(self, s: SnapT) -> SnapT | None:
+        evicted = self.buffer[0] if len(self.buffer) == self.maxlen else None
         self.buffer.append(s)
+        return evicted
 
     def last(self) -> SnapT | None:
         return self.buffer[-1] if self.buffer else None
@@ -134,8 +136,8 @@ class OptionChainExpiryIndexedCache(SnapshotCache[OptionChainSnapshot]):
 
     # --- SnapshotCache interface (delegates to main) ---
 
-    def push(self, s: OptionChainSnapshot) -> None:
-        self.main.push(s)
+    def push(self, s: OptionChainSnapshot) -> OptionChainSnapshot | None:
+        return self.main.push(s)
 
     def last(self) -> OptionChainSnapshot | None:
         return self.main.last()
@@ -226,9 +228,10 @@ class OptionChainTermBucketedCache(SnapshotCache[OptionChainSnapshot]):
 
     # --- SnapshotCache interface (delegates to main) ---
 
-    def push(self, s: OptionChainSnapshot) -> None:
-        self.main.push(s)
+    def push(self, s: OptionChainSnapshot) -> OptionChainSnapshot | None:
+        evicted = self.main.push(s)
         s.get_term_keys_ms(self.term_bucket_ms)
+        return evicted
 
     def last(self) -> OptionChainSnapshot | None:
         return self.main.last()

@@ -184,10 +184,13 @@ class OptionChainSnapshot(Snapshot):
     expiry_keys_ms: frozenset[int] | None = None
     term_keys_ms: dict[int, frozenset[int]] | None = None
     _frame_cache: pd.DataFrame | None = field(default=None, init=False, repr=False)
-    _market_ts_ref: int | None = field(default=None, init=False, repr=False)
+    _market_ts_ref: int | None = field(default=None, init=False, repr=False) # cache for market timestamp reference, i.e. the ts key reference
 
     @staticmethod
     def _sort_frame(df: pd.DataFrame) -> pd.DataFrame:
+        ## Sort in a defined order for consistency
+        ## Sort by expiration_timestamp/expiry_ts, strike, cp/option_type, instrument_name
+        ## Use stable sort to preserve original ordering where possible
         if df is None or df.empty:
             return pd.DataFrame(columns=list(df.columns) if df is not None else [])
         order: list[str] = []
@@ -221,6 +224,8 @@ class OptionChainSnapshot(Snapshot):
         *,
         drop_aux: bool,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        # Split a DataFrame into chain, quote, underlying, and aux frames
+        # used for from_chain_aligned
         if df is None or df.empty:
             empty = pd.DataFrame(columns=["instrument_name"])
             return empty, empty, empty, empty
@@ -272,6 +277,7 @@ class OptionChainSnapshot(Snapshot):
         schema_version: int = 3,
         domain: str = "option_chain",
     ) -> "OptionChainSnapshot":
+        # This is the core constructor from aligned DataFrame
         dts = to_ms_int(data_ts)
 
         if not isinstance(chain, pd.DataFrame):
@@ -337,12 +343,15 @@ class OptionChainSnapshot(Snapshot):
             # store as records for JSON-compat
             "frame": self.frame,
         }
+    
     def get_attr(self, key: str) -> Any:
+        # Generic getter for dynamic attribute access, covered with tests
         if not hasattr(self, key):
             raise AttributeError(f"{type(self).__name__} has no attribute {key!r}")
         return getattr(self, key)
 
     def get_expiry_keys_ms(self) -> frozenset[int]:
+        # expiry_keys_ms cached against immutable chain_frame; chain_frame must not change post creation.
         cached = self.expiry_keys_ms
         if cached is not None:
             return cached
@@ -351,6 +360,7 @@ class OptionChainSnapshot(Snapshot):
             keys = frozenset()
         else:
             try:
+                ## no bucketing here, just unique expiry timestamps
                 if "expiration_timestamp" in frame.columns:
                     xs = frame["expiration_timestamp"].dropna().unique()
                 elif "expiry_ts" in frame.columns:
@@ -364,6 +374,7 @@ class OptionChainSnapshot(Snapshot):
         return keys
 
     def get_term_keys_ms(self, term_bucket_ms: int) -> frozenset[int]:
+        ## getting term keys for a given bucket size
         tb = int(term_bucket_ms)
         if tb <= 0:
             raise ValueError("term_bucket_ms must be > 0")
@@ -386,7 +397,9 @@ class OptionChainSnapshot(Snapshot):
         return out
 
     def get_market_ts_ref(self) -> int | None:
-        cached = getattr(self, "_market_ts_ref", None)
+        # market_ts_ref cached against immutable quote_frame; quote_frame must not change post creation.
+        # the reference (the key name) for the market timestamp
+        cached = getattr(self, "_market_ts_ref", None) 
         if cached is not None:
             return cached
         quote = self.quote_frame
@@ -401,6 +414,8 @@ class OptionChainSnapshot(Snapshot):
 
     @property
     def frame(self) -> pd.DataFrame:
+        # merging chain and quote frames for a comprehensive view; 
+        # aux and underlying frames are intentionally left out of this merge for simplicity and to avoid unintended side effects; users can access them separately if needed.
         cached = getattr(self, "_frame_cache", None)
         if cached is not None:
             return cached
@@ -418,6 +433,8 @@ class OptionChainSnapshot(Snapshot):
 
 
 def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:
+    # construct an empty DataFrame with the same columns as the given frame, if possible; otherwise return a generic empty DataFrame
+    # this is used as a fallback when slicing fails or when the input frame is None/empty; 
     if frame is None:
         return pd.DataFrame()
     try:
@@ -446,6 +463,7 @@ def _slice_frame_for_term_bucket(
     term_key_ms: int,
     term_bucket_ms: int,
 ) -> pd.DataFrame:
+    # Slice any DataFrame for options within a specific term bucket
     if frame is None or frame.empty:
         return _empty_frame_like(frame)
     if "expiry_ts" not in frame.columns and "expiration_timestamp" not in frame.columns:
@@ -462,10 +480,15 @@ def _slice_frame_for_term_bucket(
 
 
 class OptionChainSnapshotView(OptionChainSnapshot):
-    """Lazy view over an OptionChainSnapshot frame."""
+    """Lazy view over an OptionChainSnapshot frame.
 
+    Frame invariant: market-only columns; provenance/selection live on the view object, not in the DataFrame.
+    """
+    """Only for one slice at a time (by expiry or term bucket)."""
+    ## Desinged for efficient slicing by expiry or term bucket without copying the entire frame upfront;
+    ## the frame is filtered on demand and cached for subsequent accesses;
     _base: OptionChainSnapshot
-    _frame_filter: Callable[[pd.DataFrame], pd.DataFrame]
+    _frame_filter: Callable[[pd.DataFrame], pd.DataFrame] # e.g. _slice_frame_for_expiry
     _frame_cache: pd.DataFrame | None
 
     def __init__(
@@ -482,7 +505,8 @@ class OptionChainSnapshotView(OptionChainSnapshot):
         object.__setattr__(self, "_frame_filter", frame_filter)
         object.__setattr__(self, "_frame_cache", None)
 
-        object.__setattr__(self, "data_ts", base.data_ts)
+        object.__setattr__(self, "data_ts", base.data_ts) # arrival timestamp
+        object.__setattr__(self, "snapshot_data_ts", int(base.data_ts)) # provenance attribute (not a frame column)
         object.__setattr__(self, "symbol", base.symbol)
         object.__setattr__(self, "market", base.market)
         object.__setattr__(self, "domain", base.domain)
@@ -497,11 +521,11 @@ class OptionChainSnapshotView(OptionChainSnapshot):
                 object.__setattr__(self, k, v)
             except Exception:
                 pass
-        object.__setattr__(self, "slice_kind", slice_kind)
-        object.__setattr__(self, "slice_key", slice_key)
+        object.__setattr__(self, "slice_kind", slice_kind) # e.g. "expiry" or "term_bucket"
+        object.__setattr__(self, "slice_key", slice_key) # e.g. expiry_ts or term_key_ms
         if snapshot_market_ts is None:
             snapshot_market_ts = base.get_market_ts_ref()
-        object.__setattr__(self, "snapshot_market_ts", snapshot_market_ts)
+        object.__setattr__(self, "snapshot_market_ts", snapshot_market_ts) # provenance attribute (not a frame column)
         object.__setattr__(self, "selection", selection)
 
     @property
@@ -513,18 +537,7 @@ class OptionChainSnapshotView(OptionChainSnapshot):
             except Exception:
                 view = self._base.frame
             view = view.copy()
-            view["snapshot_data_ts"] = int(self._base.data_ts)
-            view["snapshot_market_ts"] = getattr(self, "snapshot_market_ts", None)
-            view["slice_kind"] = getattr(self, "slice_kind", None)
-            view["slice_key"] = getattr(self, "slice_key", None)
-            selection = getattr(self, "selection", None)
-            if selection:
-                selected = selection.get("selected_expiries") or []
-                weights = selection.get("weights") or []
-                if selected:
-                    weight_map = {int(ex): float(w) for ex, w in zip(selected, weights)}
-                    if "expiry_ts" in view.columns:
-                        view["selection_weight"] = view["expiry_ts"].map(weight_map).astype("float64")
+            # Keep frame market-only; provenance and selection live on the view object.
             object.__setattr__(self, "_frame_cache", view)
             return view
         return cached

@@ -25,10 +25,11 @@ class SnapshotCache(Protocol[SnapT]):
     maxlen: int
     buffer: deque[SnapT]
 
-    def push(self, snapshot: SnapT) -> None:
+    def push(self, snapshot: SnapT) -> SnapT | list[SnapT] | None:
         """
         Append a snapshot to the cache.
         Eviction policy (ring / LRU / etc.) is implementation-defined.
+        Return evicted snapshot(s) when applicable.
         """
         ...
 

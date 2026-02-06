@@ -65,6 +65,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         },
         "quality_mode": "TRADING",
         "quality": {
+            "policy_id": "v1",
             "spread_max": 0.05,
             "min_n_per_slice": 20,
             "oi_zero_ratio": 0.95,
@@ -74,6 +75,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
             "mid_eps": 1e-12,
             "oi_eps": 1e-12,
             "max_bucket_hops": 2,
+            "qc_debug": False,
             "reason_severity": {
                 "MISSING_FRAME": {"STRICT": "HARD", "TRADING": "HARD", "RESEARCH": "HARD"},
                 "MISSING_MARKET_TS": {"STRICT": "HARD", "TRADING": "SOFT", "RESEARCH": "SOFT"},

@@ -101,12 +101,10 @@ def test_snapshot_view_frame_tags_and_slice() -> None:
     view = OptionChainSnapshotView.for_expiry(base=base, expiry_ts=11_111)
 
     frame = view.frame
-    assert "snapshot_data_ts" in frame.columns
-    assert set(frame["snapshot_data_ts"].unique()) == {1234}
-    assert "snapshot_market_ts" in frame.columns
-    assert set(frame["snapshot_market_ts"].unique()) == {1225}
-    assert set(frame["slice_kind"].unique()) == {"expiry"}
-    assert set(frame["slice_key"].unique()) == {11_111}
+    assert "snapshot_data_ts" not in frame.columns
+    assert "snapshot_market_ts" not in frame.columns
+    assert "slice_kind" not in frame.columns
+    assert "slice_key" not in frame.columns
     assert set(frame["expiry_ts"].unique()) == {11_111}
     assert "snapshot_data_ts" not in base.frame.columns
 
@@ -172,8 +170,10 @@ def test_cache_requires_main_capacity_for_expiry_index() -> None:
     cache.push(_make_snapshot(1000, [expiry]))
     cache.push(_make_snapshot(2000, [expiry]))
     cache.push(_make_snapshot(3000, [expiry]))
+    snaps = list(cache.window_for_expiry(expiry, 2))
+    assert {int(s.data_ts) for s in snaps} == {2000, 3000}
     df = cache.window_df_for_expiry(expiry)
-    assert set(df["snapshot_data_ts"].unique()) == {2000, 3000}
+    assert len(df) == sum(len(s.frame) for s in snaps)
 
 
 def test_cache_requires_main_capacity_for_term_index() -> None:
@@ -186,8 +186,10 @@ def test_cache_requires_main_capacity_for_term_index() -> None:
     cache.push(_make_snapshot(1000, [expiry]))
     cache.push(_make_snapshot(2000, [expiry]))
     cache.push(_make_snapshot(3000, [expiry]))
+    snaps = list(cache.window_for_term(15_000, 2))
+    assert {int(s.data_ts) for s in snaps} == {2000, 3000}
     df = cache.window_df_for_term(15_000)
-    assert set(df["snapshot_data_ts"].unique()) == {2000, 3000}
+    assert len(df) == sum(len(s.frame) for s in snaps)
 
 
 def test_cache_ordering_ignores_fetch_step_ts() -> None:

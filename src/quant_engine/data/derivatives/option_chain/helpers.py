@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Iterable, Mapping, cast, TYPE_CHECKING
+from typing import Any, Iterable, Mapping, Hashable, cast, TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
@@ -170,109 +171,115 @@ def _resolve_option_chain_config(
 
 
 def _validate_option_chain_config(cfg: dict[str, Any], *, interval_ms: int | None) -> None:
-    if "cache" not in cfg or not isinstance(cfg.get("cache"), dict):
+    if "cache" not in cfg or not isinstance(cfg.get("cache"), dict):  # require cache block (kind/maxlen/windows/term_bucket_ms)
         raise ValueError("option_chain config missing cache")
-    if "coords" not in cfg or not isinstance(cfg.get("coords"), dict):
+    if "coords" not in cfg or not isinstance(cfg.get("coords"), dict):  # require coords block (tau/x/ATM mapping + price_field)
         raise ValueError("option_chain config missing coords")
-    if "selection" not in cfg or not isinstance(cfg.get("selection"), dict):
+    if "selection" not in cfg or not isinstance(cfg.get("selection"), dict):  # require selection block (tau bracketing + x interpolation policy)
         raise ValueError("option_chain config missing selection")
-    if "quality" not in cfg or not isinstance(cfg.get("quality"), dict):
+    if "quality" not in cfg or not isinstance(cfg.get("quality"), dict):  # require quality block (QC thresholds + reason severities)
         raise ValueError("option_chain config missing quality")
 
-    cache = cast(dict[str, Any], cfg["cache"])
-    coords = cast(dict[str, Any], cfg["coords"])
-    selection = cast(dict[str, Any], cfg["selection"])
-    quality = cast(dict[str, Any], cfg["quality"])
+    cache = cast(dict[str, Any], cfg["cache"])  # cache config dict (validated/mutated in-place)
+    coords = cast(dict[str, Any], cfg["coords"])  # coords config dict (validated)
+    selection = cast(dict[str, Any], cfg["selection"])  # selection config dict (validated)
+    quality = cast(dict[str, Any], cfg["quality"])  # quality/QC config dict (validated + derived fields injected)
 
-    term_bucket_ms = cfg.get("term_bucket_ms") or cache.get("term_bucket_ms")
+    term_bucket_ms = cfg.get("term_bucket_ms") or cache.get("term_bucket_ms")  # canonical term bucket size (handler-level + cache must agree)
     if term_bucket_ms is None:
         raise ValueError("option_chain config missing term_bucket_ms")
-    cfg["term_bucket_ms"] = int(term_bucket_ms)
-    cache.setdefault("term_bucket_ms", cfg["term_bucket_ms"])
-    if int(cache["term_bucket_ms"]) != int(cfg["term_bucket_ms"]):
+    cfg["term_bucket_ms"] = int(term_bucket_ms)  # normalize to int ms (top-level)
+    cache.setdefault("term_bucket_ms", cfg["term_bucket_ms"])  # default cache.term_bucket_ms from top-level
+    if int(cache["term_bucket_ms"]) != int(cfg["term_bucket_ms"]):  # disallow split-brain bucket definitions
         raise ValueError("option_chain cache.term_bucket_ms must match term_bucket_ms")
-    if int(cfg["term_bucket_ms"]) <= 0:
+    if int(cfg["term_bucket_ms"]) <= 0:  # bucket size must be positive
         raise ValueError("option_chain term_bucket_ms must be > 0")
 
-    for k in ("maxlen", "default_term_window", "default_expiry_window"):
+    for k in ("maxlen", "default_term_window", "default_expiry_window"):  # required cache sizing/window defaults
         if k not in cache:
             raise ValueError(f"option_chain cache missing {k}")
-    if int(cache["maxlen"]) <= 0:
+    if int(cache["maxlen"]) <= 0:  # snapshot cache length > 0
         raise ValueError("option_chain cache.maxlen must be > 0")
-    if int(cache["default_term_window"]) <= 0:
+    if int(cache["default_term_window"]) <= 0:  # default term window > 0
         raise ValueError("option_chain cache.default_term_window must be > 0")
-    if int(cache["default_expiry_window"]) <= 0:
+    if int(cache["default_expiry_window"]) <= 0:  # default expiry window > 0
         raise ValueError("option_chain cache.default_expiry_window must be > 0")
 
-    if "kind" not in cache:
+    if "kind" not in cache:  # require cache strategy selector
         raise ValueError("option_chain cache missing kind")
-    kind = str(cache.get("kind") or "").lower()
-    if kind not in {"simple", "deque", "expiry", "term", "term_bucket", "bucketed"}:
+    kind = str(cache.get("kind") or "").lower()  # normalize cache kind string
+    if kind not in {"simple", "deque", "expiry", "term", "term_bucket", "bucketed"}:  # supported cache kinds only
         raise ValueError(f"option_chain cache.kind unsupported: {kind}")
-    cache["kind"] = kind
+    cache["kind"] = kind  # store normalized kind back into config
 
-    tau_def = str(coords.get("tau_def") or "")
+    tau_def = str(coords.get("tau_def") or "")  # tau anchor: market_ts (quote time) or data_ts (arrival/ingest time)
     if tau_def not in {"market_ts", "data_ts"}:
         raise ValueError("option_chain coords.tau_def must be 'market_ts' or 'data_ts'")
-    x_axis = str(coords.get("x_axis") or "")
+    x_axis = str(coords.get("x_axis") or "")  # x coordinate definition: log_moneyness or simple moneyness
     if x_axis not in {"log_moneyness", "moneyness"}:
         raise ValueError("option_chain coords.x_axis must be 'log_moneyness' or 'moneyness'")
-    atm_def = str(coords.get("atm_def") or "")
+    atm_def = str(coords.get("atm_def") or "")  # ATM reference definition (which underlying field drives x mapping)
     if atm_def not in {"underlying_price", "underlying_index", "mid_underlying"}:
         raise ValueError("option_chain coords.atm_def unsupported")
-    cp_policy = str(coords.get("cp_policy") or "")
+    cp_policy = str(coords.get("cp_policy") or "")  # call/put constraint when selecting points (same cp vs allow either)
     if cp_policy not in {"same", "either"}:
         raise ValueError("option_chain coords.cp_policy must be 'same' or 'either'")
-    if not isinstance(coords.get("price_field"), str) or not coords.get("price_field"):
+    if not isinstance(coords.get("price_field"), str) or not coords.get("price_field"):  # which price field IV-layer may derive from (if needed)
         raise ValueError("option_chain coords.price_field must be a non-empty string")
 
-    method = str(selection.get("method") or "")
+    method = str(selection.get("method") or "")  # tau selection method: nearest_bucket or bracket expiries
     if method not in {"nearest_bucket", "bracket"}:
         raise ValueError("option_chain selection.method unsupported")
-    interp = str(selection.get("interp") or "")
+    interp = str(selection.get("interp") or "")  # x interpolation method within selected slice (nearest vs linear in x)
     if interp not in {"nearest", "linear_x"}:
         raise ValueError("option_chain selection.interp unsupported")
 
-    quality_mode = str(cfg.get("quality_mode") or "")
+    quality_mode = str(cfg.get("quality_mode") or "")  # quality strictness mode (STRICT/TRADING/RESEARCH)
     if quality_mode.upper() not in {"STRICT", "TRADING", "RESEARCH"}:
         raise ValueError("option_chain quality_mode unsupported")
-    cfg["quality_mode"] = quality_mode.upper()
+    cfg["quality_mode"] = quality_mode.upper()  # normalize to uppercase canonical enum
 
-    for key in ("spread_max", "min_n_per_slice", "oi_zero_ratio", "eps", "mid_eps", "oi_eps", "max_bucket_hops"):
+    if not isinstance(quality.get("policy_id"), str) or not str(quality.get("policy_id") or "").strip():
+        raise ValueError("option_chain quality.policy_id must be a non-empty string")
+    quality["policy_id"] = str(quality.get("policy_id")).strip()
+    qc_debug = quality.get("qc_debug")
+    quality["qc_debug"] = bool(qc_debug) if qc_debug is not None else False
+
+    for key in ("spread_max", "min_n_per_slice", "oi_zero_ratio", "eps", "mid_eps", "oi_eps", "max_bucket_hops"):  # mandatory QC knobs
         if key not in quality:
             raise ValueError(f"option_chain quality missing {key}")
-    if float(quality["spread_max"]) <= 0:
+    if float(quality["spread_max"]) <= 0:  # max relative spread threshold (>0)
         raise ValueError("option_chain quality.spread_max must be > 0")
-    if int(quality["min_n_per_slice"]) <= 0:
+    if int(quality["min_n_per_slice"]) <= 0:  # minimum rows required for a slice to be considered usable
         raise ValueError("option_chain quality.min_n_per_slice must be > 0")
-    if not (0.0 <= float(quality["oi_zero_ratio"]) <= 1.0):
+    if not (0.0 <= float(quality["oi_zero_ratio"]) <= 1.0):  # tolerance for OI==0 prevalence in a slice
         raise ValueError("option_chain quality.oi_zero_ratio must be within [0,1]")
-    if float(quality["eps"]) <= 0 or float(quality["mid_eps"]) <= 0 or float(quality["oi_eps"]) <= 0:
+    if float(quality["eps"]) <= 0 or float(quality["mid_eps"]) <= 0 or float(quality["oi_eps"]) <= 0:  # numeric epsilons for zombie/spread guards
         raise ValueError("option_chain quality eps values must be > 0")
-    if int(quality["max_bucket_hops"]) < 0:
+    if int(quality["max_bucket_hops"]) < 0:  # how far tau selection may search across neighbor buckets
         raise ValueError("option_chain quality.max_bucket_hops must be >= 0")
 
-    if "stale_ms" not in quality:
+    if "stale_ms" not in quality:  # derive stale_ms from interval if not explicitly provided
         if "stale_ms_factor" not in quality:
             raise ValueError("option_chain quality missing stale_ms or stale_ms_factor")
-        if interval_ms is None:
+        if interval_ms is None:  # if interval unknown, cannot derive stale_ms deterministically
             quality["stale_ms"] = None
         else:
-            quality["stale_ms"] = int(float(quality["stale_ms_factor"]) * int(interval_ms))
-    if "max_tau_error_ms" not in quality:
+            quality["stale_ms"] = int(float(quality["stale_ms_factor"]) * int(interval_ms))  # staleness threshold in ms
+    if "max_tau_error_ms" not in quality:  # derive max tau mismatch tolerance from term bucket size if not explicitly provided
         if "max_tau_error_ms_factor" not in quality:
             raise ValueError("option_chain quality missing max_tau_error_ms or max_tau_error_ms_factor")
-        quality["max_tau_error_ms"] = int(float(quality["max_tau_error_ms_factor"]) * int(cfg["term_bucket_ms"]))
+        quality["max_tau_error_ms"] = int(float(quality["max_tau_error_ms_factor"]) * int(cfg["term_bucket_ms"]))  # allowable |tau_actual - tau_target|
 
-    reason_severity = quality.get("reason_severity")
+    reason_severity = quality.get("reason_severity")  # reason_code -> severity mapping used to escalate OK/SOFT/HARD
     if not isinstance(reason_severity, dict):
         raise ValueError("option_chain quality.reason_severity must be a dict")
-    quality["reason_severity"] = reason_severity
+    quality["reason_severity"] = reason_severity  # normalize back to dict (even if empty)
 
-    market_ts_ref_method = str(cfg.get("market_ts_ref_method") or "")
+    market_ts_ref_method = str(cfg.get("market_ts_ref_method") or "")  # how to compress per-row market_ts into snapshot_market_ts
     if market_ts_ref_method not in {"median"}:
         raise ValueError("option_chain market_ts_ref_method unsupported")
-    cfg["market_ts_ref_method"] = market_ts_ref_method
+    cfg["market_ts_ref_method"] = market_ts_ref_method  # store normalized ref method
 
 
 def _coerce_cp(x: Any) -> str | None:
@@ -284,6 +291,35 @@ def _coerce_cp(x: Any) -> str | None:
     if s in {"P", "PUT"}:
         return "P"
     return None
+
+
+def _coerce_atm_ref(x: Any) -> float | None:
+    try:
+        val = float(x)
+    except Exception:
+        return None
+    if pd.isna(val) or val == 0:
+        return None
+    return float(val)
+
+
+def _compute_tau_series(df: pd.DataFrame, *, tau_anchor_ts: int | None) -> pd.Series:
+    if tau_anchor_ts is None or "expiry_ts" not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+    tau = pd.to_numeric(df["expiry_ts"], errors="coerce") - int(tau_anchor_ts)
+    return tau.clip(lower=0)
+
+
+def _compute_x_series(df: pd.DataFrame, *, atm_ref: Any, x_axis: str | None) -> pd.Series:
+    if "strike" not in df.columns or x_axis is None:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+    atm_val = _coerce_atm_ref(atm_ref)
+    if atm_val is None:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+    strike = pd.to_numeric(df["strike"], errors="coerce")
+    if x_axis == "moneyness":
+        return (strike / float(atm_val) - 1.0).astype("float64")
+    return pd.Series(np.log(strike / float(atm_val)), index=strike.index, dtype="float64")
 
 
 def _market_ts_ref(df: pd.DataFrame, snap: OptionChainSnapshot) -> int | None:
@@ -328,8 +364,10 @@ def _apply_quality_checks(
     reason_severity: dict[str, dict[str, str]],
 ) -> None:
     n_rows = int(len(df))
-    n_valid_x = int(pd.to_numeric(df["x"], errors="coerce").notna().sum()) if "x" in df.columns else 0
-    n_valid_tau = int(pd.to_numeric(df["tau_ms"], errors="coerce").notna().sum()) if "tau_ms" in df.columns else 0
+    series_x = _compute_x_series(df, atm_ref=meta.get("atm_ref"), x_axis=meta.get("x_axis"))
+    series_tau = _compute_tau_series(df, tau_anchor_ts=meta.get("tau_anchor_ts"))
+    n_valid_x = int(series_x.notna().sum()) if n_rows > 0 else 0
+    n_valid_tau = int(series_tau.notna().sum()) if n_rows > 0 else 0
     price_fields = [c for c in ("bid_price", "ask_price", "mid_price", "mark_price") if c in df.columns]
     n_quotes = 0
     if price_fields:
@@ -346,7 +384,9 @@ def _apply_quality_checks(
         "n_quotes": n_quotes,
     }
 
-    if "atm_ref" not in df.columns or df["atm_ref"].dropna().empty:
+    atm_ref = _coerce_atm_ref(meta.get("atm_ref"))
+    missing_atm = atm_ref is None
+    if missing_atm:
         _add_reason(meta, "MISSING_UNDERLYING_REF", _severity_for("MISSING_UNDERLYING_REF", quality_mode, reason_severity), {})
 
     snapshot_data_ts = meta.get("snapshot_data_ts")
@@ -518,6 +558,54 @@ def _set_selection_context(meta: dict[str, Any], **kwargs: Any) -> None:
     meta["selection_context"] = ctx
 
 
+def _qc_report_from_meta(
+    meta: dict[str, Any],
+    *,
+    policy_id: str,
+    debug: bool = False,
+) -> dict[str, Any]:
+    reasons = meta.get("reasons") or []
+    counters: dict[str, int] = {}
+    mapped: list[dict[str, Any]] = []
+    for r in reasons:
+        code = str(r.get("reason_code") or "")
+        severity = str(r.get("severity") or "")
+        ctx = dict(r.get("details") or {})
+        mapped.append({"code": code, "severity": severity, "ctx": ctx})
+        counters[code] = counters.get(code, 0) + 1
+
+    coverage = meta.get("coverage") or {}
+    staleness = meta.get("staleness") or {}
+    # Downstream should use tradable as the boolean decision; state is descriptive.
+    summary = {
+        "ok": bool(meta.get("tradable")),
+        "state": meta.get("state"),
+        "tradable": meta.get("tradable"),
+        "n_rows": int(coverage.get("n_rows") or 0),
+        "n_valid_tau": int(coverage.get("n_valid_tau") or 0),
+        "n_valid_x": int(coverage.get("n_valid_x") or 0),
+        "n_quotes": int(coverage.get("n_quotes") or 0),
+        "staleness_ms": staleness.get("staleness_ms"),
+    }
+    artifacts: dict[str, Any] = {}
+    if debug:
+        artifacts = {
+            "coverage": dict(coverage),
+            "staleness": dict(staleness),
+        }
+
+    return {
+        "snapshot_data_ts": meta.get("snapshot_data_ts"),
+        "snapshot_market_ts": meta.get("snapshot_market_ts"),
+        "quality_mode": str(meta.get("quality_mode") or ""),
+        "policy_id": str(policy_id),
+        "summary": summary,
+        "reasons": mapped,
+        "counters": counters,
+        "artifacts": artifacts,
+    }
+
+
 def _apply_selection_slice(
     coords_df: pd.DataFrame,
     meta: dict[str, Any],
@@ -546,14 +634,6 @@ def _apply_selection_slice(
             {"min_n": int(min_n_per_slice), "n_rows": int(len(slice_df))},
         )
     slice_df = slice_df.copy()
-    slice_df["slice_kind"] = "tau"
-    slice_df["slice_key"] = int(selection.get("tau_target_ms", 0))
-    slice_df["snapshot_data_ts"] = int(meta.get("snapshot_data_ts") or 0)
-    slice_df["snapshot_market_ts"] = meta.get("snapshot_market_ts")
-    weights = selection.get("weights") or []
-    if selected_expiries:
-        weight_map = {int(ex): float(w) for ex, w in zip(selected_expiries, weights)}
-        slice_df["selection_weight"] = slice_df["expiry_ts"].map(weight_map).astype("float64")
     meta["selection"] = selection
     _finalize_meta(meta, quality_mode)
     return slice_df, meta
@@ -567,79 +647,94 @@ def _select_point_from_slice(
     interp: str,
     price_field: str,
     cp_policy: str,
+    snapshot_data_ts: int,
+    tau_target_ms: int,
+    tau_anchor_ts: int,
+    atm_ref: Any,
+    quality_mode: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    snapshot_data_ts = int(snapshot_data_ts)
+    tau_target_ms = int(tau_target_ms)
+    tau_anchor_ts = int(tau_anchor_ts)
+    mode = str(quality_mode) if quality_mode is not None else "TRADING"
     meta = _empty_meta(
-        snapshot_data_ts=int(slice_df["snapshot_data_ts"].iloc[0]) if "snapshot_data_ts" in slice_df.columns and not slice_df.empty else None,
+        snapshot_data_ts=snapshot_data_ts,
         snapshot_market_ts=None,
-        quality_mode="TRADING",
+        quality_mode=mode,
     )
     if slice_df is None or slice_df.empty:
         _add_reason(meta, "COVERAGE_LOW", "SOFT", {"min_n": None})
         return None, meta
-    series_x = pd.to_numeric(slice_df["x"], errors="coerce")
+    series_x = _compute_x_series(slice_df, atm_ref=atm_ref, x_axis=x_axis)
     valid = slice_df.loc[series_x.notna()].copy()
     if valid.empty:
         _add_reason(meta, "COVERAGE_LOW", "SOFT", {"min_n": None})
         return None, meta
-    valid = valid.assign(_x=series_x.loc[valid.index])
+    series_tau = _compute_tau_series(slice_df, tau_anchor_ts=tau_anchor_ts)
     target_x = float(x)
     if interp == "linear_x":
         if cp_policy == "same" and "cp" in valid.columns:
             best = None
             for cp_val in valid["cp"].dropna().unique():
                 group = valid.loc[valid["cp"] == cp_val]
-                left = group.loc[group["_x"] <= target_x]
-                right = group.loc[group["_x"] >= target_x]
+                group_x = series_x.loc[group.index]
+                left = group_x.loc[group_x <= target_x]
+                right = group_x.loc[group_x >= target_x]
                 if left.empty or right.empty:
                     continue
-                lo = left.loc[(target_x - left["_x"]).abs().idxmin()]
-                hi = right.loc[(right["_x"] - target_x).abs().idxmin()]
-                span = abs(float(hi["_x"]) - float(lo["_x"]))
-                dist = abs(target_x - float(lo["_x"])) + abs(float(hi["_x"]) - target_x)
+                lo_idx = (target_x - left).abs().idxmin()
+                hi_idx = (right - target_x).abs().idxmin()
+                span = abs(float(group_x.loc[hi_idx]) - float(group_x.loc[lo_idx]))
+                dist = abs(target_x - float(group_x.loc[lo_idx])) + abs(float(group_x.loc[hi_idx]) - target_x)
                 if best is None or (span, dist) < best[0]:
-                    best = ((span, dist), lo, hi)
+                    best = ((span, dist), lo_idx, hi_idx)
             if best is not None:
-                lo = best[1]
-                hi = best[2]
+                lo_idx = best[1]
+                hi_idx = best[2]
             else:
-                lo = None
-                hi = None
+                lo_idx = None
+                hi_idx = None
         else:
-            left = valid.loc[valid["_x"] <= target_x]
-            right = valid.loc[valid["_x"] >= target_x]
-            lo = left.loc[(target_x - left["_x"]).abs().idxmin()] if not left.empty else None
-            hi = right.loc[(right["_x"] - target_x).abs().idxmin()] if not right.empty else None
-        if lo is None or hi is None:
+            all_x = series_x.loc[valid.index]
+            left = all_x.loc[all_x <= target_x]
+            right = all_x.loc[all_x >= target_x]
+            lo_idx = (target_x - left).abs().idxmin() if not left.empty else None
+            hi_idx = (right - target_x).abs().idxmin() if not right.empty else None
+        if lo_idx is None or hi_idx is None:
             interp = "nearest"
-        elif str(lo.get("instrument_name")) == str(hi.get("instrument_name")):
+        elif str(valid.loc[lo_idx].get("instrument_name")) == str(valid.loc[hi_idx].get("instrument_name")):
             interp = "nearest"
         else:
-            x0 = _to_float_scalar(lo.get("_x"))
-            x1 = _to_float_scalar(hi.get("_x"))
-            v0 = _to_float_scalar(lo.get(price_field))
-            v1 = _to_float_scalar(hi.get(price_field))
+            x0 = _to_float_scalar(series_x.loc[lo_idx])
+            x1 = _to_float_scalar(series_x.loc[hi_idx])
+            v0 = _to_float_scalar(valid.loc[lo_idx].get(price_field))
+            v1 = _to_float_scalar(valid.loc[hi_idx].get(price_field))
             if v0 is None or v1 is None or x0 is None or x1 is None or x1 == x0:
                 interp = "nearest"
             else:
                 weight = (target_x - x0) / (x1 - x0)
                 value = float(v0) + weight * (float(v1) - float(v0))
                 point = {
-                    "ts": _to_int_scalar(lo.get("snapshot_data_ts")),
-                    "expiry_ts": _to_int_scalar(lo.get("expiry_ts")),
-                    "tau_target_ms": _to_int_scalar(lo.get("slice_key")),
-                    "tau_realized_ms": _to_int_scalar(lo.get("tau_ms")),
+                    "ts": int(snapshot_data_ts),
+                    "expiry_ts": _to_int_scalar(valid.loc[lo_idx].get("expiry_ts")),
+                    "tau_target_ms": int(tau_target_ms),
+                    "tau_realized_ms": _to_int_scalar(series_tau.loc[lo_idx]),
                     "x": float(target_x),
                     "x_axis": str(x_axis),
                     "value_fields": {str(price_field): value},
                 }
                 return point, meta
-    nearest = valid.loc[(valid["_x"] - target_x).abs().idxmin()]
+    diffs = (series_x.loc[valid.index] - target_x).abs()
+    nearest = valid.loc[diffs.idxmin()]
+    nearest_idx = cast(Hashable, nearest.name)
+    tau_val = series_tau.get(nearest_idx, np.nan)
+    x_val = series_x.get(nearest_idx, np.nan)
     point = {
-        "ts": _to_int_scalar(nearest.get("snapshot_data_ts")),
+        "ts": int(snapshot_data_ts),
         "expiry_ts": _to_int_scalar(nearest.get("expiry_ts")),
-        "tau_target_ms": _to_int_scalar(nearest.get("slice_key")),
-        "tau_realized_ms": _to_int_scalar(nearest.get("tau_ms")),
-        "x": float(_to_float_scalar(nearest.get("_x")) or 0.0),
+        "tau_target_ms": int(tau_target_ms),
+        "tau_realized_ms": _to_int_scalar(tau_val),
+        "x": float(_to_float_scalar(x_val) or 0.0),
         "x_axis": str(x_axis),
         "value_fields": {str(price_field): nearest.get(price_field)},
     }

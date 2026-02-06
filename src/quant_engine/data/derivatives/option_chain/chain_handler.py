@@ -26,7 +26,13 @@ from .cache import (
     OptionChainExpiryCache,
     OptionChainTermBucketedCache,
 )
-from .snapshot import OptionChainSnapshot, OptionChainSnapshotView
+from .snapshot import (
+    OptionChainSnapshot,
+    OptionChainSnapshotView,
+    _CHAIN_COLS,
+    _QUOTE_COLS,
+    _UNDERLYING_COLS,
+)
 from .helpers import (
     _tick_from_payload,
     _infer_data_ts,
@@ -57,6 +63,9 @@ from .helpers import (
     _empty_df_like,
     _to_float_scalar,
     _to_int_scalar,
+    _compute_tau_series,
+    _compute_x_series,
+    _qc_report_from_meta,
 )
 
 
@@ -109,38 +118,53 @@ class OptionChainDataHandler(RealTimeDataHandler):
     _backfill_emit: Any | None
     _engine_mode: EngineMode | None
     _data_root: Any
-    _coords_cache: dict[tuple[Any, ...], tuple[pd.DataFrame, dict[str, Any]]]
-    _coords_aux_cache: dict[tuple[Any, ...], dict[str, Any]]
-    _select_tau_cache: dict[tuple[Any, ...], dict[str, Any]]
+    _market_cache: dict[tuple[Any, ...], pd.DataFrame]
+    _coords_aux_cache: dict[tuple[Any, ...], dict[str, Any]] # auxiliary metadata from coordinate mapping (e.g., market_ts_ref)
+    _select_tau_cache: dict[tuple[Any, ...], dict[str, Any]] # auxiliary metadata from tau selection (e.g., selected_tau, selection_context)
+    _qc_cache: dict[tuple[Any, ...], dict[str, Any]]
+    _qc_index: dict[tuple[Any, ...], tuple[Any, ...]]
+    _market_keys_by_ts: dict[int, list[tuple[Any, ...]]]     # mapping from snapshot_ts to list of market_cache keys for incremental eviction
+    _coords_aux_keys_by_ts: dict[int, list[tuple[Any, ...]]] # mapping from snapshot_ts to list of coords_aux_cache keys for incremental eviction
+    _select_tau_keys_by_ts: dict[int, list[tuple[Any, ...]]] # mapping from snapshot_ts to list of select_tau_cache keys for incremental eviction
+    _qc_keys_by_ts: dict[int, list[tuple[Any, ...]]]         # mapping from snapshot_ts to list of qc_cache keys for incremental eviction
 
     def __init__(self, symbol: str, **kwargs: Any):
         self.symbol = symbol
         self.source = str(kwargs.get("source") or "DERIBIT")
 
-        preset = kwargs.pop("preset", None)
-        config = kwargs.pop("config", None)
+        # --- Normalize convenience kwargs into a single option_chain config override:
+        preset = kwargs.pop("preset", None)                     # preset: name of GLOBAL_PRESETS entry to use as the base option_chain config
+        config = kwargs.pop("config", None)                     # config: explicit option_chain config dict (overrides preset if provided)
+
+        # coords -> tau/x/ATM coordinate mapping; everything is merged into GLOBAL_PRESETS, never hard-coded.
         coord_override = {
             k: kwargs.pop(k)
             for k in ("tau_def", "x_axis", "atm_def", "underlying_field", "price_field", "cp_policy")
             if k in kwargs
-        }
+        }                                                        
+        # tau_def: tau anchor (market_ts/data_ts); x_axis: moneyness/delta; atm_def: ATM rule; cp_policy: call/put selection
+
         if "coords" in kwargs:
-            raw_coords = kwargs.pop("coords")
+            raw_coords = kwargs.pop("coords")                    # coords: full coordinate mapping override dict
             if isinstance(raw_coords, dict):
                 coord_override = _deep_merge(raw_coords, coord_override) if coord_override else dict(raw_coords)
             else:
                 raise TypeError("option_chain coords must be a dict")
-        selection_override = {}
+
+        selection_override = {}                                  # selection: how expiries/x-points are chosen/interpolated
         if "selection_method" in kwargs:
-            selection_override["method"] = kwargs.pop("selection_method")
+            selection_override["method"] = kwargs.pop("selection_method")   # method: nearest/bracket/weighted expiry selection
         if "selection_interp" in kwargs:
-            selection_override["interp"] = kwargs.pop("selection_interp")
-        quality_override = kwargs.pop("quality", None) if "quality" in kwargs else None
-        quality_mode_override = kwargs.pop("quality_mode", None) if "quality_mode" in kwargs else None
-        cache_override = kwargs.pop("cache", None) if "cache" in kwargs else None
-        market_ts_ref_method_override = kwargs.pop("market_ts_ref_method", None) if "market_ts_ref_method" in kwargs else None
-        term_bucket_override = kwargs.pop("term_bucket_ms", None) if "term_bucket_ms" in kwargs else None
-        config_override: dict[str, Any] = {}
+            selection_override["interp"] = kwargs.pop("selection_interp")   # interp: interpolation scheme within expiry/x grid
+
+        quality_override = kwargs.pop("quality", None) if "quality" in kwargs else None          # quality: QC thresholds (coverage, spread, OI, staleness, etc.)
+        quality_mode_override = kwargs.pop("quality_mode", None) if "quality_mode" in kwargs else None  # quality_mode: STRICT/TRADING/RESEARCH semantics
+
+        cache_override = kwargs.pop("cache", None) if "cache" in kwargs else None                 # cache: snapshot cache config (kind/maxlen/etc.)
+        market_ts_ref_method_override = kwargs.pop("market_ts_ref_method", None) if "market_ts_ref_method" in kwargs else None  # market_ts_ref_method: how snapshot market_ts is derived from quotes
+        term_bucket_override = kwargs.pop("term_bucket_ms", None) if "term_bucket_ms" in kwargs else None  # term_bucket_ms: coarse term prefilter granularity (not economic tau)
+
+        config_override: dict[str, Any] = {}                   # config_override: normalized option_chain config passed to DataHandler
         if cache_override is not None:
             config_override["cache"] = cache_override
         if quality_override is not None:
@@ -150,7 +174,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if coord_override:
             config_override["coords"] = coord_override
         if "selection" in kwargs:
-            raw_sel = kwargs.pop("selection")
+            raw_sel = kwargs.pop("selection")                   # selection: full selection override dict (merged with method/interp)
             if isinstance(raw_sel, dict):
                 selection_override = _deep_merge(raw_sel, selection_override) if selection_override else dict(raw_sel)
             else:
@@ -169,48 +193,47 @@ class OptionChainDataHandler(RealTimeDataHandler):
         interval_ms = to_interval_ms(self.interval) if self.interval is not None else None
         self.interval_ms = int(interval_ms) if interval_ms is not None else None
 
-        resolved_cfg = _resolve_option_chain_config(
+        resolved_cfg = _resolve_option_chain_config(              # resolve final option_chain config from preset + base config + overrides
             preset=preset,
             config=config,
             override=config_override,
             interval_ms=self.interval_ms,
         )
-        self.config = resolved_cfg
+        self.config = resolved_cfg                               # store resolved, immutable option_chain config
 
-        asset_any = kwargs.get("asset") or kwargs.get("currency") or kwargs.get("underlying")
+        asset_any = kwargs.get("asset") or kwargs.get("currency") or kwargs.get("underlying")  # asset hint for symbol normalization
         self.asset = base_asset_from_symbol(str(asset_any)) if asset_any is not None else base_asset_from_symbol(symbol)
 
-        self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))
-        self._data_root = resolve_data_root(
+        self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))  # engine mode (backtest/realtime/mock) affects filtering & IO
+        self._data_root = resolve_data_root(                     # data root for persistence and backfill
             __file__,
             levels_up=5,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
-        self.source_id = _resolve_source_id(
+        self.source_id = _resolve_source_id(                     # source_id used for tick filtering / provenance
             source_id=kwargs.get("source_id"),
             mode=self._engine_mode,
             data_root=self._data_root,
             source=self.source,
         )
 
-        cache = resolved_cfg.get("cache") or {}
+        cache = resolved_cfg.get("cache") or {}                  # cache config block (kind/maxlen/windows/etc.)
         if not isinstance(cache, dict):
             raise TypeError("option_chain 'cache' must be a dict")
         self.cache_cfg = dict(cache)
-        self.bootstrap_cfg = kwargs.get("bootstrap") or None
+        self.bootstrap_cfg = kwargs.get("bootstrap") or None     # optional bootstrap lookback config
 
-        maxlen_any = self.cache_cfg.get("maxlen")
+        maxlen_any = self.cache_cfg.get("maxlen")                # global snapshot cache length
         if maxlen_any is None:
             raise ValueError("option_chain cache.maxlen must be provided")
         maxlen = int(maxlen_any)
         if maxlen <= 0:
             raise ValueError("option_chain cache.maxlen must be > 0")
 
-        # cache kind: simple | expiry | term
-        kind = str(self.cache_cfg.get("kind") or self.cache_cfg.get("type") or "expiry").lower()
+        kind = str(self.cache_cfg.get("kind") or self.cache_cfg.get("type") or "expiry").lower()  # cache strategy: simple|expiry|term
 
-        default_expiry_any = self.cache_cfg.get("default_expiry_window")
-        default_term_any = self.cache_cfg.get("default_term_window")
+        default_expiry_any = self.cache_cfg.get("default_expiry_window")  # default expiry slice window
+        default_term_any = self.cache_cfg.get("default_term_window")      # default term slice window
         if default_expiry_any is None or default_term_any is None:
             raise ValueError("option_chain cache default windows must be provided")
         default_expiry_window = int(default_expiry_any)
@@ -221,33 +244,33 @@ class OptionChainDataHandler(RealTimeDataHandler):
             raise ValueError("option_chain cache.default_term_window must be > 0")
 
         if kind in {"simple", "deque"}:
-            self.cache = OptionChainSimpleCache(maxlen=maxlen)
+            self.cache = OptionChainSimpleCache(maxlen=maxlen)   # pure time-ordered snapshot cache
             term_bucket_ms = None
         elif kind in {"term", "term_bucket", "bucketed"}:
-            term_bucket_any = self.cache_cfg.get("term_bucket_ms")
+            term_bucket_any = self.cache_cfg.get("term_bucket_ms")  # coarse term prefilter granularity
             if term_bucket_any is None:
                 raise ValueError("option_chain cache.term_bucket_ms must be provided")
             term_bucket_ms = int(term_bucket_any)
             if term_bucket_ms <= 0:
                 raise ValueError("option_chain cache.term_bucket_ms must be > 0")
-            self.cache = OptionChainTermBucketedCache(
+            self.cache = OptionChainTermBucketedCache(            # cache with term-bucket helpers
                 maxlen=maxlen,
                 term_bucket_ms=term_bucket_ms,
                 default_term_window=default_term_window,
                 default_expiry_window=default_expiry_window,
             )
         else:
-            # default: expiry helper cache
             term_bucket_ms = None
-            self.cache = OptionChainExpiryCache(
+            self.cache = OptionChainExpiryCache(                  # cache with expiry-index helpers
                 maxlen=maxlen,
                 default_expiry_window=default_expiry_window,
             )
 
-        cols_any = kwargs.get("columns")
+        cols_any = kwargs.get("columns")                          # optional column projection for snapshots
         self.columns = list(cols_any) if cols_any is not None else None
+
         if term_bucket_ms is None:
-            term_bucket_any = self.cache_cfg.get("term_bucket_ms")
+            term_bucket_any = self.cache_cfg.get("term_bucket_ms")  # ensure term_bucket_ms is always defined
             if term_bucket_any is None:
                 raise ValueError("option_chain cache.term_bucket_ms must be provided")
             term_bucket_ms = int(term_bucket_any)
@@ -255,23 +278,26 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if self.term_bucket_ms <= 0:
             raise ValueError("option_chain term_bucket_ms must be > 0")
 
-        self.quality_mode = _coerce_quality_mode(resolved_cfg.get("quality_mode"))
-        quality_cfg = resolved_cfg.get("quality") or {}
+        self.quality_mode = _coerce_quality_mode(resolved_cfg.get("quality_mode"))  # QC strictness (STRICT/TRADING/RESEARCH)
+        quality_cfg = resolved_cfg.get("quality") or {}           # QC thresholds and limits
         if not isinstance(quality_cfg, dict):
             raise TypeError("option_chain 'quality' must be a dict")
         self.quality_cfg = dict(quality_cfg)
-        self.reason_severity = dict(self.quality_cfg.get("reason_severity") or {})
-        coords_cfg = resolved_cfg.get("coords") or {}
+        self.reason_severity = dict(self.quality_cfg.get("reason_severity") or {})  # reason_code -> severity mapping
+
+        coords_cfg = resolved_cfg.get("coords") or {}             # coordinate mapping config (tau/x/ATM definitions)
         if not isinstance(coords_cfg, dict):
             raise TypeError("option_chain 'coords' must be a dict")
         self.coords_cfg = dict(coords_cfg)
-        selection_cfg = resolved_cfg.get("selection") or {}
+
+        selection_cfg = resolved_cfg.get("selection") or {}       # expiry/x selection + interpolation rules
         if not isinstance(selection_cfg, dict):
             raise TypeError("option_chain 'selection' must be a dict")
         self.selection_cfg = dict(selection_cfg)
-        self.market_ts_ref_method = str(resolved_cfg.get("market_ts_ref_method"))
 
-        self.market = ensure_market_spec(
+        self.market_ts_ref_method = str(resolved_cfg.get("market_ts_ref_method"))  # how snapshot market_ts is derived from quote data
+
+        self.market = ensure_market_spec(                         # canonical market metadata for snapshots
             kwargs.get("market"),
             default_venue=str(kwargs.get("venue", kwargs.get("source", self.source))),
             default_asset_class=str(kwargs.get("asset_class", "option")),
@@ -280,7 +306,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
-        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(  # normalized symbol + aliases for routing
             "option_chain",
             self.symbol,
             self.asset,
@@ -298,9 +324,16 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._backfill_emit = None
         self._anchor_ts = None
         self._logger = get_logger(__name__)
-        self._coords_cache = {}
-        self._coords_aux_cache = {}
-        self._select_tau_cache = {}
+        self._market_cache = {}    # cache for market-only frames keyed by snapshot_ts (+ include_underlying flag)
+        self._coords_aux_cache = {} # auxiliary metadata from coordinate mapping (e.g., expiry_tau medians)
+        self._select_tau_cache = {} # auxiliary metadata from tau selection (e.g., selected_tau, selection_context)
+        self._qc_cache = {}         # cached QC reports keyed by snapshot_ts + quality policy + coord defs
+        self._qc_index = {}         # (snapshot_ts + policy + coord defs) -> qc_cache key for O(1) lookups
+        # Handler-side caches are bounded by main cache and evicted incrementally.
+        self._market_keys_by_ts = {} # mapping from snapshot_ts to list of market_cache keys for incremental eviction
+        self._coords_aux_keys_by_ts = {} # mapping from snapshot_ts to list of coords_aux_cache keys for incremental eviction
+        self._select_tau_keys_by_ts = {} # mapping from snapshot_ts to list of select_tau_cache keys for incremental eviction
+        self._qc_keys_by_ts = {} # mapping from snapshot_ts to list of qc_cache keys for incremental eviction
 
         log_debug(
             self._logger,
@@ -436,8 +469,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         last_ts = int(last.data_ts) if last is not None else None
         self._set_gap_market(snap, last_ts=last_ts)
 
-        self.cache.push(snap)
-        self._prune_caches()
+        evicted = self.cache.push(snap)
+        self._evict_from_push(evicted)
         log_debug(
             self._logger,
             "OptionChainDataHandler.on_new_tick",
@@ -599,6 +632,59 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 out[c] = None
         return out
 
+    def _market_frame_uncached(self, snap: OptionChainSnapshot, *, include_underlying: bool) -> pd.DataFrame:
+        base = snap.frame
+        if base is None or base.empty:
+            return pd.DataFrame()
+        df = base
+        if include_underlying and snap.underlying_frame is not None and not snap.underlying_frame.empty:
+            extra_cols = [
+                c for c in snap.underlying_frame.columns
+                if c != "instrument_name" and c not in df.columns and c in _UNDERLYING_COLS
+            ]
+            if extra_cols:
+                df = df.merge(
+                    snap.underlying_frame[["instrument_name"] + extra_cols],
+                    on="instrument_name",
+                    how="left",
+                )
+        allowed = _CHAIN_COLS | _QUOTE_COLS | _UNDERLYING_COLS
+        keep = [c for c in df.columns if c in allowed]
+        return df[keep].copy()
+
+    def market_frame(
+        self,
+        ts: int | None = None,
+        *,
+        columns: list[str] | None = None,
+        include_underlying: bool | None = None,
+    ) -> pd.DataFrame:
+        """Return market-only columns for a snapshot.
+
+        Invariants: exchange-provided fields only (chain/quote/underlying); MUST NOT include derived or provenance columns.
+        This does NOT add data_ts, tau/x, slice tags, or any selection/QC fields; it is safe to cache.
+        """
+        # Audit note: snapshot/slice/selection fields were removed from frames; provenance stays in meta/view attrs.
+        snap = self.get_snapshot(ts)
+        if snap is None:
+            return pd.DataFrame()
+        use_underlying = True if include_underlying is None else bool(include_underlying)
+        key = (int(snap.data_ts), use_underlying)
+        cached = self._market_cache.get(key)
+        if cached is None:
+            # Market-only frames are immutable per snapshot_ts, so caching is safe.
+            cached = self._market_frame_uncached(snap, include_underlying=use_underlying)
+            self._market_cache[key] = cached
+            self._market_keys_by_ts.setdefault(int(snap.data_ts), []).append(key)
+        df = cached
+        if columns is None:
+            return df.copy()
+        allowed = _CHAIN_COLS | _QUOTE_COLS | _UNDERLYING_COLS
+        keep = [c for c in columns if c in allowed and c in df.columns]
+        if not keep:
+            return pd.DataFrame()
+        return df[keep].copy()
+
     # ------------------------------------------------------------------
     # Legacy / misc
     # ------------------------------------------------------------------
@@ -611,9 +697,15 @@ class OptionChainDataHandler(RealTimeDataHandler):
             instrument_symbol=self.symbol,
         )
         self.cache.clear()
-        self._coords_cache.clear()
+        self._market_cache.clear()
         self._coords_aux_cache.clear()
         self._select_tau_cache.clear()
+        self._qc_cache.clear()
+        self._qc_index.clear()
+        self._market_keys_by_ts.clear()
+        self._coords_aux_keys_by_ts.clear()
+        self._select_tau_keys_by_ts.clear()
+        self._qc_keys_by_ts.clear()
 
     def _coords_frame_uncached(
         self,
@@ -626,31 +718,41 @@ class OptionChainDataHandler(RealTimeDataHandler):
         quality_mode: str,
         drop_aux: bool,
     ) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+        """
+        Return coordinate-mapped DataFrame view of snapshot.
+        Standardize and enrich a snapshot view for selection and QC while keeping provenance in meta.
+        The returned DataFrame includes derived tau/x coordinates but no provenance columns.
+        """
         data_ts = int(snap.data_ts)
-        base = snap.frame
+        # drop_aux is kept for API compatibility; market-only frames never include aux_frame columns.
+        base = self.market_frame(ts=data_ts, include_underlying=True)
         if base is None or base.empty:
             meta = _empty_meta(snapshot_data_ts=data_ts, snapshot_market_ts=None, quality_mode=quality_mode)
+            meta["tau_anchor_ts"] = int(data_ts)
+            meta["tau_def"] = str(tau_def)
+            meta["market_ts_ref_method"] = None
+            meta["x_axis"] = str(x_axis)
+            meta["atm_ref"] = None
+            meta["underlying_ref"] = None
+            _set_selection_context(
+                meta,
+                tau_def=tau_def,
+                x_axis=x_axis,
+                atm_def=atm_def,
+                price_field=price_field,
+            )
             _add_reason(meta, "EMPTY_CHAIN", _severity_for("EMPTY_CHAIN", quality_mode, self.reason_severity), {})
             _finalize_meta(meta, quality_mode)
+            self._cache_qc_report(
+                meta,
+                tau_def=str(tau_def),
+                x_axis=str(x_axis),
+                atm_def=str(atm_def),
+                price_field=str(price_field),
+            )
             return pd.DataFrame(), meta, {}
 
         df = base.copy()
-        if snap.underlying_frame is not None and not snap.underlying_frame.empty:
-            extra_cols = [c for c in snap.underlying_frame.columns if c not in df.columns]
-            if extra_cols:
-                df = df.merge(
-                    snap.underlying_frame[["instrument_name"] + extra_cols],
-                    on="instrument_name",
-                    how="left",
-                )
-        if not drop_aux and snap.aux_frame is not None and not snap.aux_frame.empty:
-            extra_cols = [c for c in snap.aux_frame.columns if c not in df.columns]
-            if extra_cols:
-                df = df.merge(
-                    snap.aux_frame[["instrument_name"] + extra_cols],
-                    on="instrument_name",
-                    how="left",
-                )
 
         if "expiry_ts" not in df.columns and "expiration_timestamp" in df.columns:
             df["expiry_ts"] = pd.to_numeric(df["expiration_timestamp"], errors="coerce")
@@ -680,30 +782,19 @@ class OptionChainDataHandler(RealTimeDataHandler):
         atm_ref = _resolve_underlying(df, str(atm_def))
 
         if tau_def == "data_ts" or snapshot_market_ts is None:
+            # Fall back to data_ts when market_ts is unavailable to keep tau anchored to observation time.
             tau_anchor = data_ts
         else:
             tau_anchor = snapshot_market_ts
-        tau_ms = pd.to_numeric(df["expiry_ts"], errors="coerce") - int(tau_anchor)
-        tau_ms = tau_ms.clip(lower=0)
-        df["tau_ms"] = tau_ms
 
-        if atm_ref is None or atm_ref == 0 or np.isnan(float(atm_ref)):
-            df["x"] = pd.NA
-        else:
-            if x_axis == "moneyness":
-                df["x"] = df["strike"] / float(atm_ref) - 1.0
-            else:
-                df["x"] = np.log(df["strike"] / float(atm_ref))
-        df["x_axis"] = str(x_axis)
-        df["atm_ref"] = atm_ref
-        df["underlying_ref"] = underlying_ref
-        df["snapshot_data_ts"] = int(data_ts)
-        df["snapshot_market_ts"] = snapshot_market_ts
-
+        # coords_df carries row-level selection fields only; meta holds constants/provenance.
         meta = _empty_meta(snapshot_data_ts=data_ts, snapshot_market_ts=snapshot_market_ts, quality_mode=quality_mode)
         meta["tau_anchor_ts"] = int(tau_anchor)
         meta["tau_def"] = str(tau_def)
         meta["market_ts_ref_method"] = market_ts_ref_method
+        meta["x_axis"] = str(x_axis)
+        meta["atm_ref"] = atm_ref
+        meta["underlying_ref"] = underlying_ref
         if tau_def == "market_ts" and snapshot_market_ts is None:
             _add_reason(meta, "MISSING_MARKET_TS", _severity_for("MISSING_MARKET_TS", quality_mode, self.reason_severity), {})
         _set_selection_context(
@@ -713,24 +804,180 @@ class OptionChainDataHandler(RealTimeDataHandler):
             atm_def=atm_def,
             price_field=price_field,
         )
+
+        tau_series = _compute_tau_series(df, tau_anchor_ts=int(tau_anchor))
+        x_series = _compute_x_series(df, atm_ref=atm_ref, x_axis=str(x_axis))
+        df["tau_ms"] = tau_series
+        df["x"] = x_series
+
+        # QC after coordinate derivation yields auditability aligned with the selection view.
         _apply_quality_checks(self, df, meta, quality_mode, self.reason_severity)
         _finalize_meta(meta, quality_mode)
+        self._cache_qc_report(
+            meta,
+            tau_def=str(tau_def),
+            x_axis=str(x_axis),
+            atm_def=str(atm_def),
+            price_field=str(price_field),
+        )
 
-        aux = {"expiry_tau": df.groupby("expiry_ts")["tau_ms"].median()}
+        # aux includes coordinate-derived metadata that may be useful for selection but is not needed for QC.
+        aux = {"expiry_tau": tau_series.groupby(df["expiry_ts"]).median()}
+        # this aux has nothing to do with the aux_frame in the snapshot
         return df, meta, aux
 
     def _min_n_per_slice(self) -> int:
+        ## minimum number of records per slice (expiry or term bucket) for it to be considered valid for selection; 
+        # helps prevent overfitting to sparse slices and also speeds up selection by skipping very sparse slices entirely.
         return int(self.quality_cfg["min_n_per_slice"])
 
-    def _prune_caches(self) -> None:
-        buffer = getattr(self.cache, "buffer", None)
-        if buffer is None:
+    def _qc_policy_id(self) -> str:
+        policy_id = self.quality_cfg.get("policy_id")
+        if not isinstance(policy_id, str) or not policy_id.strip():
+            raise ValueError("option_chain quality.policy_id must be a non-empty string")
+        return policy_id.strip()
+
+    def _qc_cache_key(
+        self,
+        *,
+        snapshot_data_ts: int,
+        quality_mode: str,
+        policy_id: str,
+        tau_def: str,
+        x_axis: str,
+        atm_def: str,
+        price_field: str,
+        include_underlying: bool,
+        tau_anchor_ts: int | None,
+        market_ts_ref_method: str | None,
+    ) -> tuple[Any, ...]:
+        # policy_id must be bumped when QC thresholds/logic change to keep cache semantics correct.
+        # include_underlying, tau_anchor_ts, and market_ts_ref_method are included because QC depends on them.
+        return (
+            int(snapshot_data_ts),
+            str(quality_mode),
+            str(policy_id),
+            str(tau_def),
+            str(x_axis),
+            str(atm_def),
+            str(price_field),
+            bool(include_underlying),
+            int(tau_anchor_ts) if tau_anchor_ts is not None else None,
+            str(market_ts_ref_method) if market_ts_ref_method is not None else None,
+        )
+
+    def _qc_index_key(
+        self,
+        *,
+        snapshot_data_ts: int,
+        quality_mode: str,
+        policy_id: str,
+        tau_def: str,
+        x_axis: str,
+        atm_def: str,
+        price_field: str,
+        include_underlying: bool,
+    ) -> tuple[Any, ...]:
+        return (
+            int(snapshot_data_ts),
+            str(quality_mode),
+            str(policy_id),
+            str(tau_def),
+            str(x_axis),
+            str(atm_def),
+            str(price_field),
+            bool(include_underlying),
+        )
+
+    def _qc_index_key_from_full(self, key: tuple[Any, ...]) -> tuple[Any, ...]:
+        return key[:8]
+
+    def _cache_qc_report(
+        self,
+        meta: dict[str, Any],
+        *,
+        tau_def: str,
+        x_axis: str,
+        atm_def: str,
+        price_field: str,
+    ) -> dict[str, Any]:
+        snapshot_data_ts = meta.get("snapshot_data_ts")
+        policy_id = self._qc_policy_id()
+        debug = bool(self.quality_cfg.get("qc_debug"))
+        meta["policy_id"] = policy_id
+        if snapshot_data_ts is None:
+            return _qc_report_from_meta(meta, policy_id=policy_id, debug=debug)
+        include_underlying = True
+        key = self._qc_cache_key(
+            snapshot_data_ts=int(snapshot_data_ts),
+            quality_mode=str(meta.get("quality_mode") or ""),
+            policy_id=policy_id,
+            tau_def=str(tau_def),
+            x_axis=str(x_axis),
+            atm_def=str(atm_def),
+            price_field=str(price_field),
+            include_underlying=include_underlying,
+            tau_anchor_ts=meta.get("tau_anchor_ts"),
+            market_ts_ref_method=meta.get("market_ts_ref_method"),
+        )
+        cached = self._qc_cache.get(key)
+        if cached is not None:
+            return cached
+        report = _qc_report_from_meta(meta, policy_id=policy_id, debug=debug)
+        self._qc_cache[key] = report
+        index_key = self._qc_index_key(
+            snapshot_data_ts=int(snapshot_data_ts),
+            quality_mode=str(meta.get("quality_mode") or ""),
+            policy_id=policy_id,
+            tau_def=str(tau_def),
+            x_axis=str(x_axis),
+            atm_def=str(atm_def),
+            price_field=str(price_field),
+            include_underlying=include_underlying,
+        )
+        self._qc_index[index_key] = key
+        self._qc_keys_by_ts.setdefault(int(snapshot_data_ts), []).append(key)
+        return report
+
+    def _evicted_ts(self, evicted: object) -> int | None:
+        # ts tag on evicted snapshot(s) for incremental eviction of derived caches;
+        # supports various evicted object types for flexibility across cache implementations (e.g., raw snapshots, wrapped snapshots, lists of snapshots).
+        if evicted is None:
+            return None
+        if isinstance(evicted, (int, np.integer)):
+            return int(evicted)
+        ts = getattr(evicted, "data_ts", None)
+        if ts is None:
+            ts = getattr(evicted, "timestamp", None)
+        return int(ts) if ts is not None else None
+
+    def _evict_from_push(self, evicted: object) -> None:
+        ## Evict derived cache entries for snapshot(s) evicted from main cache on push.
+        ## cache push may evict none, this ensures that we can handle all cases gracefully without errors and with best-effort eviction of derived caches.
+        if evicted is None:
             return
-        live = {int(s.data_ts) for s in buffer if s is not None}
-        for cache in (self._coords_cache, self._coords_aux_cache, self._select_tau_cache):
-            stale = [k for k in cache.keys() if int(k[0]) not in live]
-            for k in stale:
-                cache.pop(k, None)
+        if isinstance(evicted, (list, tuple)):
+            for item in evicted:
+                ts = self._evicted_ts(item)
+                if ts is not None:
+                    self._evict_ts(int(ts))
+            return
+        ts = self._evicted_ts(evicted)
+        if ts is not None:
+            self._evict_ts(int(ts))
+
+    def _evict_ts(self, ts: int) -> None:
+        for key in self._market_keys_by_ts.pop(int(ts), []):
+            self._market_cache.pop(key, None)
+        for key in self._coords_aux_keys_by_ts.pop(int(ts), []):
+            self._coords_aux_cache.pop(key, None)
+        for key in self._select_tau_keys_by_ts.pop(int(ts), []):
+            self._select_tau_cache.pop(key, None)
+        for key in self._qc_keys_by_ts.pop(int(ts), []):
+            self._qc_cache.pop(key, None)
+            index_key = self._qc_index_key_from_full(key)
+            if self._qc_index.get(index_key) == key:
+                self._qc_index.pop(index_key, None)
 
     # ------------------------------------------------------------------
     # vNext selection + coord APIs
@@ -747,6 +994,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
         quality_mode: str | None = None,
         drop_aux: bool | None = None,
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """Return a coordinate-mapped view derived from market_frame.
+
+        Invariants: DataFrame includes market columns plus derived tau/x only; provenance lives in meta.
+        This is a transient view (do not cache/mutate); only aux metadata may be cached for selection reuse.
+        """
+
         snap = self.get_snapshot(ts)
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         if snap is None:
@@ -765,10 +1018,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
         atm_def_s = str(atm_def)
         price_field_s = str(price_field)
         use_drop_aux = True if drop_aux is None else bool(drop_aux)
-        key = (int(snap.data_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
-        cached = self._coords_cache.get(key)
-        if cached is not None:
-            return cached
         coords_df, meta, aux = self._coords_frame_uncached(
             snap,
             tau_def=tau_def_s,
@@ -778,9 +1027,74 @@ class OptionChainDataHandler(RealTimeDataHandler):
             quality_mode=mode,
             drop_aux=use_drop_aux,
         )
-        self._coords_cache[key] = (coords_df, meta)
-        self._coords_aux_cache[key] = aux
+        # Cache aux data (selection helpers) keyed by snapshot + coordinate defs.
+        aux_key = (int(snap.data_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
+        if aux_key not in self._coords_aux_cache:
+            self._coords_aux_cache[aux_key] = aux
+            self._coords_aux_keys_by_ts.setdefault(int(snap.data_ts), []).append(aux_key)
         return coords_df, meta
+
+    def qc_report(
+        self,
+        ts: int | None = None,
+        *,
+        tau_def: str | None = None,
+        x_axis: str | None = None,
+        atm_def: str | None = None,
+        price_field: str | None = None,
+        quality_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a cached QC report for a snapshot and coordinate definition.
+
+        Invariants: report is JSON-friendly and derived from meta; no frame columns are used.
+        Cache hits must not trigger pandas computation; misses compute QC via coords_frame.
+        """
+        mode = _coerce_quality_mode(quality_mode or self.quality_mode)
+        tau_def = tau_def or self.coords_cfg.get("tau_def")
+        x_axis = x_axis or self.coords_cfg.get("x_axis")
+        atm_def = atm_def or self.coords_cfg.get("atm_def")
+        price_field = price_field or self.coords_cfg.get("price_field")
+        if tau_def is None or x_axis is None or atm_def is None or price_field is None:
+            raise ValueError("option_chain coords config missing required fields")
+        tau_def_s = str(tau_def)
+        x_axis_s = str(x_axis)
+        atm_def_s = str(atm_def)
+        price_field_s = str(price_field)
+
+        snap = self.get_snapshot(ts)
+        if snap is not None:
+            policy_id = self._qc_policy_id()
+            index_key = self._qc_index_key(
+                snapshot_data_ts=int(snap.data_ts),
+                quality_mode=mode,
+                policy_id=policy_id,
+                tau_def=tau_def_s,
+                x_axis=x_axis_s,
+                atm_def=atm_def_s,
+                price_field=price_field_s,
+                include_underlying=True,
+            )
+            full_key = self._qc_index.get(index_key)
+            if full_key is not None:
+                cached = self._qc_cache.get(full_key)
+                if cached is not None:
+                    return cached
+
+        _, meta = self.coords_frame(
+            ts,
+            tau_def=tau_def_s,
+            x_axis=x_axis_s,
+            atm_def=atm_def_s,
+            price_field=price_field_s,
+            quality_mode=mode,
+        )
+        return self._cache_qc_report(
+            meta,
+            tau_def=tau_def_s,
+            x_axis=x_axis_s,
+            atm_def=atm_def_s,
+            price_field=price_field_s,
+        )
 
     def select_tau(
         self,
@@ -792,24 +1106,36 @@ class OptionChainDataHandler(RealTimeDataHandler):
         tau_def: str | None = None,
         term_bucket_ms: int | None = None,
         max_bucket_hops: int | None = None,
+        coords_df: pd.DataFrame | None = None,
+        base_meta: dict[str, Any] | None = None,
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # Select expiry candidate(s) for a target tau in the current snapshot (optionally bracket+weights), 
+        # using term-bucket prefilter + cached per-snapshot expiry->tau map, and return the sliced coords + auditable selection meta.
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         method = method or self.selection_cfg.get("method")
         tau_def = tau_def or self.coords_cfg.get("tau_def")
         if method is None or tau_def is None:
             raise ValueError("option_chain selection config missing required fields")
         method_s = str(method)
+        if method_s not in {"nearest_bucket", "bracket"}:
+            raise ValueError(f"option_chain selection.method unsupported: {method_s}")
         tau_def_s = str(tau_def)
         tb = int(term_bucket_ms) if term_bucket_ms is not None else int(self.term_bucket_ms)
         hops = int(max_bucket_hops) if max_bucket_hops is not None else int(self.quality_cfg["max_bucket_hops"])
-        coords_df, base_meta = self.coords_frame(
-            ts,
-            tau_def=tau_def_s,
-            x_axis=self.coords_cfg.get("x_axis"),
-            atm_def=self.coords_cfg.get("atm_def"),
-            price_field=self.coords_cfg.get("price_field"),
-            quality_mode=mode,
-        )
+        x_axis = self.coords_cfg.get("x_axis")
+        atm_def = self.coords_cfg.get("atm_def")
+        price_field = self.coords_cfg.get("price_field")
+        use_drop_aux = True  # must match coords_frame drop_aux for aux_key lookup
+        if coords_df is None or base_meta is None:
+            coords_df, base_meta = self.coords_frame(
+                ts,
+                tau_def=tau_def_s,
+                x_axis=x_axis,
+                atm_def=atm_def,
+                price_field=price_field,
+                quality_mode=mode,
+                drop_aux=use_drop_aux,
+            )
         meta = _clone_meta(base_meta)
         _set_selection_context(meta, method=method_s, tau_ms=int(tau_ms), term_bucket_ms=tb, tau_def=tau_def_s)
         if coords_df is None or coords_df.empty:
@@ -832,19 +1158,19 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 reason_severity=self.reason_severity,
             )
 
-        aux_key = (
-            int(snap_ts),
-            tau_def_s,
-            "log_moneyness",
-            "underlying_price",
-            "mark_price",
-            True,
-            mode,
-        )
+        x_axis_s = str(x_axis)
+        atm_def_s = str(atm_def)
+        price_field_s = str(price_field)
+        aux_key = (int(snap_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
         aux = self._coords_aux_cache.get(aux_key, {})
         expiry_tau = aux.get("expiry_tau")
         if expiry_tau is None:
-            expiry_tau = coords_df.groupby("expiry_ts")["tau_ms"].median()
+            tau_anchor_ts = meta.get("tau_anchor_ts")
+            tau_series = _compute_tau_series(
+                coords_df,
+                tau_anchor_ts=int(tau_anchor_ts) if tau_anchor_ts is not None else None,
+            )
+            expiry_tau = tau_series.groupby(coords_df["expiry_ts"]).median()
 
         expiry_tau = expiry_tau.dropna()
         if expiry_tau.empty:
@@ -873,7 +1199,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         selected_expiries: list[int] = []
         weights: list[float] = []
-        if method == "bracket":
+        if method_s == "bracket":
             below = candidates[candidates <= target_tau]
             above = candidates[candidates >= target_tau]
             lower_tau = below.max() if not below.empty else None
@@ -905,11 +1231,13 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     w_lower = 1.0 - w_upper
                     selected_expiries = [lower_expiry, upper_expiry]
                     weights = [w_lower, w_upper]
-        else:
+        elif method_s == "nearest_bucket":
             nearest = (candidates - target_tau).abs()
             expiry = int(nearest.idxmin())
             selected_expiries = [expiry]
             weights = [1.0]
+        else:
+            raise ValueError(f"option_chain selection.method unsupported: {method_s}")
 
         tau_errors = [abs(int(expiry_tau.loc[ex]) - target_tau) for ex in selected_expiries]
         max_tau_error_ms = int(self.quality_cfg["max_tau_error_ms"])
@@ -926,7 +1254,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
             "weights": weights,
             "tau_target_ms": int(target_tau),
         }
-        self._select_tau_cache[cache_key] = selection
+        if cache_key not in self._select_tau_cache:
+            self._select_tau_cache[cache_key] = selection
+            self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)
         return _apply_selection_slice(
             coords_df,
             meta,
@@ -951,6 +1281,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         atm_def: str | None = None,
         tau_def: str | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        # Select (and optionally interpolate) a single (tau,x) coordinate point by first choosing expiry slice via select_tau, 
+        # then applying cp_policy + interp within that slice, returning the chosen row dict plus merged provenance/quality meta (never a bare scalar).
         cp_policy = cp_policy or self.coords_cfg.get("cp_policy")
         if cp_policy not in {"same", "either"}:
             cp_policy = "same"
@@ -989,6 +1321,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             method=method_s,
             quality_mode=mode,
             tau_def=tau_def_s,
+            coords_df=coords_df,
+            base_meta=meta,
         )
         meta = _merge_meta(meta, meta_tau)
         if tau_slice is None or tau_slice.empty:
@@ -1000,6 +1334,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
             )
             _finalize_meta(meta, mode)
             return None, meta
+        snap_ts = int(meta["snapshot_data_ts"])
+        tau_anchor_ts = int(meta["tau_anchor_ts"])
+        atm_ref = meta.get("atm_ref")
         point, meta_point = _select_point_from_slice(
             tau_slice,
             x=float(x),
@@ -1007,6 +1344,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
             interp=interp_s,
             price_field=price_field_s,
             cp_policy=cp_policy,
+            snapshot_data_ts=snap_ts,
+            tau_target_ms=int(tau_ms),
+            tau_anchor_ts=tau_anchor_ts,
+            atm_ref=atm_ref,
+            quality_mode=mode,
         )
         meta = _merge_meta(meta, meta_point)
         _finalize_meta(meta, mode)
@@ -1027,9 +1369,16 @@ class OptionChainDataHandler(RealTimeDataHandler):
             _finalize_meta(meta, mode)
             return pd.DataFrame(), meta
         grouped = coords_df.groupby("expiry_ts")
+        meta_tau_anchor_ts = meta.get("tau_anchor_ts")
+        tau_series = _compute_tau_series(
+            coords_df,
+            tau_anchor_ts=int(meta_tau_anchor_ts) if meta_tau_anchor_ts is not None else None,
+        )
         rows = []
         for expiry_ts, group in grouped:
-            tau_ms = int(pd.to_numeric(group["tau_ms"], errors="coerce").dropna().median()) if not group.empty else 0
+            group_tau = tau_series.loc[group.index]
+            tau_val = group_tau.dropna().median() if not group_tau.empty else 0
+            tau_ms = int(tau_val) if pd.notna(tau_val) else 0
             term_key = (tau_ms // tb) * tb if tb > 0 else 0
             expiry_val = _to_int_scalar(expiry_ts)
             rows.append(
@@ -1162,9 +1511,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
         method: str | None = None,
         quality_mode: str | None = None,
     ) -> list[OptionChainSnapshotView]:
+        # tau: time-to-expiry, tau_ms = expiry_ts - anchor_ts
+        # Return a list of snapshot views sliced by select_tau for a given tau_ms across a time window [ts_start, ts_end] with step step_ms.
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         method = method or self.selection_cfg.get("method")
-        out: list[OptionChainSnapshotView] = []
+        out: list[OptionChainSnapshotView] = [] 
         for ts in _iter_ts(int(ts_start), int(ts_end), int(step_ms)):
             snap = self.get_snapshot(ts)
             if snap is None:
@@ -1299,6 +1650,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 )
                 continue
             slice_df = coords_df.loc[coords_df["expiry_ts"] == int(expiry_ts)]
+            snap_ts = int(meta["snapshot_data_ts"])
+            tau_anchor_ts = int(meta["tau_anchor_ts"])
+            atm_ref = meta.get("atm_ref")
             point, meta_point = _select_point_from_slice(
                 slice_df,
                 x=float(x),
@@ -1306,6 +1660,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 interp=str(interp),
                 price_field="mark_price",
                 cp_policy=str(self.coords_cfg.get("cp_policy")),
+                snapshot_data_ts=snap_ts,
+                tau_target_ms=0,
+                tau_anchor_ts=tau_anchor_ts,
+                atm_ref=atm_ref,
+                quality_mode=mode,
             )
             meta = _merge_meta(meta, meta_point)
             if meta.get("state") == "HARD_FAIL" and first_hard_ts is None:
@@ -1565,4 +1924,3 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 emit=emit,
             ))
         )
-
